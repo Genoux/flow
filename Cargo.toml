@@ -1,0 +1,10 @@
+[package]
+name = "flow"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+cpal = "0.18.1"
+hound = "3.5.1"
+parakeet-rs = "0.3.7"
