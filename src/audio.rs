@@ -21,36 +21,54 @@ pub fn open_device() -> Result<Device> {
         .ok_or_else(|| anyhow!("no input device available"))
 }
 
-/// Capture `duration` of 16 kHz mono f32 audio.
-pub fn record(device: &Device, duration: Duration) -> Result<Vec<f32>> {
-    let config = StreamConfig {
-        channels: 1,
-        sample_rate: SAMPLE_RATE,
-        buffer_size: cpal::BufferSize::Default,
-    };
+/// An open capture stream. Held for the duration of a push-to-talk press and
+/// consumed by [`Recorder::stop`].
+pub struct Recorder {
+    stream: cpal::Stream,
+    samples: Arc<Mutex<Vec<f32>>>,
+}
 
-    let format = device.default_input_config()?.sample_format();
-    if format != SampleFormat::F32 {
-        // ponytail: PipeWire converts formats too, so we always ask for f32 and
-        // only log a mismatch rather than implementing per-format conversion.
-        eprintln!("note: device native format is {format:?}, requesting f32 anyway");
+impl Recorder {
+    pub fn start(device: &Device) -> Result<Self> {
+        let config = StreamConfig {
+            channels: 1,
+            sample_rate: SAMPLE_RATE,
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        let format = device.default_input_config()?.sample_format();
+        if format != SampleFormat::F32 {
+            // ponytail: PipeWire converts formats too, so we always ask for f32
+            // rather than implementing per-format conversion.
+            eprintln!("note: device native format is {format:?}, requesting f32 anyway");
+        }
+
+        let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let sink = samples.clone();
+
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[f32], _: &_| sink.lock().unwrap().extend_from_slice(data),
+            |err| eprintln!("stream error: {err}"),
+            None,
+        )?;
+        stream.play()?;
+
+        Ok(Self { stream, samples })
     }
 
-    let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-    let sink = samples.clone();
+    pub fn stop(self) -> Vec<f32> {
+        drop(self.stream);
+        std::mem::take(&mut *self.samples.lock().unwrap())
+    }
+}
 
-    let stream = device.build_input_stream(
-        config,
-        move |data: &[f32], _: &_| sink.lock().unwrap().extend_from_slice(data),
-        |err| eprintln!("stream error: {err}"),
-        None,
-    )?;
-
-    stream.play()?;
+/// Capture a fixed `duration` of 16 kHz mono f32 audio.
+pub fn record(device: &Device, duration: Duration) -> Result<Vec<f32>> {
+    let recorder = Recorder::start(device)?;
     std::thread::sleep(duration);
-    drop(stream);
+    let captured = recorder.stop();
 
-    let captured = std::mem::take(&mut *samples.lock().unwrap());
     if captured.is_empty() {
         return Err(anyhow!("captured no audio - check the input source"));
     }
