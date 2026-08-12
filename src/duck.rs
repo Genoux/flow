@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Playback streams are lowered while recording, then put back. This matters
@@ -12,7 +13,10 @@ use std::time::{Duration, Instant};
 /// more distracting than the sound it is trying to get out of the way.
 pub struct Ducker {
     restored: bool,
-    original: Vec<(u32, u32)>,
+    /// Every stream ducked so far, including ones that started after recording
+    /// began. Restoring uses this rather than the opening snapshot.
+    known: Arc<Mutex<Vec<(u32, u32)>>>,
+    active: Arc<AtomicBool>,
 }
 
 /// Down quickly, since recording has already begun; back up more gently, which
@@ -24,6 +28,11 @@ const FADE_IN: Duration = Duration::from_millis(260);
 /// guarantee - the ramp is interpolated against the clock, not the step count,
 /// so a slow step drops frames instead of stretching the fade.
 const STEP: Duration = Duration::from_millis(20);
+
+/// How often to look for streams that started after ducking began. A scan costs
+/// one pactl call, so this is cheap; the interval bounds how long a new track
+/// can be heard at full volume.
+const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Where the ramp currently is, as a percentage of each stream's own level.
 /// Global because only one dictation runs at a time, and a new fade must be
@@ -79,13 +88,17 @@ fn streams() -> Result<Vec<(u32, u32)>> {
 }
 
 fn set_volume(index: u32, percent: u32) {
-    // A stream that ended mid-dictation is expected, not an error.
+    // A stream that ended is expected, not an error - a track can finish
+    // mid-dictation, and stale ids are normal at startup recovery. pactl still
+    // complains on stderr, so its output is discarded rather than logged.
     let _ = Command::new("pactl")
         .args([
             "set-sink-input-volume",
             &index.to_string(),
             &format!("{percent}%"),
         ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
 }
 
@@ -131,22 +144,59 @@ fn fade(streams: Vec<(u32, u32)>, target: u32, duration: Duration, clear_state: 
     });
 }
 
+/// Catch streams that appear after ducking began. A track change gives the new
+/// track a new stream id, so without this the music returns to full volume
+/// part-way through a recording - which is exactly when it is least wanted.
+fn watch(known: Arc<Mutex<Vec<(u32, u32)>>>, active: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        while active.load(Ordering::SeqCst) {
+            std::thread::sleep(WATCH_INTERVAL);
+            if !active.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let Ok(current) = streams() else { continue };
+            let mut known = known.lock().unwrap();
+
+            for (index, original) in current {
+                if known.iter().any(|(seen, _)| *seen == index) {
+                    continue;
+                }
+                // Straight to the current level, not faded: this stream was not
+                // audible a moment ago, so there is nothing to ramp down from.
+                set_volume(index, original * LEVEL.load(Ordering::SeqCst) / 100);
+                known.push((index, original));
+            }
+
+            // Keep the crash-recovery record in step with what we have touched.
+            if let Ok(encoded) = serde_json::to_vec(&*known) {
+                let _ = std::fs::write(state_file(), encoded);
+            }
+        }
+    });
+}
+
 impl Ducker {
     /// Lower every playback stream to `percent` of its current level.
     /// Relative, because an absolute target would make an already-quiet
     /// stream louder.
     pub fn duck(percent: u32) -> Result<Self> {
-        let original = streams()?;
+        let found = streams()?;
 
         // Persisted first: a kill -9 skips Drop, and the next start reads this
         // rather than leaving the user's music mysteriously quiet.
-        let _ = std::fs::write(state_file(), serde_json::to_vec(&original)?);
+        let _ = std::fs::write(state_file(), serde_json::to_vec(&found)?);
 
-        fade(original.clone(), percent.min(100), FADE_OUT, false);
+        fade(found.clone(), percent.min(100), FADE_OUT, false);
+
+        let known = Arc::new(Mutex::new(found));
+        let active = Arc::new(AtomicBool::new(true));
+        watch(known.clone(), active.clone());
 
         Ok(Self {
             restored: false,
-            original,
+            known,
+            active,
         })
     }
 
@@ -155,7 +205,12 @@ impl Ducker {
             return;
         }
         self.restored = true;
-        fade(self.original.clone(), 100, FADE_IN, true);
+        // Stop watching before fading back, or a stream discovered mid-fade
+        // would be pinned to a level the fade is about to leave behind.
+        self.active.store(false, Ordering::SeqCst);
+
+        let known = self.known.lock().unwrap().clone();
+        fade(known, 100, FADE_IN, true);
     }
 }
 
