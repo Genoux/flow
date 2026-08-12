@@ -6,5 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 cpal = "0.18.1"
+evdev = "0.13.2"
 hound = "3.5.1"
 parakeet-rs = "0.3.7"
+wl-clipboard-rs = "0.9.3"
