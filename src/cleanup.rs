@@ -50,8 +50,14 @@ pub fn model_path() -> PathBuf {
 }
 
 /// Terms the recogniser mangles, one per line, from
-/// `~/.config/flow/vocabulary.txt`. Absent file means no vocabulary, which is
-/// a valid state rather than an error.
+/// `~/.config/flow/vocabulary.txt`. Absent or empty is the normal state, not an
+/// error: there is no useful default list, because the words a recogniser gets
+/// wrong are whatever this particular person happens to say. Shipping anyone's
+/// actual terms would just be someone else's config.
+///
+/// Measured worth (tests/vocabulary.rs): it reliably recovers terms that sound
+/// close to what was said - "hyper land" to Hyprland, "pipe wire" to PipeWire -
+/// and cannot recover one that sounds nothing like it.
 pub fn vocabulary() -> Vec<String> {
     let path = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
