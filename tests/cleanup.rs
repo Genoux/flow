@@ -58,6 +58,17 @@ const CASES: &[Case] = &[
         required: &["deployment", "nine"],
         max_words: 10,
     },
+    // The recogniser handles 25 languages, so cleanup must not quietly turn
+    // dictation into English. Also exercises multi-byte output: an accented
+    // character can span two tokens and only survives if the decoder holds
+    // state between them.
+    Case {
+        name: "keeps the speaker's language and accents",
+        raw: "euh alors je pense qu'on peut peut livrer la la fonctionnalité vendredi",
+        forbidden: &["euh", "la la", "friday", "deliver"],
+        required: &["fonctionnalité", "vendredi"],
+        max_words: 15,
+    },
     // Verbatim from the user asking for this feature - a real malformed
     // dictation, with a meaning a human can state but the words never do.
     //
