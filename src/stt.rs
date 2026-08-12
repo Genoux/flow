@@ -7,7 +7,7 @@ pub fn model_dir() -> PathBuf {
     data_home().join("flow/models/tdt")
 }
 
-fn data_home() -> PathBuf {
+pub fn data_home() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()).join(".local/share"))
