@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod cleanup;
 pub mod duck;
 pub mod hotkey;
 pub mod inject;

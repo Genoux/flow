@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use flow::{audio, duck, hotkey, inject, ipc, stt, wav};
+use flow::{audio, cleanup, duck, hotkey, inject, ipc, stt, wav};
 use std::time::{Duration, Instant};
 
 /// Value following `name`, e.g. `--duck 20`.
@@ -39,12 +39,31 @@ fn main() -> Result<()> {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
         // --no-ptt leaves Right Ctrl alone so a compositor bind is the only
         // trigger, which keeps A/B comparisons against another tool clean.
-        Some("daemon") => daemon(
-            &mut engine,
-            terminal,
-            !args.iter().any(|a| a == "--no-ptt"),
-            flag_value(&args, "--duck"),
-        ),
+        Some("daemon") => {
+            // Cleanup is the point of the tool, so it is on unless the model is
+            // missing or --raw is passed for an A/B against the raw transcript.
+            let cleaner = if args.iter().any(|a| a == "--raw") {
+                None
+            } else {
+                match cleanup::Cleaner::load(&cleanup::model_path(), cleanup::vocabulary()) {
+                    Ok(cleaner) => {
+                        cleaner.warm_up();
+                        Some(cleaner)
+                    }
+                    Err(err) => {
+                        eprintln!("cleanup disabled: {err}");
+                        None
+                    }
+                }
+            };
+            daemon(
+                &mut engine,
+                terminal,
+                !args.iter().any(|a| a == "--no-ptt"),
+                flag_value(&args, "--duck"),
+                cleaner,
+            )
+        }
         other => {
             let seconds = other.and_then(|s| s.parse().ok()).unwrap_or(5);
             record_once(&mut engine, seconds)
@@ -54,7 +73,13 @@ fn main() -> Result<()> {
 
 /// Two ways in: hold the push-to-talk key, or a compositor bind pair calling
 /// `flow start` / `flow stop`, since a bind fires on press and cannot hold.
-fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool, duck: Option<u32>) -> Result<()> {
+fn daemon(
+    engine: &mut stt::Stt,
+    terminal: bool,
+    ptt: bool,
+    duck: Option<u32>,
+    cleaner: Option<cleanup::Cleaner>,
+) -> Result<()> {
     let device = audio::open_device()?;
     let mut injector = inject::Injector::new()?;
 
@@ -120,9 +145,10 @@ fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool, duck: Option<u32>) -
         };
 
         if let Some(samples) = finished
-            && let Err(err) = handle(engine, &mut injector, samples, terminal) {
-                eprintln!("{err}");
-            }
+            && let Err(err) = handle(engine, &mut injector, samples, terminal, cleaner.as_ref())
+        {
+            eprintln!("{err}");
+        }
     }
 
     ipc::remove_pid();
@@ -167,6 +193,7 @@ fn handle(
     injector: &mut inject::Injector,
     samples: Vec<f32>,
     terminal: bool,
+    cleaner: Option<&cleanup::Cleaner>,
 ) -> Result<()> {
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
     let peak = audio::peak(&samples);
@@ -190,11 +217,35 @@ fn handle(
         return Ok(());
     }
 
-    injector.inject(&text, terminal)?;
-    eprintln!(
-        "{spoken:.1}s {level} -> {transcribed:?} stt, {:?} total: {text}",
-        started.elapsed()
-    );
+    // A cleanup failure must never cost the user their words, so the raw
+    // transcript stands in whenever the model errors or returns nothing.
+    let final_text = match cleaner {
+        Some(cleaner) => match cleaner.clean(&text) {
+            Ok(cleaned) if !cleaned.trim().is_empty() => cleaned,
+            Ok(_) => {
+                eprintln!("cleanup returned nothing, using raw transcript");
+                text.clone()
+            }
+            Err(err) => {
+                eprintln!("cleanup failed ({err}), using raw transcript");
+                text.clone()
+            }
+        },
+        None => text.clone(),
+    };
+    let cleaned_at = started.elapsed();
+
+    injector.inject(&final_text, terminal)?;
+
+    if final_text == text {
+        eprintln!("{spoken:.1}s {level} -> {transcribed:?} stt, {:?} total: {final_text}", started.elapsed());
+    } else {
+        eprintln!(
+            "{spoken:.1}s {level} -> {transcribed:?} stt, {:?} clean, {:?} total\n  raw:   {text}\n  clean: {final_text}",
+            cleaned_at - transcribed,
+            started.elapsed()
+        );
+    }
     Ok(())
 }
 
