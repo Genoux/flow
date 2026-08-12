@@ -1,11 +1,16 @@
 use anyhow::{bail, Result};
-use flow::{audio, hotkey, inject, stt, wav};
+use flow::{audio, hotkey, inject, ipc, stt, wav};
 use std::time::{Duration, Instant};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let terminal = args.iter().any(|a| a == "--terminal");
+
+    // Fires at the running daemon; nothing else here needs to load.
+    if args.first().map(String::as_str) == Some("toggle") {
+        return ipc::send_toggle();
+    }
 
     // Isolates injection from the mic and the model, so a silent uinput failure
     // is distinguishable from a transcription problem.
@@ -24,7 +29,9 @@ fn main() -> Result<()> {
 
     match args.first().map(String::as_str) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
-        Some("daemon") => daemon(&mut engine, terminal),
+        // --no-ptt leaves Right Ctrl alone so a compositor bind is the only
+        // trigger, which keeps A/B comparisons against another tool clean.
+        Some("daemon") => daemon(&mut engine, terminal, !args.iter().any(|a| a == "--no-ptt")),
         other => {
             let seconds = other.and_then(|s| s.parse().ok()).unwrap_or(5);
             record_once(&mut engine, seconds)
@@ -32,41 +39,81 @@ fn main() -> Result<()> {
     }
 }
 
-/// Hold the push-to-talk key, speak, release. Text lands in the focused window.
-fn daemon(engine: &mut stt::Stt, terminal: bool) -> Result<()> {
+/// Two ways in: hold the push-to-talk key, or send SIGUSR1 (`flow toggle`) from
+/// a compositor keybind, which fires on press and so must toggle rather than hold.
+fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool) -> Result<()> {
     let device = audio::open_device()?;
-    let mut listener = hotkey::Listener::new()?;
     let mut injector = inject::Injector::new()?;
 
-    eprintln!("\nready - hold {:?} and speak\n", hotkey::PTT);
+    let (events, incoming) = std::sync::mpsc::channel();
+    if ptt {
+        hotkey::spawn(events.clone())?;
+    }
 
-    let mut recorder = None;
-    while let Some(event) = listener.next_event() {
-        match event {
-            hotkey::Event::Pressed => match audio::Recorder::start(&device) {
-                Ok(started) => recorder = Some(started),
-                Err(err) => eprintln!("could not open mic: {err}"),
+    let signals = events.clone();
+    let mut listener = signal_hook::iterator::Signals::new([ipc::TOGGLE])?;
+    std::thread::spawn(move || {
+        for _ in listener.forever() {
+            if signals.send(hotkey::Event::Toggle).is_err() {
+                return;
+            }
+        }
+    });
+
+    ipc::write_pid()?;
+    eprintln!(
+        "\nready - {}toggle with `flow toggle`\n",
+        if ptt {
+            format!("hold {:?}, or ", hotkey::PTT)
+        } else {
+            String::new()
+        }
+    );
+
+    let mut recorder: Option<audio::Recorder> = None;
+    while let Ok(event) = incoming.recv() {
+        // Recording ends on release, on a second toggle, or never for a cancel.
+        let finished = match event {
+            hotkey::Event::Pressed => {
+                start(&device, &mut recorder);
+                None
+            }
+            hotkey::Event::Toggle => match recorder.take() {
+                Some(active) => Some(active.stop()),
+                None => {
+                    start(&device, &mut recorder);
+                    None
+                }
             },
-
             // A shortcut, not dictation - throw the audio away.
             hotkey::Event::Cancelled => {
                 recorder.take();
+                None
             }
+            hotkey::Event::Released { held } => recorder
+                .take()
+                .map(|active| active.stop())
+                .filter(|_| hotkey::was_long_enough(held)),
+        };
 
-            hotkey::Event::Released { held } => {
-                let Some(active) = recorder.take() else { continue };
-                let samples = active.stop();
-
-                if !hotkey::was_long_enough(held) {
-                    continue;
-                }
-                if let Err(err) = handle(engine, &mut injector, samples, terminal) {
-                    eprintln!("{err}");
-                }
+        if let Some(samples) = finished
+            && let Err(err) = handle(engine, &mut injector, samples, terminal) {
+                eprintln!("{err}");
             }
-        }
     }
+
+    ipc::remove_pid();
     Ok(())
+}
+
+fn start(device: &cpal::Device, slot: &mut Option<audio::Recorder>) {
+    match audio::Recorder::start(device) {
+        Ok(started) => {
+            eprintln!("recording...");
+            *slot = Some(started);
+        }
+        Err(err) => eprintln!("could not open mic: {err}"),
+    }
 }
 
 fn handle(
@@ -76,19 +123,20 @@ fn handle(
     terminal: bool,
 ) -> Result<()> {
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
+    let peak = audio::peak(&samples);
     let started = Instant::now();
 
     let text = engine.transcribe(samples)?;
     let transcribed = started.elapsed();
 
     if text.is_empty() {
-        eprintln!("({spoken:.1}s, nothing recognised)");
+        eprintln!("({spoken:.1}s, peak {peak:.3}, nothing recognised)");
         return Ok(());
     }
 
     injector.inject(&text, terminal)?;
     eprintln!(
-        "{spoken:.1}s -> {transcribed:?} stt, {:?} total: {text}",
+        "{spoken:.1}s peak {peak:.3} -> {transcribed:?} stt, {:?} total: {text}",
         started.elapsed()
     );
     Ok(())
