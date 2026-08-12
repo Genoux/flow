@@ -1,0 +1,10 @@
+# Words the recogniser gets wrong, spelled the way you want them written.
+# One per line. Lines starting with # are ignored.
+#
+# Worth adding: product and tool names, colleagues' names, project codenames,
+# domain jargon - anything the recogniser splits or hears as a common word.
+#
+# It fixes terms that sound close to what you said:
+#   "hyper land" -> Hyprland,  "pipe wire" -> PipeWire,  "nvm" -> Neovim
+# It cannot fix a word that sounds nothing like the target, so a name heard as
+# an unrelated everyday word will need correcting by hand.
