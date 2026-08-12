@@ -8,8 +8,10 @@ fn main() -> Result<()> {
     let terminal = args.iter().any(|a| a == "--terminal");
 
     // Fires at the running daemon; nothing else here needs to load.
-    if args.first().map(String::as_str) == Some("toggle") {
-        return ipc::send_toggle();
+    match args.first().map(String::as_str) {
+        Some("start") => return ipc::send(ipc::START),
+        Some("stop") => return ipc::send(ipc::STOP),
+        _ => {}
     }
 
     // Isolates injection from the mic and the model, so a silent uinput failure
@@ -51,10 +53,15 @@ fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool) -> Result<()> {
     }
 
     let signals = events.clone();
-    let mut listener = signal_hook::iterator::Signals::new([ipc::TOGGLE])?;
+    let mut listener = signal_hook::iterator::Signals::new([ipc::START, ipc::STOP])?;
     std::thread::spawn(move || {
-        for _ in listener.forever() {
-            if signals.send(hotkey::Event::Toggle).is_err() {
+        for signal in listener.forever() {
+            let event = if signal == ipc::START {
+                hotkey::Event::Start
+            } else {
+                hotkey::Event::Stop
+            };
+            if signals.send(event).is_err() {
                 return;
             }
         }
@@ -62,7 +69,7 @@ fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool) -> Result<()> {
 
     ipc::write_pid()?;
     eprintln!(
-        "\nready - {}toggle with `flow toggle`\n",
+        "\nready - {}hold a key bound to `flow start` / `flow stop`\n",
         if ptt {
             format!("hold {:?}, or ", hotkey::PTT)
         } else {
@@ -78,13 +85,15 @@ fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool) -> Result<()> {
                 start(&device, &mut recorder);
                 None
             }
-            hotkey::Event::Toggle => match recorder.take() {
-                Some(active) => Some(active.stop()),
-                None => {
+            // Idempotent: a repeated start keeps the running capture rather
+            // than restarting it and losing what was already said.
+            hotkey::Event::Start => {
+                if recorder.is_none() {
                     start(&device, &mut recorder);
-                    None
                 }
-            },
+                None
+            }
+            hotkey::Event::Stop => recorder.take().map(|active| active.stop()),
             // A shortcut, not dictation - throw the audio away.
             hotkey::Event::Cancelled => {
                 recorder.take();
@@ -124,19 +133,29 @@ fn handle(
 ) -> Result<()> {
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
     let peak = audio::peak(&samples);
-    let started = Instant::now();
+    let rms = audio::rms(&samples);
+    let level = format!("peak {peak:.3} rms {rms:.4}");
 
+    // Only catches a dead capture. Room tone still transcribes to confident
+    // nonsense ("Uh", "See no lay no") and still gets pasted - see SILENCE_RMS
+    // for why that needs VAD rather than a louder threshold.
+    if rms < audio::SILENCE_RMS {
+        eprintln!("({spoken:.1}s, {level}, no signal - skipped)");
+        return Ok(());
+    }
+
+    let started = Instant::now();
     let text = engine.transcribe(samples)?;
     let transcribed = started.elapsed();
 
     if text.is_empty() {
-        eprintln!("({spoken:.1}s, peak {peak:.3}, nothing recognised)");
+        eprintln!("({spoken:.1}s, {level}, nothing recognised)");
         return Ok(());
     }
 
     injector.inject(&text, terminal)?;
     eprintln!(
-        "{spoken:.1}s peak {peak:.3} -> {transcribed:?} stt, {:?} total: {text}",
+        "{spoken:.1}s {level} -> {transcribed:?} stt, {:?} total: {text}",
         started.elapsed()
     );
     Ok(())

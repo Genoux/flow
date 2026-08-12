@@ -79,3 +79,25 @@ pub fn record(device: &Device, duration: Duration) -> Result<Vec<f32>> {
 pub fn peak(samples: &[f32]) -> f32 {
     samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()))
 }
+
+/// Root-mean-square level. Preferred over peak for deciding whether anything
+/// was said: peak reacts to a single transient (a key click, a door), while RMS
+/// reflects sustained energy. Measured room tone peaked at 0.140 yet still
+/// transcribed to nonsense, so peak alone cannot gate.
+pub fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = samples.iter().map(|s| (*s as f64) * (*s as f64)).sum();
+    (sum / samples.len() as f64).sqrt() as f32
+}
+
+/// Catches a dead capture only - a muted, disconnected or wrong-source mic.
+///
+/// This is deliberately NOT a noise gate, and no amplitude threshold can be
+/// one here: measured room tone on this machine is rms 0.046, while the
+/// quietest one-second window of real speech (tests/fixtures/jfk.wav) is
+/// 0.0155. Noise sits three times above quiet speech, so any threshold that
+/// passes a quiet talker also passes silence-transcribed-as-nonsense.
+/// Separating those needs Silero VAD, not a level check.
+pub const SILENCE_RMS: f32 = 0.005;
