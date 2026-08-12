@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use evdev::{Device, EventType, KeyCode};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Sender};
 use std::time::{Duration, Instant};
 
 /// Push-to-talk key. Chosen because keyd leaves Ctrl untouched on this machine
@@ -30,6 +30,10 @@ pub enum Event {
     /// Another key arrived while PTT was down, so this was a shortcut, not dictation.
     Cancelled,
     Released { held: Duration },
+    /// Start or stop, from a SIGUSR1 sent by `flow toggle`. Used when a
+    /// compositor keybind drives dictation, since a bind fires on press and
+    /// cannot express hold-to-talk.
+    Toggle,
 }
 
 /// Every keyboard-capable device. A device grabbed by a remapper (keyd) delivers
@@ -87,61 +91,53 @@ impl PttState {
     }
 }
 
-pub struct Listener {
-    keys: Receiver<(KeyCode, bool)>,
-    state: PttState,
-}
+/// Spawn a reader per keyboard, feeding push-to-talk transitions into `events`.
+/// Shares the channel with the signal handler so the daemon has one input stream.
+pub fn spawn(events: Sender<Event>) -> Result<()> {
+    let devices = keyboards();
+    if devices.is_empty() {
+        return Err(anyhow!(
+            "no readable keyboard exposes {PTT:?} - is this user in the 'input' group?"
+        ));
+    }
 
-impl Listener {
-    pub fn new() -> Result<Self> {
-        let devices = keyboards();
-        if devices.is_empty() {
-            return Err(anyhow!(
-                "no readable keyboard exposes {PTT:?} - is this user in the 'input' group?"
-            ));
-        }
+    for (path, device) in &devices {
+        eprintln!("watching {} ({})", path.display(), device.name().unwrap_or("?"));
+    }
 
-        for (path, device) in &devices {
-            eprintln!("watching {} ({})", path.display(), device.name().unwrap_or("?"));
-        }
-
-        let (tx, keys) = channel();
-        for (_, mut device) in devices {
-            let tx = tx.clone();
-            std::thread::spawn(move || loop {
-                let Ok(events) = device.fetch_events() else { return };
-                for event in events {
-                    if event.event_type() != EventType::KEY {
-                        continue;
-                    }
-                    // 2 is autorepeat, which says nothing new about hold state.
-                    let pressed = match event.value() {
-                        0 => false,
-                        1 => true,
-                        _ => continue,
-                    };
-                    if tx.send((KeyCode(event.code()), pressed)).is_err() {
-                        return;
-                    }
+    let (raw_tx, raw_rx) = channel();
+    for (_, mut device) in devices {
+        let raw_tx = raw_tx.clone();
+        std::thread::spawn(move || loop {
+            let Ok(batch) = device.fetch_events() else { return };
+            for event in batch {
+                if event.event_type() != EventType::KEY {
+                    continue;
                 }
-            });
-        }
-
-        Ok(Self {
-            keys,
-            state: PttState::default(),
-        })
-    }
-
-    /// Blocks until the key stream produces a meaningful transition.
-    pub fn next_event(&mut self) -> Option<Event> {
-        while let Ok((key, pressed)) = self.keys.recv() {
-            if let Some(event) = self.state.apply(key, pressed) {
-                return Some(event);
+                // 2 is autorepeat, which says nothing new about hold state.
+                let pressed = match event.value() {
+                    0 => false,
+                    1 => true,
+                    _ => continue,
+                };
+                if raw_tx.send((KeyCode(event.code()), pressed)).is_err() {
+                    return;
+                }
             }
-        }
-        None
+        });
     }
+
+    std::thread::spawn(move || {
+        let mut state = PttState::default();
+        while let Ok((key, pressed)) = raw_rx.recv() {
+            if let Some(event) = state.apply(key, pressed)
+                && events.send(event).is_err() {
+                    return;
+                }
+        }
+    });
+
+    Ok(())
 }
 
 pub fn was_long_enough(held: Duration) -> bool {

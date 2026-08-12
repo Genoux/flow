@@ -1,0 +1,17 @@
+[Unit]
+Description=Flow voice dictation
+# Wayland clipboard and the uinput uaccess ACL both require the graphical
+# session, so the daemon must not outlive it.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# --no-ptt: the Hyprland bind is the only trigger while A/B testing against
+# another dictation tool, so Right Ctrl stays inert.
+ExecStart=%h/Desktop/@john/flow/target/release/flow daemon --no-ptt
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
