@@ -9,7 +9,10 @@ After=graphical-session.target
 Type=simple
 # --no-ptt: the Hyprland bind is the only trigger while A/B testing against
 # another dictation tool, so Right Ctrl stays inert.
-ExecStart=%h/Desktop/@john/flow/target/release/flow daemon --no-ptt
+# --duck 50: halve other apps while recording. Relative to each stream, so a
+# quiet one is not raised. Low enough to keep speakers out of the microphone,
+# high enough that music stays audible rather than sounding muted.
+ExecStart=%h/Desktop/@john/flow/target/release/flow daemon --no-ptt --duck 50
 Restart=on-failure
 RestartSec=2
 

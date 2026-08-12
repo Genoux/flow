@@ -455,6 +455,7 @@ dependencies = [
  "hound",
  "libc",
  "parakeet-rs",
+ "serde_json",
  "signal-hook",
  "wl-clipboard-rs",
 ]

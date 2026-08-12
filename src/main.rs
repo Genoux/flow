@@ -1,6 +1,12 @@
 use anyhow::{bail, Result};
-use flow::{audio, hotkey, inject, ipc, stt, wav};
+use flow::{audio, duck, hotkey, inject, ipc, stt, wav};
 use std::time::{Duration, Instant};
+
+/// Value following `name`, e.g. `--duck 20`.
+fn flag_value(args: &[String], name: &str) -> Option<u32> {
+    let at = args.iter().position(|a| a == name)?;
+    args.get(at + 1)?.parse().ok()
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -33,7 +39,12 @@ fn main() -> Result<()> {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
         // --no-ptt leaves Right Ctrl alone so a compositor bind is the only
         // trigger, which keeps A/B comparisons against another tool clean.
-        Some("daemon") => daemon(&mut engine, terminal, !args.iter().any(|a| a == "--no-ptt")),
+        Some("daemon") => daemon(
+            &mut engine,
+            terminal,
+            !args.iter().any(|a| a == "--no-ptt"),
+            flag_value(&args, "--duck"),
+        ),
         other => {
             let seconds = other.and_then(|s| s.parse().ok()).unwrap_or(5);
             record_once(&mut engine, seconds)
@@ -41,11 +52,13 @@ fn main() -> Result<()> {
     }
 }
 
-/// Two ways in: hold the push-to-talk key, or send SIGUSR1 (`flow toggle`) from
-/// a compositor keybind, which fires on press and so must toggle rather than hold.
-fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool) -> Result<()> {
+/// Two ways in: hold the push-to-talk key, or a compositor bind pair calling
+/// `flow start` / `flow stop`, since a bind fires on press and cannot hold.
+fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool, duck: Option<u32>) -> Result<()> {
     let device = audio::open_device()?;
     let mut injector = inject::Injector::new()?;
+
+    duck::restore_stale();
 
     let (events, incoming) = std::sync::mpsc::channel();
     if ptt {
@@ -77,31 +90,32 @@ fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool) -> Result<()> {
         }
     );
 
-    let mut recorder: Option<audio::Recorder> = None;
+    let mut session: Option<Session> = None;
     while let Ok(event) = incoming.recv() {
-        // Recording ends on release, on a second toggle, or never for a cancel.
+        // Ending a session drops its ducker, so other apps come back to volume
+        // as soon as recording stops rather than after transcription.
         let finished = match event {
             hotkey::Event::Pressed => {
-                start(&device, &mut recorder);
+                start(&device, &mut session, duck);
                 None
             }
             // Idempotent: a repeated start keeps the running capture rather
             // than restarting it and losing what was already said.
             hotkey::Event::Start => {
-                if recorder.is_none() {
-                    start(&device, &mut recorder);
+                if session.is_none() {
+                    start(&device, &mut session, duck);
                 }
                 None
             }
-            hotkey::Event::Stop => recorder.take().map(|active| active.stop()),
+            hotkey::Event::Stop => session.take().map(Session::finish),
             // A shortcut, not dictation - throw the audio away.
             hotkey::Event::Cancelled => {
-                recorder.take();
+                session.take();
                 None
             }
-            hotkey::Event::Released { held } => recorder
+            hotkey::Event::Released { held } => session
                 .take()
-                .map(|active| active.stop())
+                .map(Session::finish)
                 .filter(|_| hotkey::was_long_enough(held)),
         };
 
@@ -115,11 +129,34 @@ fn daemon(engine: &mut stt::Stt, terminal: bool, ptt: bool) -> Result<()> {
     Ok(())
 }
 
-fn start(device: &cpal::Device, slot: &mut Option<audio::Recorder>) {
+/// A recording in progress. Holding the ducker here ties the volume of other
+/// apps to the life of the capture, including on cancel.
+struct Session {
+    recorder: audio::Recorder,
+    ducker: Option<duck::Ducker>,
+}
+
+impl Session {
+    fn finish(self) -> Vec<f32> {
+        let Self { recorder, ducker } = self;
+        let samples = recorder.stop();
+        drop(ducker);
+        samples
+    }
+}
+
+fn start(device: &cpal::Device, slot: &mut Option<Session>, duck: Option<u32>) {
     match audio::Recorder::start(device) {
-        Ok(started) => {
+        Ok(recorder) => {
+            let ducker = duck.and_then(|percent| match duck::Ducker::duck(percent) {
+                Ok(ducker) => Some(ducker),
+                Err(err) => {
+                    eprintln!("could not duck other apps: {err}");
+                    None
+                }
+            });
             eprintln!("recording...");
-            *slot = Some(started);
+            *slot = Some(Session { recorder, ducker });
         }
         Err(err) => eprintln!("could not open mic: {err}"),
     }
