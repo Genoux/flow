@@ -30,10 +30,11 @@ pub enum Event {
     /// Another key arrived while PTT was down, so this was a shortcut, not dictation.
     Cancelled,
     Released { held: Duration },
-    /// Start or stop, from a SIGUSR1 sent by `flow toggle`. Used when a
-    /// compositor keybind drives dictation, since a bind fires on press and
-    /// cannot express hold-to-talk.
-    Toggle,
+    /// From `flow start` / `flow stop`, so a compositor press/release bind pair
+    /// can drive hold-to-talk without Flow reading the keyboard itself.
+    /// Idempotent: repeats of the current state are ignored.
+    Start,
+    Stop,
 }
 
 /// Every keyboard-capable device. A device grabbed by a remapper (keyd) delivers
