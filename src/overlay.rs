@@ -24,12 +24,12 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 
 use crate::audio::Monitor;
 
-const WIDTH: u32 = 96;
+const WIDTH: u32 = 116;
 const HEIGHT: u32 = 40;
 /// Clear of the usual bottom bar without sitting in the middle of the screen.
 const MARGIN_BOTTOM: i32 = 96;
 
-const BAR_COUNT: usize = 5;
+const BAR_COUNT: usize = 7;
 const BAR_WIDTH: f32 = 5.0;
 const BAR_GAP: f32 = 5.0;
 /// Equal to the bar width, so silence rests as a row of dots rather than slivers.
@@ -40,13 +40,26 @@ const BAR_MAX: f32 = 26.0;
 /// rate and not a sampling interval.
 const FRAME: Duration = Duration::from_millis(16);
 
-const ISLAND: (f32, f32, f32) = (0.055, 0.055, 0.066);
-/// Translucent enough for a compositor blur to read through it. Hyprland needs
-/// `layerrule = blur, flow` to frost it; without that rule this is just tinted
-/// glass over the desktop, which still looks deliberate.
-const ISLAND_ALPHA: f32 = 0.35;
+/// A cool dark tint rather than near-black: glass over a dark desktop needs some
+/// colour of its own or the blur behind it is all there is to see.
+const ISLAND: (f32, f32, f32) = (0.08, 0.09, 0.115);
+
+/// The body thickens downwards. One flat alpha was the whole reason the island
+/// read as painted metal instead of glass - a pane catches light along its top
+/// edge and gathers density towards the bottom, and nothing about a uniform wash
+/// says which way is up.
+///
+/// Both ends stay clear of the `ignore_alpha = 0.1` in Hyprland's layer rule,
+/// below which it stops blurring what is behind the surface - the top would go
+/// from frosted to a hole in the screen.
+const ISLAND_TOP_ALPHA: f32 = 0.22;
+const ISLAND_BOTTOM_ALPHA: f32 = 0.46;
+
+/// The rim, brightest where the light would strike it and almost gone underneath.
+/// This is what actually reads as glass; the fill only supplies the depth.
 const EDGE: (f32, f32, f32) = (1.0, 1.0, 1.0);
-const EDGE_ALPHA: f32 = 0.25;
+const EDGE_TOP_ALPHA: f32 = 0.50;
+const EDGE_BOTTOM_ALPHA: f32 = 0.10;
 const BAR: (f32, f32, f32) = (1.0, 1.0, 1.0);
 const BAR_ALPHA: f32 = 0.92;
 /// A dark rim drawn under each bar. The island is glass, so whatever is behind
@@ -82,8 +95,14 @@ pub const NOISE_FLOOR: f32 = 0.005;
 /// scale can show both ends at once: tuned for the loud end, everything quiet
 /// collapses onto the floor. That is exactly what pinned the outer bars until
 /// the voice was raised.
-const FLOOR_DB: f32 = -72.0;
-const CEILING_DB: f32 = -24.0;
+///
+/// Narrower than the range speech actually covers, on purpose: the window is what
+/// converts loudness into movement, and a window wide enough to keep every band
+/// inside its thresholds leaves the bars sitting still. Chosen by searching this
+/// pair and BAND_GAIN together for the most movement that still satisfies
+/// tests/spectrum.rs - see tests/calibrate.rs.
+const FLOOR_DB: f32 = -78.0;
+const CEILING_DB: f32 = -30.0;
 
 /// Height of one bar, 0.0 to 1.0, from one band's amplitude.
 pub fn band_fraction(amplitude: f32) -> f32 {
@@ -101,23 +120,38 @@ pub const WINDOW: usize = 512;
 
 /// How many frequency bands the voice is split into. Fewer than there are
 /// bars, because the island mirrors them about its centre.
-pub const BAND_COUNT: usize = 3;
+pub const BAND_COUNT: usize = 4;
 
-/// Edges of the bands in Hz, low to high: the fundamental and chest of the
-/// voice, the formants that carry the vowels, then the consonants and
-/// sibilance up top.
-const BANDS: [(f32, f32); BAND_COUNT] = [(80.0, 400.0), (400.0, 1500.0), (1500.0, 6000.0)];
+/// What each bar listens to, in Hz. Band 0 is the whole voice rather than a slice
+/// of it, and deliberately overlaps the other three.
+///
+/// It draws the centre bar, and the centre has to stay up while someone is
+/// speaking. A narrow low band cannot do that: the fundamental is simply absent
+/// during an unvoiced consonant, so an "s" emptied the middle of the island and
+/// left a hole between the tall bars either side. No gain repairs that, because
+/// there is no energy there to amplify. The broadband level is the one measure
+/// that is present for every sound a voice makes.
+///
+/// The rest split the range that carries the vowels and the sibilance, so the
+/// bars still move with what is being said rather than all together.
+const BANDS: [(f32, f32); BAND_COUNT] =
+    [(80.0, 6500.0), (300.0, 900.0), (900.0, 2500.0), (2500.0, 6500.0)];
 
 /// Which band each bar draws, left to right. The lowest band sits in the middle
 /// and frequency climbs outward, so the island moves out from its centre rather
 /// than piling up on the left - speech energy lives at the bottom of the range,
 /// and laying the bands out in order put all of it at one end.
-const MIRROR: [usize; BAR_COUNT] = [2, 1, 0, 1, 2];
+const MIRROR: [usize; BAR_COUNT] = [3, 2, 1, 0, 1, 2, 3];
 
-/// Per-band gain. Speech energy falls away steeply with frequency, so without
-/// this the outer bars never leave the floor. Calibrated against
-/// tests/fixtures/jfk.wav - see tests/spectrum.rs.
-const BAND_GAIN: [f32; BAND_COUNT] = [1.0, 1.0, 4.0];
+/// Per-band gain, so the island crests in the middle and every bar carries part
+/// of the picture. Not a loudness correction: measured on real speech the first
+/// formant is the loudest band of the four, and left alone it would put the tall
+/// bars either side of centre and leave a valley where the crest belongs.
+///
+/// Calibrated against tests/fixtures/jfk.wav - see tests/spectrum.rs and
+/// tests/calibrate.rs. That recording is from 1961 and thin at both extremes, so
+/// re-measure against this microphone before trusting bands 0 and 3.
+const BAND_GAIN: [f32; BAND_COUNT] = [0.9, 0.35, 1.0, 4.5];
 
 /// Sample rate the band edges are expressed against.
 const SAMPLE_RATE: f32 = 16_000.0;
@@ -374,12 +408,28 @@ impl Canvas {
         colour: (f32, f32, f32),
         alpha: f32,
     ) {
+        self.rounded_rect_shaded(centre, half, radius, colour, alpha, alpha);
+    }
+
+    /// The same shape, with the alpha ramping from `top` at its highest row to
+    /// `bottom` at its lowest.
+    fn rounded_rect_shaded(
+        &mut self,
+        centre: (f32, f32),
+        half: (f32, f32),
+        radius: f32,
+        colour: (f32, f32, f32),
+        top: f32,
+        bottom: f32,
+    ) {
         let left = (centre.0 - half.0 - 1.0).floor().max(0.0) as usize;
         let right = ((centre.0 + half.0 + 1.0).ceil() as usize).min(self.width);
-        let top = (centre.1 - half.1 - 1.0).floor().max(0.0) as usize;
-        let bottom = ((centre.1 + half.1 + 1.0).ceil() as usize).min(self.height);
+        let first_row = (centre.1 - half.1 - 1.0).floor().max(0.0) as usize;
+        let last_row = ((centre.1 + half.1 + 1.0).ceil() as usize).min(self.height);
 
-        for y in top..bottom {
+        for y in first_row..last_row {
+            let down = ((y as f32 + 0.5 - (centre.1 - half.1)) / (half.1 * 2.0)).clamp(0.0, 1.0);
+            let alpha = top + (bottom - top) * down;
             for x in left..right {
                 let point = (x as f32 + 0.5, y as f32 + 0.5);
                 // Distance to coverage across one pixel is the whole anti-alias.
@@ -402,13 +452,21 @@ fn render(canvas: &mut Canvas, bands: &[f32; BAND_COUNT], seconds: f32, transcri
     let corner = height / 2.0;
 
     // The hairline is the outer rectangle showing past the fill by one pixel.
-    canvas.rounded_rect(centre, (width / 2.0, height / 2.0), corner, EDGE, EDGE_ALPHA);
-    canvas.rounded_rect(
+    canvas.rounded_rect_shaded(
+        centre,
+        (width / 2.0, height / 2.0),
+        corner,
+        EDGE,
+        EDGE_TOP_ALPHA,
+        EDGE_BOTTOM_ALPHA,
+    );
+    canvas.rounded_rect_shaded(
         centre,
         (width / 2.0 - scale, height / 2.0 - scale),
         corner - scale,
         ISLAND,
-        ISLAND_ALPHA,
+        ISLAND_TOP_ALPHA,
+        ISLAND_BOTTOM_ALPHA,
     );
 
     let pitch = (BAR_WIDTH + BAR_GAP) * scale;

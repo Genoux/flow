@@ -6,24 +6,34 @@ fn tone(hz: f32, amplitude: f32) -> Vec<f32> {
         .collect()
 }
 
-/// The bars are frequency bands, so a pure tone must light its own band and
-/// leave the rest alone. If the bin arithmetic drifts, the island stops meaning
+/// Bands 1 to 3 are frequency slices, so a pure tone must light its own and leave
+/// its neighbours alone. If the bin arithmetic drifts the island stops meaning
 /// anything - it would still wobble, just not with the voice.
 #[test]
-fn a_tone_lights_only_its_own_band() {
+fn a_tone_lights_only_its_own_slice() {
     let mut analyzer = Analyzer::new();
-    for (expected, hz) in [200.0, 900.0, 4000.0].iter().enumerate() {
+    for (slice, hz) in [500.0, 1500.0, 4000.0].iter().enumerate() {
+        let expected = slice + 1;
         let bands = analyzer.bands(&tone(*hz, 0.2));
-        let loudest = (0..BAND_COUNT).max_by(|a, b| bands[*a].total_cmp(&bands[*b])).unwrap();
+        let loudest = (1..BAND_COUNT).max_by(|a, b| bands[*a].total_cmp(&bands[*b])).unwrap();
         assert_eq!(loudest, expected, "{hz}Hz lit band {loudest}: {bands:?}");
 
-        let leaked = bands
-            .iter()
-            .enumerate()
-            .filter(|(band, _)| *band != expected)
-            .map(|(_, height)| *height)
+        let leaked = (1..BAND_COUNT)
+            .filter(|band| *band != expected)
+            .map(|band| bands[band])
             .fold(0.0f32, f32::max);
         assert!(leaked < 0.05, "{hz}Hz leaked {leaked} into a neighbour: {bands:?}");
+    }
+}
+
+/// Band 0 is the broadband level and draws the centre bar, so unlike the slices it
+/// has to answer every sound - that is the whole reason it is not a slice.
+#[test]
+fn the_centre_answers_every_frequency() {
+    let mut analyzer = Analyzer::new();
+    for hz in [120.0, 500.0, 1500.0, 4000.0, 6000.0] {
+        let bands = analyzer.bands(&tone(hz, 0.2));
+        assert!(bands[0] > 0.2, "{hz}Hz left the centre bar at {}", bands[0]);
     }
 }
 
@@ -73,7 +83,7 @@ fn every_band_carries_part_of_real_speech() {
     // the island shows a valley where its crest belongs.
     let means: Vec<f32> = (0..BAND_COUNT).map(|b| totals[b] / voiced as f32).collect();
     assert!(
-        means[0] > means[1] && means[1] > means[2],
+        means.windows(2).all(|pair| pair[0] > pair[1]),
         "the island does not crest in the middle: {means:?}"
     );
 
