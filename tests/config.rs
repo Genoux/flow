@@ -107,6 +107,21 @@ fn duck_is_a_percentage() {
     assert!(Config::parse("duck = 101\n").is_err());
 }
 
+/// The same value has to mean the same thing from either entry point. `--duck
+/// 200` used to sail past the check the file enforces, and since ducking clamps
+/// to 100 - which is "leave every stream where it is" - the typo silently turned
+/// ducking off instead of turning it up.
+#[test]
+fn an_out_of_range_duck_flag_does_not_silently_disable_ducking() {
+    let from_flag = Config::default().overridden_by(&["--duck".into(), "200".into()]);
+    assert!(from_flag.duck <= 100, "flag kept {}", from_flag.duck);
+    assert_eq!(
+        from_flag.ducking(),
+        Some(100),
+        "a too-large value should clamp to full ducking, never to none"
+    );
+}
+
 #[test]
 fn a_line_without_a_value_is_an_error() {
     assert!(Config::parse("push_to_talk\n").is_err());
