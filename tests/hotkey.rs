@@ -26,11 +26,33 @@ fn the_default_is_super_shift_d() {
     assert_eq!(chord.to_string(), "super+shift+d");
 }
 
-/// A bare modifier gets tapped by accident, so those holds have a floor. A
-/// deliberate combination does not - discarding a quick intentional tap would
-/// silently eat the dictation.
+/// Every binding needs a floor, chords included. Exempting them meant a
+/// frustrated double-tap shipped whatever the recogniser made of 200ms of
+/// pre-roll, which is where a run of stray "Yeah." and "Mm." came from.
+///
+/// The numbers are the measured gap: stray taps held for up to 400ms, real
+/// dictations for 2.2s and up.
 #[test]
-fn only_bare_keys_need_a_minimum_hold() {
+fn a_tap_too_short_to_hold_speech_is_discarded() {
+    use flow::hotkey::was_long_enough;
+
+    for stray in [0, 120, 250, 400] {
+        assert!(
+            !was_long_enough(Duration::from_millis(stray)),
+            "{stray}ms should not count as a dictation"
+        );
+    }
+    for real in [700, 2_200, 25_000] {
+        assert!(
+            was_long_enough(Duration::from_millis(real)),
+            "{real}ms is a real hold"
+        );
+    }
+}
+
+/// `deliberate()` still exists, but now only decides whether a stray key cancels.
+#[test]
+fn only_bare_keys_cancel_on_a_stray_key() {
     assert!(Chord::default().deliberate());
     assert!(!Chord::bare(BARE).deliberate());
 }

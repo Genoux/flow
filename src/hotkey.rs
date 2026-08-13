@@ -7,9 +7,15 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// A press shorter than this on a bare key is treated as a stray tap and
-/// discarded. Deliberate chords and compositor start/stop are always intentional.
-const MIN_HOLD: Duration = Duration::from_millis(300);
+/// A hold shorter than this is a tap, not a dictation, and its audio is thrown
+/// away. Applies to every binding: exempting deliberate chords meant a frustrated
+/// double-tap injected whatever the recogniser made of 200ms of pre-roll, which
+/// is where a stream of "Yeah." and "Mm." came from.
+///
+/// Measured from real use, where held time is the recorded length minus PRE_ROLL:
+/// stray taps ran 0 to 400ms held, real dictations started at 2.2s. Anywhere in
+/// that gap works; this sits low in it so a genuinely short "Yes." still lands.
+const MIN_HOLD: Duration = Duration::from_millis(500);
 
 /// If the chord is not visible by then, the tap already ended and we stop.
 const CHORD_APPEAR: Duration = Duration::from_millis(40);
@@ -417,10 +423,8 @@ pub fn spawn(events: Sender<Event>, chord: Chord) -> Result<()> {
     Ok(())
 }
 
-/// A deliberate chord needs no floor: nobody presses Super+Shift+D by accident,
-/// so a fast tap is a short dictation rather than a stray brush of a modifier.
-pub fn was_long_enough(chord: &Chord, held: Duration) -> bool {
-    chord.deliberate() || held >= MIN_HOLD
+pub fn was_long_enough(held: Duration) -> bool {
+    held >= MIN_HOLD
 }
 
 /// True when a previously observed chord has actually broken.

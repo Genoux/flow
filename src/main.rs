@@ -232,7 +232,7 @@ fn daemon(
                     }
                     hold_started = None;
                     match session.take().map(|s| s.finish(&capture)) {
-                        Some(samples) if hotkey::was_long_enough(&chord, held) => Some(samples),
+                        Some(samples) if hotkey::was_long_enough(held) => Some(samples),
                         Some(_) => {
                             eprintln!("discarded: {held:?} is too short to be a deliberate hold");
                             None
