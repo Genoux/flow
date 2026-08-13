@@ -164,6 +164,24 @@ fn cleanup_behaves() {
         failures.push(format!("trivial input took {elapsed:?} - reaching the model?"));
     }
 
+    // A real dictation that came back entirely in English. Either the model keeps
+    // the language, or the guard catches it and the daemon falls back to the raw
+    // transcript - what must never happen is translated text reaching the user.
+    let quebecois = "On copie-tu dimanche, je vais régler des chills le live, ok \
+                     j'ai pas vraiment d'entête à ça, est-ce que dimanche c'est chill?";
+    match cleaner.clean_within(quebecois, std::time::Duration::from_secs(120)) {
+        Err(err) => eprintln!("\n[language] guard caught it: {err}"),
+        Ok(text) => {
+            eprintln!("\n[language] -> {text:?}");
+            if flow::cleanup::changed_language(&text, quebecois) {
+                failures.push(format!("translated french and the guard missed it: {text:?}"));
+            }
+            if text.to_lowercase().contains("sunday") {
+                failures.push(format!("translated 'dimanche' to Sunday: {text:?}"));
+            }
+        }
+    }
+
     // Pure hesitation reached the model and came back as the literal word
     // "None." - it deleted the filler, found nothing left, and answered. The
     // daemon never sends these now, but the guard has to hold if one slips
