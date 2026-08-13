@@ -136,6 +136,12 @@ impl Capture {
         )?;
         stream.play()?;
 
+        // The ring survives the swap by design - the Monitor holds the same Arc -
+        // but its contents came from the device that just went away, and `begin`
+        // prepends them to the next recording. Emptying it here is what makes the
+        // rebuilt stream actually start clean.
+        self.pre_roll.lock().unwrap().clear();
+
         // Dropped only once the replacement is playing, so a failed rebuild
         // leaves the old stream in place rather than nothing at all.
         *self.stream.lock().unwrap() = Some(stream);

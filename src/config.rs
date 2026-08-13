@@ -106,8 +106,15 @@ impl Config {
         self.push_to_talk &= !present("--no-ptt");
         self.cleanup &= !present("--raw");
         self.terminal |= present("--terminal");
+        // Clamped rather than assigned: the file rejects anything over 100, and
+        // without the same limit here `--duck 200` reached `Ducker`, which clamps
+        // to 100 - and 100 means "hold every stream at its current volume", so the
+        // typo turned ducking off rather than up.
         if let Some(percent) = flag_value(args, "--duck") {
-            self.duck = percent;
+            if percent > 100 {
+                eprintln!("--duck {percent} is a percentage, using 100");
+            }
+            self.duck = percent.min(100);
         }
         self
     }
