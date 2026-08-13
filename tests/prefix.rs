@@ -107,3 +107,35 @@ fn repeated_splitting_makes_progress() {
     }
     assert!(cuts >= 3, "expected a cut per pause, got {cuts}");
 }
+
+/// A plosive is a brief silence INSIDE a word - the closure in "stop" or "back"
+/// runs 50-120ms. Splitting there would cut a word in half, which is exactly what
+/// the whole scheme is supposed to avoid, so a gap has to be sustained to count.
+/// whisrs uses 400ms of silence for the same decision.
+#[test]
+fn a_plosive_closure_is_not_a_pause() {
+    for closure_ms in [50, 90, 120] {
+        let mut samples = speech(9.0);
+        samples.extend(silence(closure_ms as f32 / 1000.0));
+        samples.extend(speech(5.0));
+        assert_eq!(
+            split_at_silence(&samples, 8 * RATE),
+            None,
+            "{closure_ms}ms of quiet is a consonant, not a pause"
+        );
+    }
+}
+
+/// And a real pause still has to be found, or the optimisation never fires.
+#[test]
+fn a_deliberate_pause_is_still_found() {
+    for pause_ms in [400, 700, 1500] {
+        let mut samples = speech(9.0);
+        samples.extend(silence(pause_ms as f32 / 1000.0));
+        samples.extend(speech(5.0));
+        assert!(
+            split_at_silence(&samples, 8 * RATE).is_some(),
+            "{pause_ms}ms is a pause and should split"
+        );
+    }
+}

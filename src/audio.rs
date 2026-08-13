@@ -73,6 +73,13 @@ const GAP_WINDOW: usize = SAMPLE_RATE as usize / 20;
 /// more in encoder overhead than the split saves.
 const MIN_TAIL: usize = SAMPLE_RATE as usize / 2;
 
+/// Shortest run of quiet that is a pause between words rather than a silence
+/// inside one. A stop consonant's closure - the gap in the middle of "stop" or
+/// "back" - runs 50 to 120ms, so a single quiet window is no evidence of a word
+/// boundary at all, and cutting on one would slice a word in half. whisrs draws
+/// the same line at 400ms for its phrase segmentation.
+const MIN_GAP: usize = SAMPLE_RATE as usize / 4;
+
 /// Where a recording can be cut in two while it is still being spoken, so the
 /// first half can be transcribed before the speaker has finished.
 ///
@@ -86,23 +93,29 @@ const MIN_TAIL: usize = SAMPLE_RATE as usize / 2;
 /// speaker who has not drawn breath. Unbroken speech pays the full transcription
 /// at the end, which is the same behaviour as before this existed.
 pub fn split_at_silence(samples: &[f32], at_least: usize) -> Option<usize> {
-    if samples.len() < at_least + GAP_WINDOW + MIN_TAIL {
+    if samples.len() < at_least + MIN_GAP + MIN_TAIL {
         return None;
     }
 
-    // The quietest window, not the first quiet one: a pause has a middle, and the
-    // middle is furthest from the words on either side of it.
-    let (index, level) = samples[at_least..]
+    let quiet: Vec<bool> = samples[at_least..]
         .chunks(GAP_WINDOW)
-        .enumerate()
-        .map(|(index, window)| (index, rms(window)))
-        .min_by(|a, b| a.1.partial_cmp(&b.1).expect("audio is never NaN"))?;
+        .map(|window| rms(window) < SILENCE_RMS)
+        .collect();
 
-    if level >= SILENCE_RMS {
-        return None;
+    // The longest sustained run of quiet, not the quietest single window: only a
+    // run long enough to outlast a consonant says anything about where a word
+    // ends. Cut through its middle, furthest from the words on either side.
+    let mut longest: Option<(usize, usize)> = None;
+    let mut run = 0;
+    for (index, quiet) in quiet.iter().enumerate() {
+        run = if *quiet { run + 1 } else { 0 };
+        if run >= MIN_GAP / GAP_WINDOW && longest.is_none_or(|(_, best)| run > best) {
+            longest = Some((index + 1 - run, run));
+        }
     }
 
-    let at = at_least + index * GAP_WINDOW + GAP_WINDOW / 2;
+    let (start, length) = longest?;
+    let at = at_least + (start + length / 2) * GAP_WINDOW;
     (samples.len() - at >= MIN_TAIL).then_some(at)
 }
 
