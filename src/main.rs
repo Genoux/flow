@@ -49,7 +49,8 @@ fn main() -> Result<()> {
         overlay.record();
         eprintln!("island shown for {seconds}s - speak to move the bars");
         std::thread::sleep(Duration::from_secs(seconds));
-        overlay.transcribe();
+        overlay.queued();
+        overlay.working();
         eprintln!("transcribing sweep for 4s");
         std::thread::sleep(Duration::from_secs(4));
         overlay.cancel();
@@ -173,7 +174,7 @@ fn daemon(
     );
 
     let (jobs, job_rx) = std::sync::mpsc::channel();
-    let transcribing = &overlay;
+    let island = &overlay;
     // Shared so the start of a long dictation can be transcribed while the rest is
     // still being spoken. The lock is held only for the duration of one
     // transcription, and taking it before taking audio is what keeps the early
@@ -191,14 +192,14 @@ fn daemon(
                 let mut engine = engine.lock().expect("stt engine");
                 let done = std::mem::take(&mut *early.lock().expect("early transcripts"));
                 if let Err(err) =
-                    handle(*engine, &mut injector, samples, done, terminal, cleaner.as_ref())
+                    handle(*engine, &mut injector, samples, done, terminal, cleaner.as_ref(), island)
                 {
                     eprintln!("{err}");
                 }
                 drop(engine);
                 // The island is showing the sweep until the text lands, error
                 // or not - a failed transcription must not leave it spinning.
-                transcribing.finish();
+                island.finish();
             }
         });
 
@@ -294,10 +295,10 @@ fn daemon(
                 }
             };
 
-            // Audio on its way to the model hands the island to the transcribe
-            // sweep, and the worker ends it once the text has landed.
+            // Audio on its way to the model is only counted here. Whether it earns
+            // a sweep is decided in `handle`, once there is something to say.
             match (&finished, session.is_some(), was_recording) {
-                (Some(_), _, _) => overlay.transcribe(),
+                (Some(_), _, _) => overlay.queued(),
                 // A recording ended with nothing usable - a cancel, a tap too
                 // short. End the island here or it would sweep forever.
                 (None, false, true) => overlay.cancel(),
@@ -376,6 +377,7 @@ fn handle(
     early: Vec<String>,
     terminal: bool,
     cleaner: Option<&cleanup::Cleaner>,
+    island: &overlay::Overlay,
 ) -> Result<()> {
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
     let peak = audio::peak(&samples);
@@ -388,6 +390,18 @@ fn handle(
     // nonsense ("Uh", "See no lay no") and still gets pasted - see SILENCE_RMS
     // for why that needs VAD rather than a louder threshold.
     //
+    // Nobody spoke. Checked before recognition rather than after, because the
+    // recogniser is confident either way: room tone came back as "Oh" and "Yeah."
+    // and no threshold on how loud it was could tell those from a real "Yeah."
+    // What separates them is whether the level moved. See audio::sounds_like_speech.
+    if early.is_empty() && !audio::sounds_like_speech(&samples) {
+        eprintln!(
+            "({spoken:.1}s, {level}, no voice - skipped: swing {:.1}x)",
+            audio::swing(&samples)
+        );
+        return Ok(());
+    }
+
     // A silent tail is only nothing when nothing came before it: the recording may
     // have ended in the pause that let its earlier half be transcribed already.
     let tail = if rms < audio::SILENCE_RMS {
@@ -425,6 +439,10 @@ fn handle(
         eprintln!("({spoken:.1}s, {level}, only hesitation - skipped: {text:?})");
         return Ok(());
     }
+
+    // Words, and cleanup is about to take a while. Everything above this point
+    // returns without drawing anything, so a cough gets no spinner.
+    island.working();
 
     // A cleanup failure must never cost the user their words, so the raw
     // transcript stands in whenever the model errors or returns nothing.

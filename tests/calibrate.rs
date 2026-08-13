@@ -3,23 +3,24 @@
 //!   cargo test --release --test calibrate -- --ignored --nocapture
 use flow::overlay::{Analyzer, BAND_COUNT, WINDOW};
 
-fn frames() -> Vec<[f32; BAND_COUNT]> {
+/// Every window, with the broadband level beside its band amplitudes, so the
+/// search can gate frames exactly the way `Analyzer::bands` does. Without that the
+/// search optimises means over frames the island never draws.
+fn frames() -> Vec<(f32, [f32; BAND_COUNT])> {
     let samples = flow::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
     let mut analyzer = Analyzer::new();
     let mut out = Vec::new();
     let mut at = WINDOW;
     while at <= samples.len() {
-        let amps = analyzer.amplitudes(&samples[..at]);
-        if amps.iter().cloned().fold(0.0f32, f32::max) > 0.0005 {
-            out.push(amps);
-        }
+        let level = flow::audio::rms(&samples[at - WINDOW..at]);
+        out.push((level, analyzer.amplitudes(&samples[..at])));
         at += 256;
     }
     out
 }
 
 fn score(
-    frames: &[[f32; BAND_COUNT]],
+    frames: &[(f32, [f32; BAND_COUNT])],
     gains: [f32; BAND_COUNT],
     floor: f32,
     ceiling: f32,
@@ -27,6 +28,26 @@ fn score(
     let mut sums = [0.0f32; BAND_COUNT];
     let mut flat = [0u32; BAND_COUNT];
     let mut pinned = [0u32; BAND_COUNT];
+
+    // The same room tracking the analyzer does, so gated windows are excluded
+    // here too.
+    let mut room = 0.01f32;
+    let mut drawn: Vec<[f32; BAND_COUNT]> = Vec::new();
+    for (level, amps) in frames {
+        room = if *level < room {
+            (room * 0.7 + level * 0.3).max(0.0015)
+        } else {
+            (room * 1.0004).min(*level)
+        };
+        if *level < room * 3.0 {
+            continue;
+        }
+        drawn.push(*amps);
+    }
+    if drawn.len() < 200 {
+        return None;
+    }
+    let frames = &drawn;
 
     for amps in frames {
         for band in 0..BAND_COUNT {

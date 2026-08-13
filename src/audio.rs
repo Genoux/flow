@@ -65,6 +65,41 @@ impl Monitor {
     }
 }
 
+/// How far the loud parts of a recording must exceed its quiet parts before it
+/// counts as containing a voice.
+///
+/// Measured: real speech swings 30x between its vowels and the gaps between its
+/// words, and this room swings 2.1 to 2.8x, because a room has nothing to swing
+/// between. Level cannot make this call at all - across 169 labelled recordings
+/// junk spans peak 0.000-1.276 and rms 0.0000-0.0291 while real dictations span
+/// peak 0.129-1.125 and rms 0.0114-0.0634, overlapping on both. Holding the key
+/// without speaking produced "Oh" and "Yeah." from room tone, and no threshold on
+/// how loud it was could have told those from a real "Yeah."
+///
+/// Set low in the gap rather than halfway: passing a stray word through costs a
+/// keystroke to delete, and rejecting a real one costs the words themselves.
+const SPEECH_SWING: f32 = 5.0;
+
+/// Windows shorter than this cannot be judged - there is nothing to compare.
+const SWING_MIN_WINDOWS: usize = 8;
+
+/// Ratio of the loud parts of a recording to its quiet parts, measured against its
+/// own baseline so it needs no fixed level and works on any microphone.
+pub fn swing(samples: &[f32]) -> f32 {
+    let mut levels: Vec<f32> = samples.chunks(GAP_WINDOW).map(rms).collect();
+    if levels.len() < SWING_MIN_WINDOWS {
+        return f32::INFINITY;
+    }
+    levels.sort_by(f32::total_cmp);
+    let at = |quantile: f32| levels[((levels.len() - 1) as f32 * quantile) as usize];
+    at(0.95) / at(0.20).max(1e-6)
+}
+
+/// Was anybody talking?
+pub fn sounds_like_speech(samples: &[f32]) -> bool {
+    swing(samples) >= SPEECH_SWING
+}
+
 /// Width of the window silence is measured over, 50ms: long enough to average out
 /// a single quiet sample, short enough to sit inside a real pause between words.
 const GAP_WINDOW: usize = SAMPLE_RATE as usize / 20;
