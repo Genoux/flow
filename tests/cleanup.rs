@@ -164,6 +164,23 @@ fn cleanup_behaves() {
         failures.push(format!("trivial input took {elapsed:?} - reaching the model?"));
     }
 
+    // Pure hesitation reached the model and came back as the literal word
+    // "None." - it deleted the filler, found nothing left, and answered. The
+    // daemon never sends these now, but the guard has to hold if one slips
+    // through, because pasting an invented word is the worst outcome here.
+    for hesitation in ["Um", "Uh", "Er"] {
+        match cleaner.clean_within(hesitation, std::time::Duration::from_secs(120)) {
+            Err(err) => eprintln!("\n[filler] {hesitation:?} refused: {err}"),
+            Ok(text) => {
+                eprintln!("\n[filler] {hesitation:?} -> {text:?}");
+                let lowered = text.to_lowercase();
+                if lowered.starts_with("none") || lowered.starts_with("n/a") {
+                    failures.push(format!("{hesitation:?} produced the non-answer {text:?}"));
+                }
+            }
+        }
+    }
+
     // An impossible budget must fail rather than return half a sentence: main.rs
     // treats the error as "use the raw transcript", and a truncated cleanup would
     // be worse than the transcript it replaced.

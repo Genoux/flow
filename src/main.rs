@@ -340,6 +340,13 @@ fn handle(
         return Ok(());
     }
 
+    // Held the key and hesitated. Pasting "Um" would be noise and sending it to
+    // the model produced worse - it deleted the filler and then answered "None."
+    if cleanup::is_only_filler(&text) {
+        eprintln!("({spoken:.1}s, {level}, only hesitation - skipped: {text:?})");
+        return Ok(());
+    }
+
     // A cleanup failure must never cost the user their words, so the raw
     // transcript stands in whenever the model errors or returns nothing.
     let final_text = match cleaner {

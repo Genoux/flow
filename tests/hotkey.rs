@@ -366,19 +366,29 @@ fn a_modifier_cannot_also_be_the_trigger() {
 
 // -- device-backed helpers ---------------------------------------------------
 
-/// With nothing held this must return promptly, not spin to the timeout -
-/// injection waits on it, so a false negative would stall every dictation.
+/// The rule injection waits on, tested without a keyboard because the device
+/// answer cannot be trusted: a Keychron here reports LALT+LSHIFT held with
+/// nothing pressed, and keyd mirrors it as LMETA+LSHIFT - two thirds of the
+/// dictation chord. Every paste waited out its timeout and left the text on the
+/// clipboard, so the daemon now tracks modifiers from events instead.
 #[test]
-fn idle_keyboard_reports_modifiers_released() {
-    let started = std::time::Instant::now();
-    let released = flow::hotkey::wait_for_modifiers_released(Duration::from_secs(2));
-    let elapsed = started.elapsed();
+fn modifiers_are_judged_from_what_was_actually_seen() {
+    use flow::hotkey::any_modifier_in;
 
-    if !released {
-        eprintln!("skipping: a modifier is physically held right now");
-        return;
-    }
-    assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
+    assert!(!any_modifier_in(&HashSet::new()), "nothing held");
+    assert!(!any_modifier_in(&HashSet::from([KeyCode::KEY_D, KeyCode::KEY_A])), "letters only");
+    assert!(any_modifier_in(&HashSet::from([KeyCode::KEY_LEFTMETA])));
+    assert!(any_modifier_in(&HashSet::from([KeyCode::KEY_RIGHTSHIFT, KeyCode::KEY_D])));
+}
+
+/// Kept as a device-backed smoke test, but it cannot assert timing: a stuck
+/// kernel key bit is an environment fact, not a bug in this function.
+#[test]
+#[ignore]
+fn the_device_fallback_still_answers() {
+    let started = std::time::Instant::now();
+    let released = flow::hotkey::wait_for_modifiers_released(Duration::from_millis(300));
+    eprintln!("device fallback: released={released} in {:?}", started.elapsed());
 }
 
 /// Compositor hold ends when any finger of the original chord comes up - not

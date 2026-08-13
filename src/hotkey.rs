@@ -410,9 +410,18 @@ pub fn spawn(events: Sender<Event>, chord: Chord) -> Result<()> {
         });
     }
 
+    WATCHING.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
         let mut state = PttState::new(chord);
         while let Ok((key, pressed)) = raw_rx.recv() {
+            if MODIFIERS.contains(&key) {
+                let mut observed = observed().lock().expect("observed modifiers");
+                if pressed {
+                    observed.insert(key);
+                } else {
+                    observed.remove(&key);
+                }
+            }
             if let Some(event) = state.apply(key, pressed)
                 && events.send(event).is_err() {
                     return;
@@ -669,13 +678,42 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Ch
     }
 }
 
-/// Block until no modifier is physically held, so injected keystrokes are not
-/// reinterpreted as compositor shortcuts. Gives up after `timeout` and reports
-/// whether the keyboard actually came to rest.
+/// Modifiers held according to the events flow has actually seen, and whether
+/// anyone is watching.
+///
+/// `EVIOCGKEY` - what `get_key_state` reads - can be stale, and on this machine it
+/// is: a Keychron reports LALT+LSHIFT held with nothing pressed, and keyd mirrors
+/// that as LMETA+LSHIFT on its virtual keyboard, which is two thirds of the
+/// dictation chord. Asking the devices whether a modifier is down therefore said
+/// "yes" forever, and every paste waited out its timeout and left the text on the
+/// clipboard.
+///
+/// The giveaway is that typing still works, so the compositor - the thing that
+/// would actually reinterpret an injected Ctrl+V - does not believe those keys are
+/// held either. This view starts empty at daemon start and only moves on real
+/// events, so a bit that was already stuck cannot poison it.
+fn observed() -> &'static Mutex<HashSet<KeyCode>> {
+    static OBSERVED: OnceLock<Mutex<HashSet<KeyCode>>> = OnceLock::new();
+    OBSERVED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+static WATCHING: AtomicBool = AtomicBool::new(false);
+
+/// True when a modifier is down. Pure, so the rule is testable without a keyboard.
+pub fn any_modifier_in(held: &HashSet<KeyCode>) -> bool {
+    MODIFIERS.iter().any(|modifier| held.contains(modifier))
+}
+
+/// Block until no modifier is held, so injected keystrokes are not reinterpreted
+/// as compositor shortcuts. Gives up after `timeout` and reports whether the
+/// keyboard actually came to rest.
 pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     let started = Instant::now();
     let deadline = started + timeout;
-    let devices = modifier_devices().lock().expect("modifier devices");
+    let watching = WATCHING.load(Ordering::Relaxed);
+    // Only consulted when nothing is watching events - a daemon without
+    // push-to-talk, where the compositor is the only trigger.
+    let devices = (!watching).then(|| modifier_devices().lock().expect("modifier devices"));
     let mut announced = false;
 
     loop {
@@ -688,12 +726,15 @@ pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
             eprintln!("waiting for modifiers to be released before pasting");
         }
 
-        let held = devices.iter().any(|device| {
-            device
-                .get_key_state()
-                .map(|state| MODIFIERS.iter().any(|m| state.contains(*m)))
-                .unwrap_or(false)
-        });
+        let held = match &devices {
+            None => any_modifier_in(&observed().lock().expect("observed modifiers")),
+            Some(devices) => devices.iter().any(|device| {
+                device
+                    .get_key_state()
+                    .map(|state| any_modifier_in(&state.iter().collect()))
+                    .unwrap_or(false)
+            }),
+        };
 
         if !held {
             return true;

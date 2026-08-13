@@ -70,6 +70,43 @@ const FILLERS: [&str; 8] = ["um", "uh", "er", "ah", "like", "you know", "i mean"
 /// of a missing comma somewhere rise faster than the 200ms is worth.
 const TRIVIAL_WORDS: usize = 4;
 
+/// Words that are only ever the sound of thinking, not a word being said.
+fn words(raw: &str) -> Vec<String> {
+    raw.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// A transcript with no words in it - somebody held the key and hesitated.
+///
+/// Worth its own check because the model handles it badly: asked to clean "Uh" it
+/// deletes the filler, finds nothing left, and answers the question it thinks it
+/// was asked, pasting the literal word "None." Nothing is the right output here,
+/// and nothing is cheaper to produce than to repair.
+///
+/// An empty transcript is deliberately not filler - the caller already has a path
+/// for that, and two owners of one case is how they drift apart.
+pub fn is_only_filler(raw: &str) -> bool {
+    let words = words(raw);
+    if words.is_empty() {
+        return false;
+    }
+    FILLERS.contains(&words.join(" ").as_str())
+        || words.iter().all(|word| FILLERS.contains(&word.as_str()))
+}
+
+/// The model declining rather than cleaning.
+///
+/// Checked against the raw text so a genuine "None." survives: if the speaker
+/// never said the word, the model invented it, and inventing words is the one
+/// thing cleanup must never do.
+fn is_non_answer(cleaned: &str, raw: &str) -> bool {
+    const REFUSALS: [&str; 5] = ["none", "n/a", "nothing", "empty", "no text"];
+    let trimmed = cleaned.trim().trim_end_matches(['.', '!']).to_lowercase();
+    REFUSALS.contains(&trimmed.as_str()) && !raw.to_lowercase().contains(&trimmed)
+}
+
 /// Is there anything here for the model to do?
 ///
 /// A capitalised, terminally punctuated, filler-free phrase of a few words is
@@ -350,7 +387,11 @@ impl Cleaner {
             ctx.decode(&mut batch)?;
         }
 
-        Ok(tidy(&output))
+        let cleaned = tidy(&output);
+        if is_non_answer(&cleaned, raw) {
+            bail!("cleanup answered {cleaned:?} instead of cleaning");
+        }
+        Ok(cleaned)
     }
 }
 
