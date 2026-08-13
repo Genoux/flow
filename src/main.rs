@@ -2,6 +2,15 @@ use anyhow::{bail, Result};
 use flow::{audio, cleanup, config, duck, hotkey, inject, install, ipc, overlay, stt, wav};
 use std::time::{Duration, Instant};
 
+/// Audio that must be spoken before any of it is transcribed early. Long enough
+/// that short dictations never pay an extra encoder pass, short enough that a
+/// rambling one gets several pieces done before the key comes up.
+const PREFIX_MIN: usize = 8 * audio::SAMPLE_RATE as usize;
+
+/// How often to look for a pause worth cutting at. The speaker is still talking,
+/// so there is nothing to race.
+const PREFIX_POLL: Duration = Duration::from_millis(400);
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -165,16 +174,54 @@ fn daemon(
 
     let (jobs, job_rx) = std::sync::mpsc::channel();
     let transcribing = &overlay;
+    // Shared so the start of a long dictation can be transcribed while the rest is
+    // still being spoken. The lock is held only for the duration of one
+    // transcription, and taking it before taking audio is what keeps the early
+    // pieces and the final tail in order.
+    let engine = std::sync::Mutex::new(engine);
+    let early: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let listening = std::sync::atomic::AtomicBool::new(true);
+    let (engine, early, listening) = (&engine, &early, &listening);
+
     std::thread::scope(|scope| {
         scope.spawn(move || {
             while let Ok((samples, terminal)) = job_rx.recv() {
-                if let Err(err) = handle(engine, &mut injector, samples, terminal, cleaner.as_ref())
+                // Waits out any in-flight early piece, which is also what
+                // guarantees its text is already in `early` before this reads it.
+                let mut engine = engine.lock().expect("stt engine");
+                let done = std::mem::take(&mut *early.lock().expect("early transcripts"));
+                if let Err(err) =
+                    handle(*engine, &mut injector, samples, done, terminal, cleaner.as_ref())
                 {
                     eprintln!("{err}");
                 }
+                drop(engine);
                 // The island is showing the sweep until the text lands, error
                 // or not - a failed transcription must not leave it spinning.
                 transcribing.finish();
+            }
+        });
+
+        // Transcribes whatever the speaker has already finished saying. Sleeping
+        // first costs nothing: there is no prefix to take until several seconds in.
+        let recording = &capture;
+        scope.spawn(move || {
+            while listening.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(PREFIX_POLL);
+                let mut engine = engine.lock().expect("stt engine");
+                let Some(prefix) = recording.take_prefix(PREFIX_MIN) else { continue };
+                let spoken = prefix.len() as f32 / audio::SAMPLE_RATE as f32;
+                let started = Instant::now();
+                match engine.transcribe(prefix) {
+                    // Pushed while still holding the engine, so the release path
+                    // cannot read a partial set of pieces.
+                    Ok(text) if !text.trim().is_empty() => {
+                        eprintln!("transcribed {spoken:.1}s early in {:?}", started.elapsed());
+                        early.lock().expect("early transcripts").push(text);
+                    }
+                    Ok(_) => {}
+                    Err(err) => eprintln!("early transcription failed: {err}"),
+                }
             }
         });
 
@@ -191,7 +238,7 @@ fn daemon(
                         watch.disarm();
                     }
                     hold_started = Some(Instant::now());
-                    begin(&capture, &mut session, duck, &overlay);
+                    begin(&capture, &mut session, duck, &overlay, early);
                     None
                 }
                 hotkey::Event::Start => {
@@ -202,7 +249,7 @@ fn daemon(
                         None
                     } else {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, duck, &overlay);
+                        begin(&capture, &mut session, duck, &overlay, early);
                         chord_watch = Some(hotkey::ChordWatch::arm(events.clone(), chord.clone()));
                         None
                     }
@@ -223,6 +270,9 @@ fn daemon(
                     hold_started = None;
                     if let Some(session) = session.take() {
                         session.discard(&capture);
+                        // Anything already transcribed early belongs to the
+                        // recording being thrown away, so it goes too.
+                        early.lock().expect("early transcripts").clear();
                         eprintln!("discarded: another key turned the hold into a shortcut");
                     }
                     None
@@ -235,6 +285,7 @@ fn daemon(
                     match session.take().map(|s| s.finish(&capture)) {
                         Some(samples) if hotkey::was_long_enough(held) => Some(samples),
                         Some(_) => {
+                            early.lock().expect("early transcripts").clear();
                             eprintln!("discarded: {held:?} is too short to be a deliberate hold");
                             None
                         }
@@ -264,6 +315,7 @@ fn daemon(
             }
         }
         drop(jobs);
+        listening.store(false, std::sync::atomic::Ordering::Relaxed);
     });
 
     ipc::remove_pid();
@@ -294,7 +346,13 @@ fn begin(
     slot: &mut Option<Session>,
     duck: Option<u32>,
     overlay: &overlay::Overlay,
+    early: &std::sync::Mutex<Vec<String>>,
 ) {
+    // A new recording abandons whatever came before it, including anything already
+    // transcribed early - otherwise those words would prepend to this dictation.
+    // Reachable with both trigger paths live: a signal starts a session and the
+    // physical chord then starts another.
+    early.lock().expect("early transcripts").clear();
     capture.begin();
     overlay.record();
     eprintln!("recording...");
@@ -315,6 +373,7 @@ fn handle(
     engine: &mut stt::Stt,
     injector: &mut inject::Injector,
     samples: Vec<f32>,
+    early: Vec<String>,
     terminal: bool,
     cleaner: Option<&cleanup::Cleaner>,
 ) -> Result<()> {
@@ -323,17 +382,37 @@ fn handle(
     let rms = audio::rms(&samples);
     let level = format!("peak {peak:.3} rms {rms:.4}");
 
+    let started = Instant::now();
+
     // Only catches a dead capture. Room tone still transcribes to confident
     // nonsense ("Uh", "See no lay no") and still gets pasted - see SILENCE_RMS
     // for why that needs VAD rather than a louder threshold.
-    if rms < audio::SILENCE_RMS {
-        eprintln!("({spoken:.1}s, {level}, no signal - skipped)");
-        return Ok(());
-    }
-
-    let started = Instant::now();
-    let text = engine.transcribe(samples)?;
+    //
+    // A silent tail is only nothing when nothing came before it: the recording may
+    // have ended in the pause that let its earlier half be transcribed already.
+    let tail = if rms < audio::SILENCE_RMS {
+        if early.is_empty() {
+            eprintln!("({spoken:.1}s, {level}, no signal - skipped)");
+            return Ok(());
+        }
+        String::new()
+    } else {
+        engine.transcribe(samples)?
+    };
     let transcribed = started.elapsed();
+
+    // Pieces in the order they were spoken, the tail last.
+    let pieces = early.len();
+    let mut spoken_text = early;
+    if !tail.trim().is_empty() {
+        spoken_text.push(tail);
+    }
+    let text = spoken_text.join(" ");
+    let head = if pieces > 0 {
+        format!(" ({pieces} early)")
+    } else {
+        String::new()
+    };
 
     if text.is_empty() {
         eprintln!("({spoken:.1}s, {level}, nothing recognised)");
@@ -372,12 +451,12 @@ fn handle(
 
     if final_text == text {
         eprintln!(
-            "{spoken:.1}s {level} -> {transcribed:?} stt, {injected:?} paste, {:?} total: {final_text}",
+            "{spoken:.1}s{head} {level} -> {transcribed:?} stt, {injected:?} paste, {:?} total: {final_text}",
             started.elapsed()
         );
     } else {
         eprintln!(
-            "{spoken:.1}s {level} -> {transcribed:?} stt, {:?} clean, {injected:?} paste, {:?} total\n  raw:   {text}\n  clean: {final_text}",
+            "{spoken:.1}s{head} {level} -> {transcribed:?} stt, {:?} clean, {injected:?} paste, {:?} total\n  raw:   {text}\n  clean: {final_text}",
             cleaned_at - transcribed,
             started.elapsed()
         );
