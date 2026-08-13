@@ -17,15 +17,6 @@ const CHORD_APPEAR: Duration = Duration::from_millis(40);
 /// Poll interval while waiting for the compositor chord to break.
 const CHORD_POLL: Duration = Duration::from_millis(4);
 
-/// Keys that make up the Hyprland dictation chord (SUPER+SHIFT+d). Physical
-/// Alt is remapped to Super by keyd, so we see LEFTMETA on the virtual device.
-const CHORD_KEYS: [KeyCode; 5] = [
-    KeyCode::KEY_D,
-    KeyCode::KEY_LEFTMETA,
-    KeyCode::KEY_RIGHTMETA,
-    KeyCode::KEY_LEFTSHIFT,
-    KeyCode::KEY_RIGHTSHIFT,
-];
 
 /// Modifiers that must be physically released before we inject. Injected keys
 /// travel through the compositor's keybind layer, so a still-held modifier turns
@@ -149,6 +140,23 @@ impl Chord {
         self.modifiers
             .iter()
             .all(|modifier| modifier.keys().iter().any(|key| held.contains(key)))
+    }
+
+    /// Every key of the chord is physically down, in any order.
+    fn fully_held(&self, held: &HashSet<KeyCode>) -> bool {
+        held.contains(&self.trigger) && self.satisfied(held)
+    }
+
+    /// Every key this chord could involve, both sides of each modifier. What the
+    /// release watcher has to look at - it used to be a hardcoded list of
+    /// super/shift/d, so any other configured hotkey was invisible to it and the
+    /// recording died 40ms after it started.
+    pub fn keys(&self) -> HashSet<KeyCode> {
+        let mut keys = HashSet::from([self.trigger]);
+        for modifier in &self.modifiers {
+            keys.extend(modifier.keys());
+        }
+        keys
     }
 
     fn contains(&self, key: KeyCode) -> bool {
@@ -311,23 +319,21 @@ impl PttState {
             return None;
         }
 
-        if key == self.chord.trigger {
-            return match (pressed, self.down_at) {
-                // Modifiers have to be down first: a plain `d` must stay a plain
-                // `d`, or the trigger letter would be unusable for typing.
-                (true, None) if self.chord.satisfied(&self.held) => {
-                    self.down_at = Some(Instant::now());
-                    self.cancelled = false;
-                    Some(Event::Pressed)
-                }
-                (false, Some(start)) => {
-                    self.down_at = None;
-                    (!self.cancelled).then(|| Event::Released {
-                        held: start.elapsed(),
-                    })
-                }
-                _ => None,
-            };
+        // Whichever chord key lands last starts the hold, rather than the trigger
+        // specifically. A remapper can deliver the letter before the modifier it
+        // rewrote, and waiting for the trigger's own event means such a press
+        // records nothing at all - the user presses, nothing happens, they press
+        // again. Still requires every modifier down, so a plain `d` stays a plain
+        // `d`, and requires the arriving key to belong to the chord, so holding a
+        // bare Right Ctrl does not turn someone else's shortcut into a recording.
+        if pressed
+            && self.down_at.is_none()
+            && self.chord.contains(key)
+            && self.chord.fully_held(&self.held)
+        {
+            self.down_at = Some(Instant::now());
+            self.cancelled = false;
+            return Some(Event::Pressed);
         }
 
         // Lifting any finger of the chord ends the hold - not only the trigger.
@@ -340,8 +346,20 @@ impl PttState {
             });
         }
 
-        // Any key outside the chord during the hold means this was a shortcut.
-        if pressed && self.down_at.is_some() && !self.cancelled && !self.chord.contains(key) {
+        // A bare key exists to modify other keys, so an unrelated press there is
+        // a shortcut and Right Ctrl + C must stay a copy.
+        //
+        // A deliberate chord gets no such guard, because cancelling throws the
+        // audio away silently and a three-key chord is already unambiguous:
+        // nobody reaches for super+shift+d+x. A remapper echoing a physical key
+        // beside its virtual one produces exactly this stray press, which is how
+        // entire dictations disappeared leaving nothing in the log.
+        if pressed
+            && self.down_at.is_some()
+            && !self.cancelled
+            && !self.chord.deliberate()
+            && !self.chord.contains(key)
+        {
             self.cancelled = true;
             return Some(Event::Cancelled);
         }
@@ -424,17 +442,30 @@ fn chord_paths() -> &'static [PathBuf] {
     PATHS.get_or_init(discover_chord_paths)
 }
 
-/// Keyboards that can report modifier state, opened once and held for the life of
-/// the daemon - the same thing [`spawn`] does with its reader threads. Kept
-/// separate from [`chord_paths`] because that one deliberately narrows to keyd's
-/// virtual keyboard, while a held modifier can surface on any of them.
+/// Devices whose modifier state decides whether it is safe to paste, opened once
+/// and held for the life of the daemon - the same thing [`spawn`] does with its
+/// reader threads.
+///
+/// Reads the same preferred devices as [`chord_paths`], keyd's virtual keyboard
+/// when there is one, rather than every keyboard. That is not a shortcut: the
+/// question here is whether the compositor would reinterpret an injected Ctrl+V,
+/// and the compositor sees a remapper's output, not the physical keys behind it.
+/// Polling every device instead means a pre-remap physical key that the
+/// compositor never sees can hold the paste back until it times out, and the
+/// dictation reaches the clipboard and nowhere else.
 ///
 /// Discovery costs ~400ms and opening costs ~50ms, both of which used to be paid
 /// before every single paste.
 fn modifier_devices() -> &'static Mutex<Vec<Device>> {
     static DEVICES: OnceLock<Mutex<Vec<Device>>> = OnceLock::new();
     DEVICES.get_or_init(|| {
-        Mutex::new(keyboards().into_iter().map(|(_, device)| device).collect())
+        let paths = chord_paths();
+        let devices: Vec<Device> = paths.iter().filter_map(|p| Device::open(p).ok()).collect();
+        Mutex::new(if devices.is_empty() {
+            keyboards().into_iter().map(|(_, device)| device).collect()
+        } else {
+            devices
+        })
     })
 }
 
@@ -461,9 +492,11 @@ fn discover_chord_paths() -> Vec<PathBuf> {
     let mut keyd = Vec::new();
     let mut others = Vec::new();
     for (path, device) in evdev::enumerate() {
+        // Probed with a letter, not KEY_D: the configured trigger may be any
+        // key, and requiring a specific one skipped real keyboards.
         if !device
             .supported_keys()
-            .is_some_and(|keys| keys.contains(KeyCode::KEY_D))
+            .is_some_and(|keys| keys.contains(KeyCode::KEY_A))
         {
             continue;
         }
@@ -515,11 +548,11 @@ fn chord_devices() -> Vec<Device> {
         .collect()
 }
 
-fn chord_snapshot(devices: &[Device]) -> HashSet<KeyCode> {
+fn chord_snapshot(devices: &[Device], chord: &Chord) -> HashSet<KeyCode> {
     let mut keys = HashSet::new();
     for device in devices {
         if let Ok(state) = device.get_key_state() {
-            for key in CHORD_KEYS {
+            for key in chord.keys() {
                 if state.contains(key) {
                     keys.insert(key);
                 }
@@ -539,10 +572,10 @@ impl ChordWatch {
     /// Snapshot the dictation chord at `flow start` and emit [`Event::Stop`]
     /// when any of those keys is released. Hyprland's release binds miss
     /// modifier chords; this is what makes compositor-driven hold reliable.
-    pub fn arm(events: Sender<Event>) -> Self {
+    pub fn arm(events: Sender<Event>, chord: Chord) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
-        std::thread::spawn(move || watch_chord_release(events, flag));
+        std::thread::spawn(move || watch_chord_release(events, flag, chord));
         Self { cancel }
     }
 
@@ -551,7 +584,7 @@ impl ChordWatch {
     }
 }
 
-fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>) {
+fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Chord) {
     // Two fds per device: fetch_events blocks one, get_key_state needs the other.
     let state_devices = chord_devices();
     let event_devices = chord_devices();
@@ -565,25 +598,27 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>) {
     }
 
     let appear_by = Instant::now() + CHORD_APPEAR;
-    let mut chord = chord_snapshot(&state_devices);
-    while chord.is_empty() && Instant::now() < appear_by && !cancel.load(Ordering::Relaxed) {
+    let mut held = chord_snapshot(&state_devices, &chord);
+    while held.is_empty() && Instant::now() < appear_by && !cancel.load(Ordering::Relaxed) {
         std::thread::sleep(CHORD_POLL);
-        chord = chord_snapshot(&state_devices);
+        held = chord_snapshot(&state_devices, &chord);
     }
 
-    // Quick tap: keys are already up by the time the start signal arrives.
-    // Waiting for a key-up that already happened is what stranded the mic.
-    if chord.is_empty() {
-        eprintln!("chord watch: keys already up - stopping");
-        let _ = events.send(Event::Stop);
+    // Nothing held means this was not a key being held down at all - a script,
+    // a foot pedal, a stream deck. Stopping here would cut those recordings to
+    // the ~40ms it took to look, so the explicit `flow stop` is left to end them.
+    if held.is_empty() {
+        eprintln!("chord watch: no chord keys held - waiting for `flow stop`");
         return;
     }
 
-    eprintln!("chord watch: holding until release ({chord:?})");
+    eprintln!("chord watch: holding until release ({held:?})");
 
     let (release_tx, release_rx) = channel();
+    let watched = chord.keys();
     for mut device in event_devices {
         let release_tx = release_tx.clone();
+        let watched = watched.clone();
         std::thread::spawn(move || {
             loop {
                 let Ok(batch) = device.fetch_events() else { return };
@@ -592,7 +627,7 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>) {
                         continue;
                     }
                     let key = KeyCode(event.code());
-                    if CHORD_KEYS.contains(&key) {
+                    if watched.contains(&key) {
                         let _ = release_tx.send(key);
                     }
                 }
@@ -603,8 +638,8 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>) {
 
     let mut gone_polls = 0u8;
     while !cancel.load(Ordering::Relaxed) {
-        let now = chord_snapshot(&state_devices);
-        if chord_released(&chord, &now) {
+        let now = chord_snapshot(&state_devices, &chord);
+        if chord_released(&held, &now) {
             gone_polls += 1;
             if gone_polls >= 2 {
                 eprintln!("chord watch: released (state)");
@@ -617,8 +652,8 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>) {
 
         match release_rx.recv_timeout(CHORD_POLL) {
             Ok(key) => {
-                let now = chord_snapshot(&state_devices);
-                if chord_released(&chord, &now) {
+                let now = chord_snapshot(&state_devices, &chord);
+                if chord_released(&held, &now) {
                     eprintln!("chord watch: released (event {key:?} + state)");
                     let _ = events.send(Event::Stop);
                     return;
@@ -634,10 +669,21 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>) {
 /// reinterpreted as compositor shortcuts. Gives up after `timeout` and reports
 /// whether the keyboard actually came to rest.
 pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let deadline = started + timeout;
     let devices = modifier_devices().lock().expect("modifier devices");
+    let mut announced = false;
 
     loop {
+        // Releasing `d` ends a super+shift+d hold while both modifiers are still
+        // down, so waiting here is normal and usually over in milliseconds. Say
+        // so once if it lasts, because the alternative was a silent stall ending
+        // in a dictation that only reached the clipboard.
+        if !announced && started.elapsed() > Duration::from_millis(750) {
+            announced = true;
+            eprintln!("waiting for modifiers to be released before pasting");
+        }
+
         let held = devices.iter().any(|device| {
             device
                 .get_key_state()
