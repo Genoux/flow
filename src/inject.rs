@@ -7,7 +7,12 @@ use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
 
 /// Modifiers must settle before we paste, or the keystroke is reinterpreted by
 /// the compositor's keybind layer.
-const MODIFIER_TIMEOUT: Duration = Duration::from_secs(2);
+///
+/// Generous on purpose. Releasing `d` ends a super+shift+d hold while both
+/// modifiers are still down, and someone who pauses with their hand on the keys
+/// used to lose the dictation to a 2s limit - it reached the clipboard and
+/// nowhere else. Waiting costs nothing; giving up costs the user their words.
+const MODIFIER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// uinput devices need a moment for udev to create the node and for compositors
 /// to pick them up; emitting immediately after build silently drops events.
@@ -55,8 +60,12 @@ impl Injector {
 
         if !super::hotkey::wait_for_modifiers_released(MODIFIER_TIMEOUT) {
             // Pasting now would fire shortcuts instead of inserting text. The
-            // text stays on the clipboard so the dictation is not lost.
-            anyhow::bail!("modifiers still held after {MODIFIER_TIMEOUT:?}; text left on clipboard");
+            // text stays on the clipboard, and says so loudly: silence here reads
+            // as a dictation that simply vanished.
+            anyhow::bail!(
+                "modifiers still held after {MODIFIER_TIMEOUT:?} - not pasting, \
+                 press ctrl+v to place the text yourself"
+            );
         }
 
         self.paste(terminal)?;

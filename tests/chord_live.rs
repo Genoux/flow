@@ -81,3 +81,42 @@ fn the_real_keyboard_path_sees_the_chord() {
 
     eprintln!("chord seen, modifier-lift release seen, bare letter ignored");
 }
+
+/// The reported failure, end to end: a stray key arriving mid-hold used to cancel
+/// and bin the audio with nothing in the log, so a dictation simply disappeared
+/// and the key "did not register". A remapper echoing a physical key beside its
+/// virtual one produces exactly this.
+#[test]
+#[ignore]
+fn a_stray_key_mid_hold_does_not_lose_the_recording() {
+    let mut device = keyboard();
+    std::thread::sleep(Duration::from_millis(400));
+
+    let (events, incoming) = std::sync::mpsc::channel();
+    hotkey::spawn(events, Chord::default()).expect("spawn");
+    std::thread::sleep(Duration::from_millis(200));
+
+    press(&mut device, KeyCode::KEY_LEFTMETA, true);
+    press(&mut device, KeyCode::KEY_LEFTSHIFT, true);
+    press(&mut device, KeyCode::KEY_D, true);
+    assert_eq!(
+        incoming.recv_timeout(Duration::from_secs(2)).expect("Pressed"),
+        Event::Pressed
+    );
+
+    // The intruder: a key nobody meant to press, in the middle of dictating.
+    press(&mut device, KeyCode::KEY_C, true);
+    press(&mut device, KeyCode::KEY_C, false);
+    assert!(
+        incoming.recv_timeout(Duration::from_millis(400)).is_err(),
+        "a stray key cancelled the hold and threw the dictation away"
+    );
+
+    press(&mut device, KeyCode::KEY_D, false);
+    let released = incoming.recv_timeout(Duration::from_secs(2)).expect("Released");
+    assert!(matches!(released, Event::Released { .. }), "got {released:?}");
+
+    press(&mut device, KeyCode::KEY_LEFTSHIFT, false);
+    press(&mut device, KeyCode::KEY_LEFTMETA, false);
+    eprintln!("stray key survived, recording still ended cleanly");
+}

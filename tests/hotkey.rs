@@ -86,6 +86,27 @@ fn releasing_any_modifier_ends_the_hold() {
     }
 }
 
+/// The keys of a chord do not arrive in the order they were pressed. keyd and
+/// friends rewrite events and can deliver the letter before the modifier they
+/// mapped, and a chord that only starts on the trigger's own event then never
+/// starts at all - the user presses, nothing records, and they press again.
+#[test]
+fn the_chord_starts_whichever_key_completes_it() {
+    let orders: [[evdev::KeyCode; 3]; 3] =
+        [[D, SUPER, SHIFT], [SHIFT, D, SUPER], [D, SHIFT, SUPER]];
+
+    for order in orders {
+        let mut state = PttState::new(Chord::default());
+        let events: Vec<_> = order.iter().map(|key| state.apply(*key, true)).collect();
+        assert_eq!(
+            events.iter().filter(|e| **e == Some(Event::Pressed)).count(),
+            1,
+            "expected exactly one Pressed for {order:?}, got {events:?}"
+        );
+        assert_eq!(events[2], Some(Event::Pressed), "must start on the last key of {order:?}");
+    }
+}
+
 #[test]
 fn either_side_of_a_modifier_satisfies_it() {
     let mut state = PttState::new(Chord::default());
@@ -105,26 +126,52 @@ fn autorepeat_on_the_trigger_is_ignored() {
     assert_eq!(state.apply(SUPER, true), None, "modifier repeat");
 }
 
-/// A fourth key means the user is reaching for some other shortcut.
+/// Losing a dictation is the worst thing this program can do, and cancelling
+/// discards the audio silently. A deliberate chord is already unambiguous -
+/// nobody reaches for super+shift+d+x - so an unrelated key must not throw the
+/// recording away. A remapper echoing a physical key alongside its virtual one
+/// is enough to produce exactly that key, which is how whole dictations vanished
+/// with nothing in the log.
 #[test]
-fn an_extra_key_cancels_the_chord() {
-    let mut state = PttState::new(Chord::default());
-    state.apply(SUPER, true);
-    state.apply(SHIFT, true);
-    state.apply(D, true);
-    assert_eq!(state.apply(OTHER, true), Some(Event::Cancelled));
-    assert_eq!(state.apply(D, false), None, "cancelled hold must not dictate");
+fn a_deliberate_chord_never_discards_on_an_unrelated_key() {
+    for intruder in [OTHER, KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTALT, KeyCode::KEY_X] {
+        let mut state = PttState::new(Chord::default());
+        state.apply(SUPER, true);
+        state.apply(SHIFT, true);
+        state.apply(D, true);
+
+        assert_eq!(state.apply(intruder, true), None, "{intruder:?} cancelled the hold");
+        state.apply(intruder, false);
+        assert!(
+            matches!(state.apply(D, false), Some(Event::Released { .. })),
+            "recording did not survive {intruder:?}"
+        );
+    }
 }
 
-/// Adding a modifier that is not part of the chord is still a different
-/// shortcut - Super+Shift+Ctrl+D must not dictate.
+/// The bare-key case keeps cancelling, and must: Right Ctrl is one finger on a
+/// key that exists to modify other keys, so Right Ctrl + C is a copy.
 #[test]
-fn an_extra_modifier_cancels_too() {
-    let mut state = PttState::new(Chord::default());
-    state.apply(SUPER, true);
-    state.apply(SHIFT, true);
-    state.apply(D, true);
-    assert_eq!(state.apply(KeyCode::KEY_LEFTCTRL, true), Some(Event::Cancelled));
+fn a_bare_key_still_cancels_on_an_extra_key() {
+    let mut state = bare();
+    state.apply(BARE, true);
+    assert_eq!(state.apply(OTHER, true), Some(Event::Cancelled));
+    assert_eq!(state.apply(BARE, false), None, "cancelled hold must not dictate");
+}
+
+/// After a bare-key combo the trigger is often still down. Pressing further keys
+/// must not suddenly start recording just because the trigger happens to be held.
+#[test]
+fn a_held_bare_key_does_not_start_on_someone_elses_shortcut() {
+    let mut state = bare();
+    state.apply(BARE, true);
+    state.apply(OTHER, true);
+    state.apply(OTHER, false);
+    state.apply(BARE, false);
+
+    state.apply(BARE, true);
+    assert_eq!(state.apply(OTHER, true), Some(Event::Cancelled));
+    assert_eq!(state.apply(KeyCode::KEY_X, true), None, "second key");
 }
 
 /// Modifiers pressed before the trigger are part of getting to the chord, so

@@ -80,7 +80,8 @@ fn main() -> Result<()> {
             daemon(
                 &mut engine,
                 terminal,
-                settings.push_to_talk.then(|| settings.chord.clone()),
+                settings.chord.clone(),
+                settings.push_to_talk,
                 settings.ducking(),
                 cleaner,
             )
@@ -105,7 +106,8 @@ fn main() -> Result<()> {
 fn daemon(
     engine: &mut stt::Stt,
     terminal: bool,
-    ptt: Option<hotkey::Chord>,
+    chord: hotkey::Chord,
+    ptt: bool,
     duck: Option<u32>,
     cleaner: Option<cleanup::Cleaner>,
 ) -> Result<()> {
@@ -130,11 +132,9 @@ fn daemon(
     // path is independent, so a machine without /dev/input access should still
     // dictate from a compositor bind instead of refusing to start.
     let mut ptt = ptt;
-    if let Some(chord) = ptt.clone()
-        && let Err(err) = hotkey::spawn(events.clone(), chord)
-    {
+    if ptt && let Err(err) = hotkey::spawn(events.clone(), chord.clone()) {
         eprintln!("push-to-talk disabled: {err}");
-        ptt = None;
+        ptt = false;
     }
 
     let signals = events.clone();
@@ -156,9 +156,10 @@ fn daemon(
     hotkey::warmup_devices();
     eprintln!(
         "\nready - {}\n",
-        match &ptt {
-            Some(chord) => format!("hold {chord}, or trigger `flow start`"),
-            None => "trigger `flow start`".to_string(),
+        if ptt {
+            format!("hold {chord}, or trigger `flow start`")
+        } else {
+            "trigger `flow start`".to_string()
         }
     );
 
@@ -201,7 +202,7 @@ fn daemon(
                     } else {
                         hold_started = Some(Instant::now());
                         begin(&capture, &mut session, duck, &overlay);
-                        chord_watch = Some(hotkey::ChordWatch::arm(events.clone()));
+                        chord_watch = Some(hotkey::ChordWatch::arm(events.clone(), chord.clone()));
                         None
                     }
                 }
@@ -212,7 +213,8 @@ fn daemon(
                     hold_started.take();
                     session.take().map(|s| s.finish(&capture))
                 }
-                // A shortcut, not dictation - throw the audio away.
+                // A shortcut, not dictation - throw the audio away. Says so:
+                // a discard that logs nothing is a dictation that vanished.
                 hotkey::Event::Cancelled => {
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
@@ -220,6 +222,7 @@ fn daemon(
                     hold_started = None;
                     if let Some(session) = session.take() {
                         session.discard(&capture);
+                        eprintln!("discarded: another key turned the hold into a shortcut");
                     }
                     None
                 }
@@ -228,10 +231,14 @@ fn daemon(
                         watch.disarm();
                     }
                     hold_started = None;
-                    session
-                        .take()
-                        .map(|s| s.finish(&capture))
-                        .filter(|_| ptt.as_ref().is_none_or(|c| hotkey::was_long_enough(c, held)))
+                    match session.take().map(|s| s.finish(&capture)) {
+                        Some(samples) if hotkey::was_long_enough(&chord, held) => Some(samples),
+                        Some(_) => {
+                            eprintln!("discarded: {held:?} is too short to be a deliberate hold");
+                            None
+                        }
+                        None => None,
+                    }
                 }
             };
 
