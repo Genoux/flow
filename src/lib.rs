@@ -1,8 +1,11 @@
 pub mod audio;
 pub mod cleanup;
+pub mod config;
 pub mod duck;
 pub mod hotkey;
 pub mod inject;
+pub mod install;
 pub mod ipc;
+pub mod overlay;
 pub mod stt;
 pub mod wav;

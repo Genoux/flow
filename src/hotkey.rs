@@ -4,15 +4,11 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Push-to-talk key. Chosen because keyd leaves Ctrl untouched on this machine
-/// and a lone modifier emits no character, so passive reads need no device grab.
-pub const PTT: KeyCode = KeyCode::KEY_RIGHTCTRL;
-
-/// A press shorter than this on the dedicated PTT key is treated as a stray
-/// tap and discarded. Compositor start/stop is always intentional.
+/// A press shorter than this on a bare key is treated as a stray tap and
+/// discarded. Deliberate chords and compositor start/stop are always intentional.
 const MIN_HOLD: Duration = Duration::from_millis(300);
 
 /// If the chord is not visible by then, the tap already ended and we stop.
@@ -45,6 +41,215 @@ const MODIFIERS: [KeyCode; 8] = [
     KeyCode::KEY_RIGHTSHIFT,
 ];
 
+/// One modifier position, satisfied by the key on either side of the board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modifier {
+    Super,
+    Shift,
+    Ctrl,
+    Alt,
+}
+
+impl Modifier {
+    fn keys(self) -> [KeyCode; 2] {
+        match self {
+            Self::Super => [KeyCode::KEY_LEFTMETA, KeyCode::KEY_RIGHTMETA],
+            Self::Shift => [KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTSHIFT],
+            Self::Ctrl => [KeyCode::KEY_LEFTCTRL, KeyCode::KEY_RIGHTCTRL],
+            Self::Alt => [KeyCode::KEY_LEFTALT, KeyCode::KEY_RIGHTALT],
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            // "meta" and "win" are the same physical key as "super"; people
+            // reach for whichever word their desktop taught them.
+            "super" | "meta" | "win" | "cmd" | "command" => Some(Self::Super),
+            "shift" => Some(Self::Shift),
+            "ctrl" | "control" => Some(Self::Ctrl),
+            "alt" | "option" => Some(Self::Alt),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Super => "super",
+            Self::Shift => "shift",
+            Self::Ctrl => "ctrl",
+            Self::Alt => "alt",
+        }
+    }
+}
+
+/// The push-to-talk binding: a trigger key, plus modifiers that must already be
+/// held when it arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chord {
+    pub trigger: KeyCode,
+    pub modifiers: Vec<Modifier>,
+}
+
+impl Default for Chord {
+    /// Super+Shift+D - the combination people already bind in their compositor,
+    /// and reachable on every keyboard. Super is one evdev code regardless of
+    /// what the keycap says, and unlike Right Ctrl it exists on boards that drop
+    /// the right-hand modifiers entirely.
+    ///
+    /// Super+D alone is "show desktop" on most desktops; adding Shift steps
+    /// around that.
+    fn default() -> Self {
+        Self {
+            trigger: KeyCode::KEY_D,
+            modifiers: vec![Modifier::Super, Modifier::Shift],
+        }
+    }
+}
+
+impl Chord {
+    /// A lone key, like the Right Ctrl this used to hardcode.
+    pub fn bare(trigger: KeyCode) -> Self {
+        Self { trigger, modifiers: Vec::new() }
+    }
+
+    /// Modifiers make a press unambiguous, so it needs no minimum hold.
+    pub fn deliberate(&self) -> bool {
+        !self.modifiers.is_empty()
+    }
+
+    pub fn parse(text: &str) -> Result<Self> {
+        let mut parts = text.split('+').map(str::trim).filter(|p| !p.is_empty()).peekable();
+        if parts.peek().is_none() {
+            return Err(anyhow!("empty binding"));
+        }
+
+        let lowered: Vec<String> = parts.map(|p| p.to_lowercase()).collect();
+        let (last, leading) = lowered.split_last().expect("checked non-empty");
+
+        let mut modifiers = Vec::new();
+        for name in leading {
+            let modifier = Modifier::parse(name)
+                .ok_or_else(|| anyhow!("{name:?} is not a modifier (super, shift, ctrl, alt)"))?;
+            if modifiers.contains(&modifier) {
+                return Err(anyhow!("{name:?} is listed twice"));
+            }
+            modifiers.push(modifier);
+        }
+
+        // A trailing modifier name would mean the chord can never complete: the
+        // key that triggers it would also be the one holding it.
+        if Modifier::parse(last).is_some() && !modifiers.is_empty() {
+            return Err(anyhow!("{last:?} is a modifier, so there is no key to press"));
+        }
+
+        Ok(Self { trigger: trigger_key(last)?, modifiers })
+    }
+
+    fn satisfied(&self, held: &HashSet<KeyCode>) -> bool {
+        self.modifiers
+            .iter()
+            .all(|modifier| modifier.keys().iter().any(|key| held.contains(key)))
+    }
+
+    fn contains(&self, key: KeyCode) -> bool {
+        key == self.trigger || self.modifiers.iter().any(|m| m.keys().contains(&key))
+    }
+}
+
+impl std::fmt::Display for Chord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for modifier in &self.modifiers {
+            write!(f, "{}+", modifier.name())?;
+        }
+        f.write_str(&trigger_name(self.trigger))
+    }
+}
+
+/// Alphabetical order, which evdev is not: the codes follow the QWERTY rows, so
+/// KEY_A is 30 and KEY_D is 32. Arithmetic on KEY_A silently yields the wrong
+/// letter, so both directions go through this one table.
+const LETTERS: [KeyCode; 26] = [
+    KeyCode::KEY_A, KeyCode::KEY_B, KeyCode::KEY_C, KeyCode::KEY_D, KeyCode::KEY_E,
+    KeyCode::KEY_F, KeyCode::KEY_G, KeyCode::KEY_H, KeyCode::KEY_I, KeyCode::KEY_J,
+    KeyCode::KEY_K, KeyCode::KEY_L, KeyCode::KEY_M, KeyCode::KEY_N, KeyCode::KEY_O,
+    KeyCode::KEY_P, KeyCode::KEY_Q, KeyCode::KEY_R, KeyCode::KEY_S, KeyCode::KEY_T,
+    KeyCode::KEY_U, KeyCode::KEY_V, KeyCode::KEY_W, KeyCode::KEY_X, KeyCode::KEY_Y,
+    KeyCode::KEY_Z,
+];
+
+/// F11 and F12 sit apart from F1-F10, so this is a table too.
+const FUNCTION_KEYS: [KeyCode; 12] = [
+    KeyCode::KEY_F1, KeyCode::KEY_F2, KeyCode::KEY_F3, KeyCode::KEY_F4,
+    KeyCode::KEY_F5, KeyCode::KEY_F6, KeyCode::KEY_F7, KeyCode::KEY_F8,
+    KeyCode::KEY_F9, KeyCode::KEY_F10, KeyCode::KEY_F11, KeyCode::KEY_F12,
+];
+
+/// Named keys usable as a trigger. Letters and digits cover almost everything;
+/// the modifier names are here so a bare-modifier binding stays expressible.
+fn trigger_key(name: &str) -> Result<KeyCode> {
+    if let Some(number) = name.strip_prefix('f').and_then(|n| n.parse::<usize>().ok())
+        && (1..=FUNCTION_KEYS.len()).contains(&number)
+    {
+        return Ok(FUNCTION_KEYS[number - 1]);
+    }
+    let named = match name {
+        "space" => KeyCode::KEY_SPACE,
+        "tab" => KeyCode::KEY_TAB,
+        "enter" | "return" => KeyCode::KEY_ENTER,
+        "capslock" => KeyCode::KEY_CAPSLOCK,
+        "leftctrl" => KeyCode::KEY_LEFTCTRL,
+        "rightctrl" => KeyCode::KEY_RIGHTCTRL,
+        "leftalt" => KeyCode::KEY_LEFTALT,
+        "rightalt" => KeyCode::KEY_RIGHTALT,
+        "leftshift" => KeyCode::KEY_LEFTSHIFT,
+        "rightshift" => KeyCode::KEY_RIGHTSHIFT,
+        "leftmeta" => KeyCode::KEY_LEFTMETA,
+        "rightmeta" => KeyCode::KEY_RIGHTMETA,
+        single if single.chars().count() == 1 => {
+            let character = single.chars().next().expect("length checked");
+            match character {
+                'a'..='z' => LETTERS[character as usize - 'a' as usize],
+                // Digits, unlike letters, really are sequential: KEY_1 is 2.
+                '1'..='9' => KeyCode(KeyCode::KEY_1.0 + (character as u16 - '1' as u16)),
+                '0' => KeyCode::KEY_0,
+                _ => return Err(anyhow!("{name:?} is not a key flow can watch")),
+            }
+        }
+        _ => return Err(anyhow!("{name:?} is not a key flow can watch")),
+    };
+    Ok(named)
+}
+
+fn trigger_name(key: KeyCode) -> String {
+    match key {
+        KeyCode::KEY_SPACE => "space".into(),
+        KeyCode::KEY_TAB => "tab".into(),
+        KeyCode::KEY_ENTER => "enter".into(),
+        KeyCode::KEY_CAPSLOCK => "capslock".into(),
+        KeyCode::KEY_LEFTCTRL => "leftctrl".into(),
+        KeyCode::KEY_RIGHTCTRL => "rightctrl".into(),
+        KeyCode::KEY_LEFTALT => "leftalt".into(),
+        KeyCode::KEY_RIGHTALT => "rightalt".into(),
+        KeyCode::KEY_LEFTSHIFT => "leftshift".into(),
+        KeyCode::KEY_RIGHTSHIFT => "rightshift".into(),
+        KeyCode::KEY_LEFTMETA => "leftmeta".into(),
+        KeyCode::KEY_RIGHTMETA => "rightmeta".into(),
+        key if FUNCTION_KEYS.contains(&key) => {
+            let at = FUNCTION_KEYS.iter().position(|f| *f == key).expect("checked");
+            format!("f{}", at + 1)
+        }
+        key if LETTERS.contains(&key) => {
+            let at = LETTERS.iter().position(|l| *l == key).expect("checked");
+            char::from(b'a' + at as u8).to_string()
+        }
+        KeyCode::KEY_0 => "0".into(),
+        KeyCode(code) if (KeyCode::KEY_1.0..=KeyCode::KEY_9.0).contains(&code) => {
+            char::from(b'1' + (code - KeyCode::KEY_1.0) as u8).to_string()
+        }
+        other => format!("{other:?}"),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
     Pressed,
@@ -60,12 +265,14 @@ pub enum Event {
 /// Every keyboard-capable device. A device grabbed by a remapper (keyd) delivers
 /// nothing, and its virtual device delivers the post-remap events instead, so
 /// reading all of them needs no special-casing for the user's input stack.
+/// Probed with a letter rather than a modifier: compact and Apple boards drop the
+/// right-hand modifiers, so testing for one of those would skip a real keyboard.
 fn keyboards() -> Vec<(std::path::PathBuf, Device)> {
     evdev::enumerate()
         .filter(|(_, device)| {
             device
                 .supported_keys()
-                .is_some_and(|keys| keys.contains(PTT))
+                .is_some_and(|keys| keys.contains(KeyCode::KEY_A))
         })
         .collect()
 }
@@ -78,17 +285,37 @@ fn keyboards() -> Vec<(std::path::PathBuf, Device)> {
 /// key. State therefore lives here, once, rather than per reader thread.
 #[derive(Default)]
 pub struct PttState {
+    chord: Chord,
+    /// Physically down right now. A set, so the same press arriving from two
+    /// devices collapses to one entry.
+    held: HashSet<KeyCode>,
     down_at: Option<Instant>,
     cancelled: bool,
 }
 
 impl PttState {
+    pub fn new(chord: Chord) -> Self {
+        Self { chord, ..Self::default() }
+    }
+
     /// Returns the transition this key caused, or `None` if it told us nothing
     /// new (autorepeat, a duplicate from a second device, keys while cancelled).
     pub fn apply(&mut self, key: KeyCode, pressed: bool) -> Option<Event> {
-        if key == PTT {
+        let already = if pressed {
+            !self.held.insert(key)
+        } else {
+            !self.held.remove(&key)
+        };
+        // Autorepeat, or the second device reporting the same physical edge.
+        if already {
+            return None;
+        }
+
+        if key == self.chord.trigger {
             return match (pressed, self.down_at) {
-                (true, None) => {
+                // Modifiers have to be down first: a plain `d` must stay a plain
+                // `d`, or the trigger letter would be unusable for typing.
+                (true, None) if self.chord.satisfied(&self.held) => {
                     self.down_at = Some(Instant::now());
                     self.cancelled = false;
                     Some(Event::Pressed)
@@ -103,8 +330,18 @@ impl PttState {
             };
         }
 
-        // Any other key during the hold means this was a shortcut.
-        if pressed && self.down_at.is_some() && !self.cancelled {
+        // Lifting any finger of the chord ends the hold - not only the trigger.
+        // Hyprland's release binds are unreliable with modifier chords, so this
+        // is the path that actually stops a Super+Shift+D recording.
+        if !pressed && self.down_at.is_some() && self.chord.contains(key) {
+            let start = self.down_at.take().expect("checked above");
+            return (!self.cancelled).then(|| Event::Released {
+                held: start.elapsed(),
+            });
+        }
+
+        // Any key outside the chord during the hold means this was a shortcut.
+        if pressed && self.down_at.is_some() && !self.cancelled && !self.chord.contains(key) {
             self.cancelled = true;
             return Some(Event::Cancelled);
         }
@@ -114,13 +351,14 @@ impl PttState {
 
 /// Spawn a reader per keyboard, feeding push-to-talk transitions into `events`.
 /// Shares the channel with the signal handler so the daemon has one input stream.
-pub fn spawn(events: Sender<Event>) -> Result<()> {
+pub fn spawn(events: Sender<Event>, chord: Chord) -> Result<()> {
     let devices = keyboards();
     if devices.is_empty() {
         return Err(anyhow!(
-            "no readable keyboard exposes {PTT:?} - is this user in the 'input' group?"
+            "no readable keyboard found - is this user in the 'input' group?"
         ));
     }
+    eprintln!("push-to-talk: {chord}");
 
     for (path, device) in &devices {
         eprintln!("watching {} ({})", path.display(), device.name().unwrap_or("?"));
@@ -149,7 +387,7 @@ pub fn spawn(events: Sender<Event>) -> Result<()> {
     }
 
     std::thread::spawn(move || {
-        let mut state = PttState::default();
+        let mut state = PttState::new(chord);
         while let Ok((key, pressed)) = raw_rx.recv() {
             if let Some(event) = state.apply(key, pressed)
                 && events.send(event).is_err() {
@@ -161,8 +399,10 @@ pub fn spawn(events: Sender<Event>) -> Result<()> {
     Ok(())
 }
 
-pub fn was_long_enough(held: Duration) -> bool {
-    held >= MIN_HOLD
+/// A deliberate chord needs no floor: nobody presses Super+Shift+D by accident,
+/// so a fast tap is a short dictation rather than a stray brush of a modifier.
+pub fn was_long_enough(chord: &Chord, held: Duration) -> bool {
+    chord.deliberate() || held >= MIN_HOLD
 }
 
 /// True when a previously observed chord has actually broken.
@@ -184,8 +424,23 @@ fn chord_paths() -> &'static [PathBuf] {
     PATHS.get_or_init(discover_chord_paths)
 }
 
-/// Call once at daemon start so the first tap does not pay device discovery.
-pub fn warmup_chord_devices() {
+/// Keyboards that can report modifier state, opened once and held for the life of
+/// the daemon - the same thing [`spawn`] does with its reader threads. Kept
+/// separate from [`chord_paths`] because that one deliberately narrows to keyd's
+/// virtual keyboard, while a held modifier can surface on any of them.
+///
+/// Discovery costs ~400ms and opening costs ~50ms, both of which used to be paid
+/// before every single paste.
+fn modifier_devices() -> &'static Mutex<Vec<Device>> {
+    static DEVICES: OnceLock<Mutex<Vec<Device>>> = OnceLock::new();
+    DEVICES.get_or_init(|| {
+        Mutex::new(keyboards().into_iter().map(|(_, device)| device).collect())
+    })
+}
+
+/// Call once at daemon start so neither the first tap nor the first injection
+/// pays device discovery.
+pub fn warmup_devices() {
     let paths = chord_paths();
     if paths.is_empty() {
         eprintln!("chord watch: no keyboard with KEY_D");
@@ -194,6 +449,7 @@ pub fn warmup_chord_devices() {
             eprintln!("chord watch: {}", path.display());
         }
     }
+    let _ = modifier_devices();
 }
 
 fn discover_chord_paths() -> Vec<PathBuf> {
@@ -379,10 +635,10 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>) {
 /// whether the keyboard actually came to rest.
 pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
-    let devices = keyboards();
+    let devices = modifier_devices().lock().expect("modifier devices");
 
     loop {
-        let held = devices.iter().any(|(_, device)| {
+        let held = devices.iter().any(|device| {
             device
                 .get_key_state()
                 .map(|state| MODIFIERS.iter().any(|m| state.contains(*m)))

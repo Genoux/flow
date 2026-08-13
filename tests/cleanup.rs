@@ -97,7 +97,7 @@ fn load() -> Option<flow::cleanup::Cleaner> {
         eprintln!("skipping: no cleanup model at {}", path.display());
         return None;
     }
-    Some(flow::cleanup::Cleaner::load(&path, vec!["Flow".into(), "Hyprland".into()]).expect("load"))
+    Some(flow::cleanup::Cleaner::load(&path, vec!["Flow".into(), "Hyprland".into()], None).expect("load"))
 }
 
 /// One test, not several: cargo runs tests as parallel threads, and two
@@ -145,6 +145,21 @@ fn cleanup_behaves() {
     let second = cleaner.clean(repeated).expect("clean");
     if first != second {
         failures.push(format!("not deterministic: {first:?} vs {second:?}"));
+    }
+
+    // Trivial input must not reach the model at all. Asserted through the real
+    // Cleaner because the gate lives inside `clean`, and a timing bound is the
+    // only thing that can tell "returned unchanged" apart from "skipped".
+    let already_clean = "Yeah.";
+    let started = std::time::Instant::now();
+    let skipped = cleaner.clean(already_clean).expect("clean");
+    let elapsed = started.elapsed();
+    eprintln!("\n[trivial] {already_clean:?} -> {skipped:?}  ({elapsed:?})");
+    if skipped != already_clean {
+        failures.push(format!("trivial input was altered: {skipped:?}"));
+    }
+    if elapsed > std::time::Duration::from_millis(5) {
+        failures.push(format!("trivial input took {elapsed:?} - reaching the model?"));
     }
 
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));

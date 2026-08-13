@@ -1,24 +1,24 @@
 use anyhow::{bail, Result};
-use flow::{audio, cleanup, duck, hotkey, inject, ipc, stt, wav};
+use flow::{audio, cleanup, config, duck, hotkey, inject, install, ipc, overlay, stt, wav};
 use std::time::{Duration, Instant};
-
-/// Value following `name`, e.g. `--duck 20`.
-fn flag_value(args: &[String], name: &str) -> Option<u32> {
-    let at = args.iter().position(|a| a == name)?;
-    args.get(at + 1)?.parse().ok()
-}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let terminal = args.iter().any(|a| a == "--terminal");
-
-    // Fires at the running daemon; nothing else here needs to load.
+    // All three run before the config is read. start/stop must survive a broken
+    // config file so a daemon that is already recording can still be stopped, and
+    // `install` is what writes that file in the first place.
     match args.first().map(String::as_str) {
         Some("start") => return ipc::send(ipc::START),
         Some("stop") => return ipc::send(ipc::STOP),
+        Some("install") => {
+            return install::run(args.iter().any(|a| a == "--speech-only"))
+        }
         _ => {}
     }
+
+    let settings = config::Config::load()?.overridden_by(&args);
+    let terminal = settings.terminal;
 
     // Isolates injection from the mic and the model, so a silent uinput failure
     // is distinguishable from a transcription problem.
@@ -29,23 +29,42 @@ fn main() -> Result<()> {
         return inject::Injector::new()?.inject(&text, terminal);
     }
 
+    // Isolates the island from the model and the hotkeys, the way `inject`
+    // isolates uinput: a compositor blur rule or a bar colour can be looked at
+    // without dictating anything into whatever window happens to have focus.
+    if args.first().map(String::as_str) == Some("overlay") {
+        let seconds = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
+        let capture = audio::Capture::open(&audio::open_device()?)?;
+        let overlay = overlay::Overlay::spawn(capture.monitor());
+        capture.begin();
+        overlay.record();
+        eprintln!("island shown for {seconds}s - speak to move the bars");
+        std::thread::sleep(Duration::from_secs(seconds));
+        overlay.transcribe();
+        eprintln!("transcribing sweep for 4s");
+        std::thread::sleep(Duration::from_secs(4));
+        overlay.cancel();
+        std::thread::sleep(Duration::from_millis(200));
+        return Ok(());
+    }
+
     let dir = stt::model_dir();
     if !dir.is_dir() {
-        bail!("model not found at {}", dir.display());
+        bail!("model not found at {} - run `flow install`", dir.display());
     }
     let mut engine = stt::Stt::load(&dir)?;
 
     match args.first().map(String::as_str) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
-        // --no-ptt leaves Right Ctrl alone so a compositor bind is the only
-        // trigger, which keeps A/B comparisons against another tool clean.
         Some("daemon") => {
-            // Cleanup is the point of the tool, so it is on unless the model is
-            // missing or --raw is passed for an A/B against the raw transcript.
-            let cleaner = if args.iter().any(|a| a == "--raw") {
-                None
-            } else {
-                match cleanup::Cleaner::load(&cleanup::model_path(), cleanup::vocabulary()) {
+            // Cleanup is the point of the tool, so it stays on unless the config
+            // or --raw turns it off, or the model is missing.
+            let cleaner = if settings.cleanup {
+                match cleanup::Cleaner::load(
+                    &cleanup::model_path(),
+                    cleanup::vocabulary(),
+                    settings.gpu,
+                ) {
                     Ok(cleaner) => {
                         cleaner.warm_up();
                         Some(cleaner)
@@ -55,12 +74,14 @@ fn main() -> Result<()> {
                         None
                     }
                 }
+            } else {
+                None
             };
             daemon(
                 &mut engine,
                 terminal,
-                !args.iter().any(|a| a == "--no-ptt"),
-                flag_value(&args, "--duck"),
+                settings.push_to_talk.then(|| settings.chord.clone()),
+                settings.ducking(),
                 cleaner,
             )
         }
@@ -71,17 +92,23 @@ fn main() -> Result<()> {
     }
 }
 
-/// Two ways in: hold the push-to-talk key, or a compositor bind that only needs
-/// to call `flow start` on press. Flow watches the physical chord and stops on
-/// release - Hyprland's release binds are not reliable with modifier chords.
+/// Two ways in, and the second is deliberately not compositor-specific.
+///
+/// Flow watches its own chord on the keyboard, so a fresh install dictates with
+/// no setup. Everything else comes through `flow start` / `flow stop`, which is
+/// just a signal to this process - a compositor bind, a script, a foot pedal and
+/// a stream deck are all the same caller as far as the daemon is concerned.
+///
+/// Only `start` is needed from those callers: Flow watches the physical chord to
+/// find the release itself, because Hyprland's release binds are unreliable with
+/// modifier chords.
 fn daemon(
     engine: &mut stt::Stt,
     terminal: bool,
-    ptt: bool,
+    ptt: Option<hotkey::Chord>,
     duck: Option<u32>,
     cleaner: Option<cleanup::Cleaner>,
 ) -> Result<()> {
-    audio::pin_capture_source();
     let device = audio::open_device()?;
     if let Some(name) = audio::default_source_name() {
         eprintln!("mic source: {name}");
@@ -90,18 +117,24 @@ fn daemon(
     if capture.warmup(Duration::from_secs(2)) {
         eprintln!("mic is live");
     } else {
-        eprintln!(
-            "mic is silent - check the webcam is unmuted and picked as the source"
-        );
+        eprintln!("mic is silent - check the source above is unmuted and actually streaming");
     }
 
     let mut injector = inject::Injector::new()?;
+    let overlay = overlay::Overlay::spawn(capture.monitor());
 
     duck::restore_stale();
 
     let (events, incoming) = std::sync::mpsc::channel();
-    if ptt {
-        hotkey::spawn(events.clone())?;
+    // Degrades rather than bails, the way a missing cleanup model does: the signal
+    // path is independent, so a machine without /dev/input access should still
+    // dictate from a compositor bind instead of refusing to start.
+    let mut ptt = ptt;
+    if let Some(chord) = ptt.clone()
+        && let Err(err) = hotkey::spawn(events.clone(), chord)
+    {
+        eprintln!("push-to-talk disabled: {err}");
+        ptt = None;
     }
 
     let signals = events.clone();
@@ -120,17 +153,17 @@ fn daemon(
     });
 
     ipc::write_pid()?;
-    hotkey::warmup_chord_devices();
+    hotkey::warmup_devices();
     eprintln!(
-        "\nready - {}hold a key bound to `flow start`\n",
-        if ptt {
-            format!("hold {:?}, or ", hotkey::PTT)
-        } else {
-            String::new()
+        "\nready - {}\n",
+        match &ptt {
+            Some(chord) => format!("hold {chord}, or trigger `flow start`"),
+            None => "trigger `flow start`".to_string(),
         }
     );
 
     let (jobs, job_rx) = std::sync::mpsc::channel();
+    let transcribing = &overlay;
     std::thread::scope(|scope| {
         scope.spawn(move || {
             while let Ok((samples, terminal)) = job_rx.recv() {
@@ -138,6 +171,9 @@ fn daemon(
                 {
                     eprintln!("{err}");
                 }
+                // The island is showing the sweep until the text lands, error
+                // or not - a failed transcription must not leave it spinning.
+                transcribing.finish();
             }
         });
 
@@ -153,7 +189,7 @@ fn daemon(
                         watch.disarm();
                     }
                     hold_started = Some(Instant::now());
-                    begin(&capture, &mut session, duck);
+                    begin(&capture, &mut session, duck, &overlay);
                     None
                 }
                 hotkey::Event::Start => {
@@ -164,7 +200,7 @@ fn daemon(
                         None
                     } else {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, duck);
+                        begin(&capture, &mut session, duck, &overlay);
                         chord_watch = Some(hotkey::ChordWatch::arm(events.clone()));
                         None
                     }
@@ -195,9 +231,18 @@ fn daemon(
                     session
                         .take()
                         .map(|s| s.finish(&capture))
-                        .filter(|_| hotkey::was_long_enough(held))
+                        .filter(|_| ptt.as_ref().is_none_or(|c| hotkey::was_long_enough(c, held)))
                 }
             };
+
+            // Audio on its way to the model hands the island to the transcribe
+            // sweep, and the worker ends it. Anything else - a cancel, a tap
+            // too short to count - ends it here, or it would sweep forever.
+            match (&finished, session.is_some()) {
+                (Some(_), _) => overlay.transcribe(),
+                (None, false) => overlay.cancel(),
+                (None, true) => {}
+            }
 
             if let Some(samples) = finished
                 && jobs.send((samples, terminal)).is_err()
@@ -231,8 +276,14 @@ impl Session {
     }
 }
 
-fn begin(capture: &audio::Capture, slot: &mut Option<Session>, duck: Option<u32>) {
+fn begin(
+    capture: &audio::Capture,
+    slot: &mut Option<Session>,
+    duck: Option<u32>,
+    overlay: &overlay::Overlay,
+) {
     capture.begin();
+    overlay.record();
     eprintln!("recording...");
     *slot = Some(Session { ducker: None });
     if let Some(percent) = duck {
@@ -295,12 +346,18 @@ fn handle(
     let cleaned_at = started.elapsed();
 
     injector.inject(&final_text, terminal)?;
+    // Injection is timed because it was once the largest term of the three and
+    // nothing pointed at it: a device probe on every paste, invisible in a total.
+    let injected = started.elapsed() - cleaned_at;
 
     if final_text == text {
-        eprintln!("{spoken:.1}s {level} -> {transcribed:?} stt, {:?} total: {final_text}", started.elapsed());
+        eprintln!(
+            "{spoken:.1}s {level} -> {transcribed:?} stt, {injected:?} paste, {:?} total: {final_text}",
+            started.elapsed()
+        );
     } else {
         eprintln!(
-            "{spoken:.1}s {level} -> {transcribed:?} stt, {:?} clean, {:?} total\n  raw:   {text}\n  clean: {final_text}",
+            "{spoken:.1}s {level} -> {transcribed:?} stt, {:?} clean, {injected:?} paste, {:?} total\n  raw:   {text}\n  clean: {final_text}",
             cleaned_at - transcribed,
             started.elapsed()
         );

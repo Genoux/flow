@@ -1,0 +1,737 @@
+//! A small island that floats above everything while flow is recording. The
+//! five bars are frequency bands of the live microphone, mirrored about the
+//! centre, so the island moves with what is actually being said and crests in
+//! the middle: a vowel swells the centre, an "s" flicks the two ends. Nothing
+//! here runs on a timer except the sweep shown while the transcript is being
+//! produced.
+//!
+//! It is a wlr-layer-shell surface painted into a shared-memory buffer by hand.
+//! A toolkit would mean GTK or Qt in a daemon that otherwise has no UI, and the
+//! whole drawing here is one rounded rectangle repeated - the island and every
+//! bar are the same primitive.
+
+use anyhow::{anyhow, Context, Result};
+use std::fs::File;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::FileExt;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::time::Duration;
+use wayland_client::protocol::{
+    wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+};
+use wayland_client::{delegate_noop, Connection, Dispatch, QueueHandle};
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+
+use crate::audio::Monitor;
+
+const WIDTH: u32 = 96;
+const HEIGHT: u32 = 40;
+/// Clear of the usual bottom bar without sitting in the middle of the screen.
+const MARGIN_BOTTOM: i32 = 96;
+
+const BAR_COUNT: usize = 5;
+const BAR_WIDTH: f32 = 5.0;
+const BAR_GAP: f32 = 5.0;
+/// Equal to the bar width, so silence rests as a row of dots rather than slivers.
+const BAR_MIN: f32 = 5.0;
+const BAR_MAX: f32 = 26.0;
+
+/// The bars animate in place rather than scrolling, so this is a real frame
+/// rate and not a sampling interval.
+const FRAME: Duration = Duration::from_millis(16);
+
+const ISLAND: (f32, f32, f32) = (0.055, 0.055, 0.066);
+/// Translucent enough for a compositor blur to read through it. Hyprland needs
+/// `layerrule = blur, flow` to frost it; without that rule this is just tinted
+/// glass over the desktop, which still looks deliberate.
+const ISLAND_ALPHA: f32 = 0.35;
+const EDGE: (f32, f32, f32) = (1.0, 1.0, 1.0);
+const EDGE_ALPHA: f32 = 0.25;
+const BAR: (f32, f32, f32) = (1.0, 1.0, 1.0);
+const BAR_ALPHA: f32 = 0.92;
+/// A dark rim drawn under each bar. The island is glass, so whatever is behind
+/// it can be any brightness - over a white window the white bars disappear
+/// without this. It is invisible against a dark backdrop, which is the point:
+/// it only shows where it is needed.
+const RIM: (f32, f32, f32) = (0.0, 0.0, 0.0);
+const RIM_ALPHA: f32 = 0.42;
+const RIM_WIDTH: f32 = 0.9;
+/// Muted while transcribing, so working reads as quieter than listening rather
+/// than as another voice.
+const BAR_WORKING_ALPHA: f32 = 0.45;
+
+/// Below this the island stays flat. Measured on the webcam mic: an idle room
+/// captures rms 0.000 to 0.004, so this clears the noise without clipping a
+/// voice from across the desk.
+///
+/// Do not take the 0.046 room tone quoted on [`crate::audio::SILENCE_RMS`] as
+/// the floor here - that figure is from the phone mic. Set this from real
+/// `peak x rms y` lines in the log, never from another device's numbers.
+///
+/// This is a gate, not a scale. The decibel curve below is sensitive enough to
+/// show a quiet consonant, which makes it sensitive enough to show room tone
+/// too; this decides whether there is a voice at all. It reads the broadband
+/// level rather than any one band, because that is what separates a room from a
+/// word: an idle room measures rms 0.000 to 0.004 here, a spoken word 0.02 up.
+///
+/// ponytail: a fixed floor. A rolling minimum would adapt per device.
+pub const NOISE_FLOOR: f32 = 0.005;
+
+/// The bar scale, in decibels. A band's amplitude spans some 60dB between a
+/// quiet consonant and a loud vowel, and neither a linear nor a square-root
+/// scale can show both ends at once: tuned for the loud end, everything quiet
+/// collapses onto the floor. That is exactly what pinned the outer bars until
+/// the voice was raised.
+const FLOOR_DB: f32 = -72.0;
+const CEILING_DB: f32 = -24.0;
+
+/// Height of one bar, 0.0 to 1.0, from one band's amplitude.
+pub fn band_fraction(amplitude: f32) -> f32 {
+    if amplitude <= 0.0 {
+        return 0.0;
+    }
+    let decibels = 20.0 * amplitude.log10();
+    ((decibels - FLOOR_DB) / (CEILING_DB - FLOOR_DB)).clamp(0.0, 1.0)
+}
+
+/// Samples per analysis window: 32ms at 16kHz. Long enough to resolve a voice
+/// into bands, short enough that the bars track syllables rather than smear
+/// them together.
+pub const WINDOW: usize = 512;
+
+/// How many frequency bands the voice is split into. Fewer than there are
+/// bars, because the island mirrors them about its centre.
+pub const BAND_COUNT: usize = 3;
+
+/// Edges of the bands in Hz, low to high: the fundamental and chest of the
+/// voice, the formants that carry the vowels, then the consonants and
+/// sibilance up top.
+const BANDS: [(f32, f32); BAND_COUNT] = [(80.0, 400.0), (400.0, 1500.0), (1500.0, 6000.0)];
+
+/// Which band each bar draws, left to right. The lowest band sits in the middle
+/// and frequency climbs outward, so the island moves out from its centre rather
+/// than piling up on the left - speech energy lives at the bottom of the range,
+/// and laying the bands out in order put all of it at one end.
+const MIRROR: [usize; BAR_COUNT] = [2, 1, 0, 1, 2];
+
+/// Per-band gain. Speech energy falls away steeply with frequency, so without
+/// this the outer bars never leave the floor. Calibrated against
+/// tests/fixtures/jfk.wav - see tests/spectrum.rs.
+const BAND_GAIN: [f32; BAND_COUNT] = [1.0, 1.0, 4.0];
+
+/// Sample rate the band edges are expressed against.
+const SAMPLE_RATE: f32 = 16_000.0;
+
+/// Splits a window of audio into the five band heights the bars draw. Holds the
+/// FFT plan and its buffers, because planning is the expensive part and this
+/// runs on every frame.
+pub struct Analyzer {
+    fft: std::sync::Arc<dyn realfft::RealToComplex<f32>>,
+    input: Vec<f32>,
+    output: Vec<realfft::num_complex::Complex<f32>>,
+    /// Precomputed Hann window. Without it a syllable's hard edges leak across
+    /// every band and all five bars rise together on transients.
+    taper: Vec<f32>,
+}
+
+impl Analyzer {
+    pub fn new() -> Self {
+        let fft = realfft::RealFftPlanner::<f32>::new().plan_fft_forward(WINDOW);
+        let taper = (0..WINDOW)
+            .map(|index| {
+                let phase = std::f32::consts::TAU * index as f32 / WINDOW as f32;
+                0.5 - 0.5 * phase.cos()
+            })
+            .collect();
+        Self {
+            input: fft.make_input_vec(),
+            output: fft.make_output_vec(),
+            fft,
+            taper,
+        }
+    }
+
+    /// Bar heights, 0.0 to 1.0, low band first. All zero until the window has
+    /// filled.
+    pub fn bands(&mut self, window: &[f32]) -> [f32; BAND_COUNT] {
+        if window.len() < WINDOW || crate::audio::rms(&window[window.len() - WINDOW..]) < NOISE_FLOOR
+        {
+            return [0.0; BAND_COUNT];
+        }
+        let mut bands = self.amplitudes(window);
+        for (band, height) in bands.iter_mut().enumerate() {
+            *height = band_fraction(*height * BAND_GAIN[band]);
+        }
+        bands
+    }
+
+    /// Raw RMS amplitude within each band, before any gain or curve. Separate
+    /// from [`Analyzer::bands`] so the gains can be calibrated against measured
+    /// numbers rather than guessed.
+    pub fn amplitudes(&mut self, window: &[f32]) -> [f32; BAND_COUNT] {
+        let mut bands = [0.0; BAND_COUNT];
+        if window.len() < WINDOW {
+            return bands;
+        }
+
+        let samples = &window[window.len() - WINDOW..];
+        for ((slot, sample), taper) in self.input.iter_mut().zip(samples).zip(&self.taper) {
+            *slot = *sample * taper;
+        }
+        if self.fft.process(&mut self.input, &mut self.output).is_err() {
+            return bands;
+        }
+
+        let per_bin = SAMPLE_RATE / WINDOW as f32;
+        for (band, (low, high)) in BANDS.iter().enumerate() {
+            let first = (low / per_bin).round() as usize;
+            let last = ((high / per_bin).round() as usize).min(self.output.len() - 1);
+            if first >= last {
+                continue;
+            }
+            // Mean power over the band, so a wide band is not louder for being wide.
+            let power: f32 = self.output[first..last]
+                .iter()
+                .map(|bin| bin.norm_sqr())
+                .sum();
+            bands[band] = (power / (last - first) as f32).sqrt() / WINDOW as f32 * 2.0;
+        }
+        bands
+    }
+}
+
+impl Default for Analyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Bars per second the transcribing crest travels.
+const SWEEP_SPEED: f32 = 4.5;
+/// How far the crest reaches either side of its centre, in bars.
+const SWEEP_REACH: f32 = 1.5;
+/// Kept below a full bar so working never looks louder than speaking.
+const SWEEP_HEIGHT: f32 = 0.72;
+
+/// Height of one bar while the transcript is being produced. A single crest
+/// sweeps the island, which reads as busy rather than as listening - the two
+/// states have to be tellable apart at a glance.
+pub fn sweep(bar: usize, seconds: f32) -> f32 {
+    // A pause at each end, so the crest re-enters instead of bouncing.
+    let travelled = (seconds * SWEEP_SPEED) % (BAR_COUNT as f32 + 2.0) - 1.0;
+    let reach = (bar as f32 - travelled).abs() / SWEEP_REACH;
+    (1.0 - reach).max(0.0) * SWEEP_HEIGHT
+}
+
+/// How much of the previous level survives one frame as it falls.
+const RELEASE: f32 = 0.82;
+
+/// Fast attack, slow release - the level-meter ballistic. The bars have to
+/// follow the voice, and raw per-frame rms twitches on every syllable edge.
+pub fn smooth(previous: f32, current: f32) -> f32 {
+    if current > previous {
+        current
+    } else {
+        previous * RELEASE + current * (1.0 - RELEASE)
+    }
+}
+
+/// Signed distance from a point to a rounded rectangle, negative inside it.
+/// Both the island and its bars are drawn from this, which is what keeps the
+/// edges smooth without a rasterising library.
+pub fn rounded_rect_distance(
+    point: (f32, f32),
+    centre: (f32, f32),
+    half: (f32, f32),
+    radius: f32,
+) -> f32 {
+    let dx = (point.0 - centre.0).abs() - (half.0 - radius);
+    let dy = (point.1 - centre.1).abs() - (half.1 - radius);
+    let outside = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+    outside + dx.max(dy).min(0.0) - radius
+}
+
+/// What the island is showing. Also the message the daemon sends to change it.
+#[derive(Clone, Copy)]
+enum Command {
+    Record,
+    Transcribe,
+    /// The recording was thrown away - a cancel, or a tap too short to count.
+    Cancel,
+    /// The transcript landed. Ignored once a new dictation has started, so a
+    /// slow transcription cannot pull the island out from under the next one.
+    Finish,
+}
+
+/// Handle to the drawing thread. Every method is best-effort: on a compositor
+/// without layer-shell, or with no display at all, the island simply never
+/// appears and dictation is untouched.
+pub struct Overlay {
+    commands: Sender<Command>,
+}
+
+impl Overlay {
+    pub fn spawn(monitor: Monitor) -> Self {
+        let (commands, incoming) = mpsc::channel();
+        std::thread::spawn(move || {
+            if let Err(err) = run(monitor, incoming) {
+                eprintln!("overlay disabled: {err}");
+            }
+        });
+        Self { commands }
+    }
+
+    pub fn record(&self) {
+        let _ = self.commands.send(Command::Record);
+    }
+
+    pub fn transcribe(&self) {
+        let _ = self.commands.send(Command::Transcribe);
+    }
+
+    pub fn cancel(&self) {
+        let _ = self.commands.send(Command::Cancel);
+    }
+
+    pub fn finish(&self) {
+        let _ = self.commands.send(Command::Finish);
+    }
+}
+
+/// ARGB8888 pixels, little-endian and alpha-premultiplied as wl_shm wants them.
+struct Canvas {
+    pixels: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+impl Canvas {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            pixels: vec![0; width * height * 4],
+            width,
+            height,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.pixels.fill(0);
+    }
+
+    fn blend(&mut self, x: usize, y: usize, (r, g, b): (f32, f32, f32), alpha: f32) {
+        let at = (y * self.width + x) * 4;
+        let pixel = &mut self.pixels[at..at + 4];
+        for (channel, value) in [b, g, r, 1.0].into_iter().enumerate() {
+            let source = value * alpha * 255.0;
+            pixel[channel] = (source + pixel[channel] as f32 * (1.0 - alpha)) as u8;
+        }
+    }
+
+    fn rounded_rect(
+        &mut self,
+        centre: (f32, f32),
+        half: (f32, f32),
+        radius: f32,
+        colour: (f32, f32, f32),
+        alpha: f32,
+    ) {
+        let left = (centre.0 - half.0 - 1.0).floor().max(0.0) as usize;
+        let right = ((centre.0 + half.0 + 1.0).ceil() as usize).min(self.width);
+        let top = (centre.1 - half.1 - 1.0).floor().max(0.0) as usize;
+        let bottom = ((centre.1 + half.1 + 1.0).ceil() as usize).min(self.height);
+
+        for y in top..bottom {
+            for x in left..right {
+                let point = (x as f32 + 0.5, y as f32 + 0.5);
+                // Distance to coverage across one pixel is the whole anti-alias.
+                let coverage = (0.5 - rounded_rect_distance(point, centre, half, radius))
+                    .clamp(0.0, 1.0);
+                if coverage > 0.0 {
+                    self.blend(x, y, colour, coverage * alpha);
+                }
+            }
+        }
+    }
+}
+
+fn render(canvas: &mut Canvas, bands: &[f32; BAND_COUNT], seconds: f32, transcribing: bool, scale: f32) {
+    canvas.clear();
+
+    let width = WIDTH as f32 * scale;
+    let height = HEIGHT as f32 * scale;
+    let centre = (width / 2.0, height / 2.0);
+    let corner = height / 2.0;
+
+    // The hairline is the outer rectangle showing past the fill by one pixel.
+    canvas.rounded_rect(centre, (width / 2.0, height / 2.0), corner, EDGE, EDGE_ALPHA);
+    canvas.rounded_rect(
+        centre,
+        (width / 2.0 - scale, height / 2.0 - scale),
+        corner - scale,
+        ISLAND,
+        ISLAND_ALPHA,
+    );
+
+    let pitch = (BAR_WIDTH + BAR_GAP) * scale;
+    let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
+    let first = (width - span) / 2.0 + BAR_WIDTH * scale / 2.0;
+
+    let alpha = match transcribing {
+        true => BAR_WORKING_ALPHA,
+        false => BAR_ALPHA,
+    };
+    for (index, band) in MIRROR.iter().enumerate() {
+        let height = match transcribing {
+            true => sweep(index, seconds),
+            false => bands[*band],
+        };
+        let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
+        let at = (first + pitch * index as f32, centre.1);
+        let half = (BAR_WIDTH * scale / 2.0, bar / 2.0);
+        let rim = RIM_WIDTH * scale;
+
+        canvas.rounded_rect(
+            at,
+            (half.0 + rim, half.1 + rim),
+            half.0 + rim,
+            RIM,
+            RIM_ALPHA * alpha,
+        );
+        canvas.rounded_rect(at, half, half.0, BAR, alpha);
+    }
+}
+
+#[derive(Default)]
+struct Wayland {
+    compositor: Option<wl_compositor::WlCompositor>,
+    shm: Option<wl_shm::WlShm>,
+    layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
+    scale: i32,
+    configured: bool,
+    closed: bool,
+}
+
+/// The mapped surface. Dropped the moment recording stops, so nothing of flow
+/// is on screen - or composited - between dictations.
+struct Island {
+    surface: wl_surface::WlSurface,
+    layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+}
+
+impl Island {
+    fn map(
+        compositor: &wl_compositor::WlCompositor,
+        shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
+        queue: &QueueHandle<Wayland>,
+    ) -> Self {
+        let surface = compositor.create_surface(queue, ());
+        let layer = shell.get_layer_surface(
+            &surface,
+            None,
+            zwlr_layer_shell_v1::Layer::Overlay,
+            "flow".into(),
+            queue,
+            (),
+        );
+        layer.set_size(WIDTH, HEIGHT);
+        layer.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
+        layer.set_margin(0, 0, MARGIN_BOTTOM, 0);
+        layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+
+        // An empty input region makes the island click-through; an indicator
+        // that swallows a click on whatever is underneath is worse than none.
+        let region = compositor.create_region(queue, ());
+        surface.set_input_region(Some(&region));
+        region.destroy();
+
+        surface.commit();
+        Self { surface, layer }
+    }
+}
+
+impl Drop for Island {
+    fn drop(&mut self) {
+        self.layer.destroy();
+        self.surface.destroy();
+    }
+}
+
+/// Two buffers so the compositor is never reading the frame we are painting.
+struct Buffers {
+    file: File,
+    pool: wl_shm_pool::WlShmPool,
+    buffers: [wl_buffer::WlBuffer; 2],
+    canvas: Canvas,
+    next: usize,
+    scale: i32,
+}
+
+impl Buffers {
+    fn create(shm: &wl_shm::WlShm, queue: &QueueHandle<Wayland>, scale: i32) -> Result<Self> {
+        let width = WIDTH as i32 * scale;
+        let height = HEIGHT as i32 * scale;
+        let stride = width * 4;
+        let frame = stride * height;
+
+        let file = File::from(shared_memory(frame as usize * 2)?);
+        let pool = shm.create_pool(file.as_fd(), frame * 2, queue, ());
+        let buffers = [0, 1].map(|slot| {
+            pool.create_buffer(
+                slot * frame,
+                width,
+                height,
+                stride,
+                wl_shm::Format::Argb8888,
+                queue,
+                (),
+            )
+        });
+
+        Ok(Self {
+            file,
+            pool,
+            buffers,
+            canvas: Canvas::new(width as usize, height as usize),
+            next: 0,
+            scale,
+        })
+    }
+
+    fn present(
+        &mut self,
+        surface: &wl_surface::WlSurface,
+        bands: &[f32; BAND_COUNT],
+        seconds: f32,
+        transcribing: bool,
+    ) -> Result<()> {
+        render(
+            &mut self.canvas,
+            bands,
+            seconds,
+            transcribing,
+            self.scale as f32,
+        );
+
+        let slot = self.next;
+        self.next = 1 - self.next;
+        self.file
+            .write_all_at(&self.canvas.pixels, (slot * self.canvas.pixels.len()) as u64)
+            .context("writing the overlay frame")?;
+
+        surface.attach(Some(&self.buffers[slot]), 0, 0);
+        surface.damage_buffer(0, 0, self.canvas.width as i32, self.canvas.height as i32);
+        surface.commit();
+        Ok(())
+    }
+}
+
+impl Drop for Buffers {
+    fn drop(&mut self) {
+        for buffer in &self.buffers {
+            buffer.destroy();
+        }
+        self.pool.destroy();
+    }
+}
+
+fn shared_memory(size: usize) -> Result<OwnedFd> {
+    // SAFETY: a NUL-terminated literal name, and the raw fd is taken into an
+    // OwnedFd immediately so it is closed exactly once.
+    let raw = unsafe { libc::memfd_create(c"flow-overlay".as_ptr(), libc::MFD_CLOEXEC) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error()).context("memfd_create");
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+
+    // SAFETY: sizing a fresh memfd owned by `fd`.
+    if unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("sizing the overlay buffer");
+    }
+    Ok(fd)
+}
+
+fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
+    let connection = Connection::connect_to_env().context("no wayland display")?;
+    let mut queue = connection.new_event_queue();
+    let handle = queue.handle();
+    connection.display().get_registry(&handle, ());
+
+    let mut state = Wayland {
+        scale: 1,
+        ..Wayland::default()
+    };
+    queue.roundtrip(&mut state)?;
+
+    let compositor = state
+        .compositor
+        .clone()
+        .ok_or_else(|| anyhow!("compositor does not advertise wl_compositor"))?;
+    let shm = state
+        .shm
+        .clone()
+        .ok_or_else(|| anyhow!("compositor does not advertise wl_shm"))?;
+    let shell = state
+        .layer_shell
+        .clone()
+        .ok_or_else(|| anyhow!("compositor does not support wlr-layer-shell"))?;
+
+    let mut island: Option<Island> = None;
+    let mut buffers: Option<Buffers> = None;
+    let mut analyzer = Analyzer::new();
+    let mut window: Vec<f32> = Vec::with_capacity(WINDOW);
+    let mut bands = [0.0f32; BAND_COUNT];
+    let mut started = std::time::Instant::now();
+    let mut transcribing = false;
+
+    loop {
+        let waiting = if island.is_some() {
+            commands.recv_timeout(FRAME)
+        } else {
+            commands.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        };
+
+        match waiting {
+            Ok(Command::Record) => {
+                bands = [0.0; BAND_COUNT];
+                transcribing = false;
+                started = std::time::Instant::now();
+                state.configured = false;
+                state.closed = false;
+                island = Some(Island::map(&compositor, &shell, &handle));
+            }
+            // The island stays mapped through the handover, so the bars turn
+            // into the sweep rather than blinking out and back.
+            Ok(Command::Transcribe) => {
+                transcribing = true;
+                started = std::time::Instant::now();
+            }
+            // A finish belonging to a dictation the user has already replaced
+            // with a new one. Leave the island where it is.
+            Ok(Command::Finish) if !transcribing => {}
+            Ok(Command::Cancel | Command::Finish) => {
+                island = None;
+                transcribing = false;
+                queue.roundtrip(&mut state)?;
+                continue;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+
+        queue.roundtrip(&mut state)?;
+
+        // The compositor can take the surface away at any point - a monitor
+        // unplugged mid-sentence. Recording carries on regardless.
+        if state.closed {
+            island = None;
+            continue;
+        }
+        let Some(mapped) = island.as_ref() else { continue };
+        if !state.configured {
+            continue;
+        }
+
+        if buffers.as_ref().is_none_or(|held| held.scale != state.scale) {
+            buffers = Some(Buffers::create(&shm, &handle, state.scale)?);
+        }
+        let Some(buffers) = buffers.as_mut() else { continue };
+
+        mapped.surface.set_buffer_scale(state.scale);
+        if !transcribing {
+            monitor.window(&mut window, WINDOW);
+            let measured = analyzer.bands(&window);
+            // Per band, so a bar that just spoke falls away on its own rather
+            // than being held up by whichever band is loudest.
+            for (bar, fresh) in bands.iter_mut().zip(measured) {
+                *bar = smooth(*bar, fresh);
+            }
+        }
+        buffers.present(
+            &mapped.surface,
+            &bands,
+            started.elapsed().as_secs_f32(),
+            transcribing,
+        )?;
+        connection.flush()?;
+    }
+}
+
+impl Dispatch<wl_registry::WlRegistry, ()> for Wayland {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        queue: &QueueHandle<Self>,
+    ) {
+        let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        else {
+            return;
+        };
+        match &interface[..] {
+            // Version 6 carries preferred_buffer_scale, which is what keeps the
+            // island sharp on a scaled output instead of upscaled and soft.
+            "wl_compositor" => {
+                state.compositor = Some(registry.bind(name, version.min(6), queue, ()));
+            }
+            "wl_shm" => state.shm = Some(registry.bind(name, 1, queue, ())),
+            "zwlr_layer_shell_v1" => {
+                state.layer_shell = Some(registry.bind(name, version.min(4), queue, ()));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for Wayland {
+    fn event(
+        state: &mut Self,
+        _: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_surface::Event::PreferredBufferScale { factor } = event {
+            state.scale = factor.max(1);
+        }
+    }
+}
+
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Wayland {
+    fn event(
+        state: &mut Self,
+        layer: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
+                layer.ack_configure(serial);
+                state.configured = true;
+            }
+            zwlr_layer_surface_v1::Event::Closed => state.closed = true,
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Wayland: ignore wl_compositor::WlCompositor);
+delegate_noop!(Wayland: ignore wl_shm::WlShm);
+delegate_noop!(Wayland: ignore wl_shm_pool::WlShmPool);
+delegate_noop!(Wayland: ignore wl_buffer::WlBuffer);
+delegate_noop!(Wayland: ignore wl_region::WlRegion);
+delegate_noop!(Wayland: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
+
+
+
+
+
+
