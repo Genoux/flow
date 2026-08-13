@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 
-/// Start and stop are separate signals rather than one toggle so they are
-/// idempotent: a missed or doubled press cannot leave the daemon out of sync
-/// with the key, which is how toggle strands a microphone open.
+/// `flow start` / `flow stop` signal the daemon. Start alone is enough for
+/// hold-to-talk: the daemon watches the physical chord and stops on release.
+/// An explicit stop remains safe if nothing is recording.
 pub const START: libc::c_int = signal_hook::consts::SIGUSR1;
 pub const STOP: libc::c_int = signal_hook::consts::SIGUSR2;
 

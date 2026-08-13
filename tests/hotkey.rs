@@ -1,5 +1,6 @@
 use evdev::KeyCode;
-use flow::hotkey::{Event, PttState, PTT};
+use flow::hotkey::{chord_broken, chord_released, Event, PttState, PTT};
+use std::collections::HashSet;
 use std::time::Duration;
 
 const OTHER: KeyCode = KeyCode::KEY_C;
@@ -70,4 +71,19 @@ fn idle_keyboard_reports_modifiers_released() {
         return;
     }
     assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
+}
+
+/// Compositor hold ends when any finger of the original chord comes up - not
+/// only when every key is released, and not only when the letter key lifts.
+#[test]
+fn chord_breaks_when_any_held_key_lifts() {
+    let chord = HashSet::from([KeyCode::KEY_LEFTMETA, KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_D]);
+    assert!(!chord_broken(&chord, &chord));
+
+    let mut after = chord.clone();
+    after.remove(&KeyCode::KEY_D);
+    assert!(chord_broken(&chord, &after));
+    assert!(!chord_released(&chord, &after), "shift/super still down");
+    assert!(!chord_broken(&chord, &HashSet::new()), "empty read is unknown, not a release");
+    assert!(chord_released(&chord, &HashSet::new()));
 }
