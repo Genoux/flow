@@ -22,7 +22,7 @@ fn compare_with_and_without_vocabulary() {
     let bare = flow::cleanup::Cleaner::load(&path, vec![], None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("no vocab:   {:?}", bare.clean(raw).expect("clean"));
+        eprintln!("no vocab:   {:?}", bare.clean_within(raw, std::time::Duration::from_secs(120)).expect("clean"));
     }
     drop(bare);
 
@@ -35,6 +35,6 @@ fn compare_with_and_without_vocabulary() {
     let informed = flow::cleanup::Cleaner::load(&path, terms, None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("with vocab: {:?}", informed.clean(raw).expect("clean"));
+        eprintln!("with vocab: {:?}", informed.clean_within(raw, std::time::Duration::from_secs(120)).expect("clean"));
     }
 }

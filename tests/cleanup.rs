@@ -110,7 +110,9 @@ fn cleanup_behaves() {
 
     for case in CASES {
         let started = std::time::Instant::now();
-        let cleaned = cleaner.clean(case.raw).expect("clean");
+        let cleaned = cleaner
+            .clean_within(case.raw, std::time::Duration::from_secs(120))
+            .expect("clean");
         let elapsed = started.elapsed();
         let lowered = cleaned.to_lowercase();
 
@@ -141,8 +143,8 @@ fn cleanup_behaves() {
     // Greedy sampling is chosen so the same input always cleans the same way.
     // Without this the assertions above would be measuring noise.
     let repeated = "um so the the build is uh broken again";
-    let first = cleaner.clean(repeated).expect("clean");
-    let second = cleaner.clean(repeated).expect("clean");
+    let first = cleaner.clean_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
+    let second = cleaner.clean_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
     if first != second {
         failures.push(format!("not deterministic: {first:?} vs {second:?}"));
     }
@@ -152,7 +154,7 @@ fn cleanup_behaves() {
     // only thing that can tell "returned unchanged" apart from "skipped".
     let already_clean = "Yeah.";
     let started = std::time::Instant::now();
-    let skipped = cleaner.clean(already_clean).expect("clean");
+    let skipped = cleaner.clean_within(already_clean, std::time::Duration::from_secs(120)).expect("clean");
     let elapsed = started.elapsed();
     eprintln!("\n[trivial] {already_clean:?} -> {skipped:?}  ({elapsed:?})");
     if skipped != already_clean {
@@ -160,6 +162,15 @@ fn cleanup_behaves() {
     }
     if elapsed > std::time::Duration::from_millis(5) {
         failures.push(format!("trivial input took {elapsed:?} - reaching the model?"));
+    }
+
+    // An impossible budget must fail rather than return half a sentence: main.rs
+    // treats the error as "use the raw transcript", and a truncated cleanup would
+    // be worse than the transcript it replaced.
+    let long = "um so i pushed the change and then uh the build broke again";
+    match cleaner.clean_within(long, std::time::Duration::from_millis(1)) {
+        Err(err) => eprintln!("\n[budget] refused as expected: {err}"),
+        Ok(text) => failures.push(format!("a 1ms budget still produced {text:?}")),
     }
 
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));

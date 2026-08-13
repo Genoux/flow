@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -8,7 +8,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// What the model is told it is doing. This is the product: transcription is a
 /// commodity, but turning spoken rambling into text someone meant to write is
@@ -50,6 +50,15 @@ fn backend() -> Result<&'static LlamaBackend> {
         .as_ref()
         .ok_or_else(|| anyhow!("llama backend failed to initialise"))
 }
+
+/// How long cleanup may take before the raw transcript is shipped instead.
+///
+/// Polish is worth a moment, never an unbounded one: the model went from a 469ms
+/// median on a discrete GPU to 4-9s on an integrated one, and the dictation
+/// arriving nine seconds after the key was released reads as the binding having
+/// failed. Parakeet already punctuates and capitalises, so the fallback is a
+/// slightly rougher sentence rather than no sentence.
+const CLEANUP_BUDGET: Duration = Duration::from_millis(2_500);
 
 /// Filler words the prompt asks the model to delete. Only used to decide whether
 /// a short utterance is already finished, never to edit text - deleting these by
@@ -262,7 +271,14 @@ impl Cleaner {
         )
     }
 
+    /// Cleans within the shipping budget. The prompt's behaviour is tested
+    /// through [`Cleaner::clean_within`] instead, so the regression suite measures
+    /// what the model writes rather than how fast this machine's GPU is.
     pub fn clean(&self, raw: &str) -> Result<String> {
+        self.clean_within(raw, CLEANUP_BUDGET)
+    }
+
+    pub fn clean_within(&self, raw: &str, budget_for: Duration) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
@@ -311,7 +327,16 @@ impl Cleaner {
         // languages.
         let mut decoder = encoding_rs::UTF_8.new_decoder();
 
+        let deadline = Instant::now() + budget_for;
+
         for _ in 0..budget {
+            // Bounded so the wait between speaking and seeing text cannot run
+            // away with the hardware. Erroring rather than returning the partial
+            // generation hands main.rs the raw transcript, which is a finished
+            // sentence - a truncated cleanup would not be.
+            if Instant::now() > deadline {
+                bail!("cleanup exceeded {budget_for:?}");
+            }
             let token = sampler.sample(&ctx, -1);
             sampler.accept(token);
             if self.model.is_eog_token(token) {
