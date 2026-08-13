@@ -70,6 +70,30 @@ const FILLERS: [&str; 8] = ["um", "uh", "er", "ah", "like", "you know", "i mean"
 /// of a missing comma somewhere rise faster than the 200ms is worth.
 const TRIVIAL_WORDS: usize = 4;
 
+/// The language of a transcript, when there is enough of it to be sure.
+///
+/// `None` for anything short or ambiguous. Guessing would be worse than not
+/// knowing: every caller here treats a detected mismatch as a reason to throw the
+/// cleanup away, so a false positive silently switches cleanup off.
+pub fn language(text: &str) -> Option<whatlang::Lang> {
+    whatlang::detect(text)
+        .filter(|info| info.is_reliable())
+        .map(|info| info.lang())
+}
+
+/// Did cleanup translate?
+///
+/// The prompt has forbidden translation since commit 03085c6 and the model still
+/// does it - Québécois French with English loanwords came back entirely in
+/// English. Asking more firmly has been tried; this checks instead.
+pub fn changed_language(cleaned: &str, raw: &str) -> bool {
+    match (language(raw), language(cleaned)) {
+        (Some(before), Some(after)) => before != after,
+        // One of them could not be placed, so there is nothing to compare.
+        _ => false,
+    }
+}
+
 /// Words that are only ever the sound of thinking, not a word being said.
 fn words(raw: &str) -> Vec<String> {
     raw.split(|c: char| !c.is_alphanumeric() && c != '\'')
@@ -297,15 +321,26 @@ impl Cleaner {
         }
     }
 
-    fn system_prompt(&self) -> String {
-        if self.vocabulary.is_empty() {
-            return SYSTEM.to_string();
+    fn system_prompt(&self, raw: &str) -> String {
+        let mut prompt = SYSTEM.to_string();
+
+        // Naming the one language this input is in, which is the opposite of what
+        // commit 03085c6 found harmful: listing example languages in the static
+        // prompt primed the model towards them, while naming the detected language
+        // replaces an abstract rule with a concrete instruction.
+        if let Some(language) = language(raw) {
+            let name = language.eng_name();
+            prompt.push_str(&format!("\n\nThis input is in {name}. Reply in {name}."));
         }
-        format!(
-            "{SYSTEM}\n\nNames that are often mis-recognised, spelled exactly \
-             like this: {}.",
-            self.vocabulary.join(", ")
-        )
+
+        if !self.vocabulary.is_empty() {
+            prompt.push_str(&format!(
+                "\n\nNames that are often mis-recognised, spelled exactly like \
+                 this: {}.",
+                self.vocabulary.join(", ")
+            ));
+        }
+        prompt
     }
 
     /// Cleans within the shipping budget. The prompt's behaviour is tested
@@ -327,7 +362,7 @@ impl Cleaner {
 
         let template = self.model.chat_template(None)?;
         let chat = [
-            LlamaChatMessage::new("system".into(), self.system_prompt())?,
+            LlamaChatMessage::new("system".into(), self.system_prompt(raw))?,
             LlamaChatMessage::new("user".into(), raw.into())?,
         ];
         let prompt = self.model.apply_chat_template(&template, &chat, true)?;
@@ -390,6 +425,15 @@ impl Cleaner {
         let cleaned = tidy(&output);
         if is_non_answer(&cleaned, raw) {
             bail!("cleanup answered {cleaned:?} instead of cleaning");
+        }
+        // Losing the polish is a nuisance; losing the language the words were
+        // spoken in makes the transcript somebody else's sentence.
+        if changed_language(&cleaned, raw) {
+            bail!(
+                "cleanup translated {:?} into {:?}",
+                language(raw).map(|l| l.eng_name()).unwrap_or("?"),
+                language(&cleaned).map(|l| l.eng_name()).unwrap_or("?")
+            );
         }
         Ok(cleaned)
     }
