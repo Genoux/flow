@@ -65,6 +65,47 @@ impl Monitor {
     }
 }
 
+/// Width of the window silence is measured over, 50ms: long enough to average out
+/// a single quiet sample, short enough to sit inside a real pause between words.
+const GAP_WINDOW: usize = SAMPLE_RATE as usize / 20;
+
+/// Audio worth transcribing on its own after a split. Below this the tail costs
+/// more in encoder overhead than the split saves.
+const MIN_TAIL: usize = SAMPLE_RATE as usize / 2;
+
+/// Where a recording can be cut in two while it is still being spoken, so the
+/// first half can be transcribed before the speaker has finished.
+///
+/// Only inside a genuine silence. Transcription is ~23x realtime on the CPU, so
+/// the start of a long dictation can be done by the time the key comes up, and
+/// that is 45% of the measured wait on anything over ten seconds. But the saving
+/// is worth nothing if the cut costs a word, and the pieces only agree with the
+/// whole when the cut lands in a pause - see tests/chunking.rs.
+///
+/// `None` means leave it alone: no pause yet, nothing worth splitting, or a
+/// speaker who has not drawn breath. Unbroken speech pays the full transcription
+/// at the end, which is the same behaviour as before this existed.
+pub fn split_at_silence(samples: &[f32], at_least: usize) -> Option<usize> {
+    if samples.len() < at_least + GAP_WINDOW + MIN_TAIL {
+        return None;
+    }
+
+    // The quietest window, not the first quiet one: a pause has a middle, and the
+    // middle is furthest from the words on either side of it.
+    let (index, level) = samples[at_least..]
+        .chunks(GAP_WINDOW)
+        .enumerate()
+        .map(|(index, window)| (index, rms(window)))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).expect("audio is never NaN"))?;
+
+    if level >= SILENCE_RMS {
+        return None;
+    }
+
+    let at = at_least + index * GAP_WINDOW + GAP_WINDOW / 2;
+    (samples.len() - at >= MIN_TAIL).then_some(at)
+}
+
 /// Process clock. `Instant` cannot live in an atomic, so callback freshness is
 /// tracked as milliseconds since the first call.
 fn now_millis() -> u64 {
@@ -226,6 +267,20 @@ impl Capture {
         samples.clear();
         samples.extend(pre.iter().copied());
         self.live.store(true, Ordering::Relaxed);
+    }
+
+    /// Hand over the start of a live recording so it can be transcribed while the
+    /// rest is still being spoken, leaving the remainder to be finished on
+    /// release. `None` whenever there is no safe place to cut - see
+    /// [`split_at_silence`] - so a speaker who never pauses simply gets the old
+    /// behaviour.
+    pub fn take_prefix(&self, at_least: usize) -> Option<Vec<f32>> {
+        if !self.live.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mut samples = self.samples.lock().unwrap();
+        let at = split_at_silence(&samples, at_least)?;
+        Some(samples.drain(..at).collect())
     }
 
     pub fn end(&self) -> Vec<f32> {
