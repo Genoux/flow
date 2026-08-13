@@ -298,6 +298,45 @@ impl Overlay {
     }
 }
 
+/// Which dictation the island currently belongs to.
+///
+/// The island must stay up until the text has actually landed, and "landed" is
+/// the end of a job that includes transcription, cleanup and the paste. Two ways
+/// that guarantee used to break: a finish arriving for a dictation the user had
+/// already replaced with a new recording, and - because dictations queue - a
+/// finish for the first of two jobs hiding the island while the second was still
+/// being transcribed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Lifecycle {
+    transcribing: bool,
+    /// Jobs handed to the worker and not yet finished.
+    pending: usize,
+}
+
+impl Lifecycle {
+    /// A new recording started: the island is showing bars again, so a finish for
+    /// anything earlier must no longer take it down.
+    pub fn record(&mut self) {
+        self.transcribing = false;
+    }
+
+    pub fn transcribe(&mut self) {
+        self.transcribing = true;
+        self.pending += 1;
+    }
+
+    /// Whether this finish should take the island down.
+    pub fn finish(&mut self) -> bool {
+        self.pending = self.pending.saturating_sub(1);
+        self.transcribing && self.pending == 0
+    }
+
+    /// Nothing was queued, so there is nothing to wait for.
+    pub fn cancel(&mut self) {
+        self.transcribing = false;
+    }
+}
+
 /// ARGB8888 pixels, little-endian and alpha-premultiplied as wl_shm wants them.
 struct Canvas {
     pixels: Vec<u8>,
@@ -582,6 +621,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut bands = [0.0f32; BAND_COUNT];
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
+    let mut lifecycle = Lifecycle::default();
 
     loop {
         let waiting = if island.is_some() {
@@ -594,6 +634,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             Ok(Command::Record) => {
                 bands = [0.0; BAND_COUNT];
                 transcribing = false;
+                lifecycle.record();
                 started = std::time::Instant::now();
                 state.configured = false;
                 state.closed = false;
@@ -603,12 +644,22 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // into the sweep rather than blinking out and back.
             Ok(Command::Transcribe) => {
                 transcribing = true;
+                lifecycle.transcribe();
                 started = std::time::Instant::now();
             }
-            // A finish belonging to a dictation the user has already replaced
-            // with a new one. Leave the island where it is.
-            Ok(Command::Finish) if !transcribing => {}
-            Ok(Command::Cancel | Command::Finish) => {
+            // Only the finish that leaves nothing in flight takes the island
+            // down, so the feedback outlives the paste rather than the other way
+            // round. See [`Lifecycle`].
+            Ok(Command::Finish) => {
+                if lifecycle.finish() {
+                    island = None;
+                    transcribing = false;
+                    queue.roundtrip(&mut state)?;
+                    continue;
+                }
+            }
+            Ok(Command::Cancel) => {
+                lifecycle.cancel();
                 island = None;
                 transcribing = false;
                 queue.roundtrip(&mut state)?;

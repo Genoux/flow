@@ -96,3 +96,54 @@ fn distance_is_negative_inside_and_positive_past_the_corner() {
     let corner = rounded_rect_distance((0.5, 0.5), centre, half, radius);
     assert!(corner > 0.0, "the square corner must be cut away, got {corner}");
 }
+
+// -- how long the island stays up ------------------------------------------
+//
+// The island is the only feedback that anything is happening, so it has to
+// outlive the paste. These cover the two ways it used to come down early.
+
+use flow::overlay::Lifecycle;
+
+#[test]
+fn the_island_survives_until_the_text_has_landed() {
+    let mut life = Lifecycle::default();
+    life.record();
+    life.transcribe();
+    assert!(life.finish(), "the only job finished, so the island comes down");
+}
+
+/// Dictations queue. A finish for the first must not take the island down while
+/// the second is still being transcribed.
+#[test]
+fn a_finish_does_not_hide_the_island_while_another_job_is_pending() {
+    let mut life = Lifecycle::default();
+    life.record();
+    life.transcribe();
+
+    // Second dictation, started before the first came back.
+    life.record();
+    life.transcribe();
+
+    assert!(!life.finish(), "first job finished, second still in flight");
+    assert!(life.finish(), "now nothing is left");
+}
+
+/// A finish arriving after the user has started recording again belongs to a
+/// dictation already replaced, and the island is showing bars for the new one.
+#[test]
+fn a_finish_for_a_replaced_dictation_is_ignored() {
+    let mut life = Lifecycle::default();
+    life.record();
+    life.transcribe();
+    life.record();
+
+    assert!(!life.finish(), "island is showing bars for the new recording");
+}
+
+#[test]
+fn a_stray_finish_never_hides_anything() {
+    let mut life = Lifecycle::default();
+    assert!(!life.finish(), "nothing was ever queued");
+    life.record();
+    assert!(!life.finish(), "recording, not transcribing");
+}
