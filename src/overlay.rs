@@ -36,30 +36,66 @@ const BAR_GAP: f32 = 5.0;
 const BAR_MIN: f32 = 5.0;
 const BAR_MAX: f32 = 26.0;
 
-/// The bars animate in place rather than scrolling, so this is a real frame
-/// rate and not a sampling interval.
-const FRAME: Duration = Duration::from_millis(16);
-
-/// A cool dark tint rather than near-black: glass over a dark desktop needs some
-/// colour of its own or the blur behind it is all there is to see.
-const ISLAND: (f32, f32, f32) = (0.08, 0.09, 0.115);
-
-/// The body thickens downwards. One flat alpha was the whole reason the island
-/// read as painted metal instead of glass - a pane catches light along its top
-/// edge and gathers density towards the bottom, and nothing about a uniform wash
-/// says which way is up.
+/// How fast the bars fall away when the sweep is about to take over, and how flat
+/// counts as flat.
 ///
-/// Both ends stay clear of the `ignore_alpha = 0.1` in Hyprland's layer rule,
-/// below which it stops blurring what is behind the surface - the top would go
-/// from frosted to a hole in the screen.
-const ISLAND_TOP_ALPHA: f32 = 0.22;
-const ISLAND_BOTTOM_ALPHA: f32 = 0.46;
+/// The handover used to be a cut: the bars were wherever the last syllable left
+/// them and the sweep started from its own shape, so the island jumped. Letting
+/// them settle first makes it read as one motion - the voice stops, the island
+/// comes to rest, then the sweep begins from nothing.
+const SETTLE: f32 = 0.80;
+const SETTLED: f32 = 0.02;
 
-/// The rim, brightest where the light would strike it and almost gone underneath.
-/// This is what actually reads as glass; the fill only supplies the depth.
+/// How long cleanup has to be still running before the sweep replaces the bars.
+///
+/// Only ever started once recognition has found words - see [`Overlay::working`] -
+/// because time cannot answer the question the sweep implies. A cough on seven
+/// seconds of silence takes 280ms to recognise and comes back empty, so a delay
+/// alone showed a spinner for something that was never going to produce text. This
+/// only stops the other flash: a dictation short enough that cleanup returns
+/// before a spinner is worth drawing.
+const SWEEP_DELAY: Duration = Duration::from_millis(200);
+
+/// The bars animate in place rather than scrolling, so this is a real frame rate
+/// and not a sampling interval. 7ms is ~143Hz, matching a 144Hz panel: the easing
+/// below is what makes the motion smooth, but it can only be as smooth as the
+/// frames it is drawn on, and 60Hz visibly steps on a display this fast.
+const FRAME: Duration = Duration::from_millis(7);
+
+/// Muted black over the blur, rather than the blur alone.
+///
+/// The blur is what makes the island visible, not this: blurred wallpaper already
+/// looks nothing like sharp wallpaper, so the shape reads without being painted
+/// in. A pale veil was tried and came out a solid light pill with the wallpaper
+/// lost behind it - opaque frosted plastic rather than glass. Darkening slightly
+/// keeps the bars legible over a bright photo while leaving its colour showing.
+///
+/// Over a desktop as dark as this one the fill is close to invisible on its own,
+/// which is fine - there the rim and the blur draw the shape.
+const ISLAND: (f32, f32, f32) = (0.04, 0.045, 0.055);
+
+/// Barely there, and deliberately flat. The island is meant to show the desktop
+/// behind it out of focus - whatever is back there, wallpaper or window - so the
+/// fill is a veil over the compositor's blur rather than a surface of its own. A
+/// gradient here competes with what it is supposed to be revealing.
+///
+/// Clear of the `ignore_alpha = 0.1` in Hyprland's layer rule, below which it
+/// stops blurring behind the surface and the island becomes a hole in the screen.
+/// Hyprland also needs the rule itself to frost anything: without
+/// `layerrule = blur, flow` this is a faint tint over a sharp desktop.
+const ISLAND_ALPHA: f32 = 0.32;
+
+/// A hairline ring around the edge, one pixel wide and one flat alpha.
+///
+/// This used to be drawn as a filled rounded rectangle with the tint painted over
+/// it, on the theory that only the outermost pixel would show. With the tint at
+/// full strength that was true. Once the tint dropped to a translucent veil, 80%
+/// of the fill underneath showed through - and since that fill ramped from 0.48
+/// at the top to 0.16 at the bottom, the island turned white and then less white
+/// down its height. It is an actual ring now, so the fill is the only thing
+/// filling anything.
 const EDGE: (f32, f32, f32) = (1.0, 1.0, 1.0);
-const EDGE_TOP_ALPHA: f32 = 0.50;
-const EDGE_BOTTOM_ALPHA: f32 = 0.10;
+const EDGE_ALPHA: f32 = 0.13;
 const BAR: (f32, f32, f32) = (1.0, 1.0, 1.0);
 const BAR_ALPHA: f32 = 0.92;
 /// A dark rim drawn under each bar. The island is glass, so whatever is behind
@@ -87,8 +123,14 @@ const BAR_WORKING_ALPHA: f32 = 0.45;
 /// level rather than any one band, because that is what separates a room from a
 /// word: an idle room measures rms 0.000 to 0.004 here, a spoken word 0.02 up.
 ///
-/// ponytail: a fixed floor. A rolling minimum would adapt per device.
-pub const NOISE_FLOOR: f32 = 0.005;
+/// How far above the room a window has to be before it moves the bars. The room
+/// itself is tracked rather than assumed - see [`Analyzer::room`].
+const NOISE_MARGIN: f32 = 3.0;
+
+/// Where the tracked floor starts, and the lowest it may go. A dead capture
+/// reports zero, and a floor of zero would let the first stray sample through.
+const NOISE_START: f32 = 0.01;
+const NOISE_MIN: f32 = 0.0015;
 
 /// The bar scale, in decibels. A band's amplitude spans some 60dB between a
 /// quiet consonant and a loud vowel, and neither a linear nor a square-root
@@ -101,7 +143,7 @@ pub const NOISE_FLOOR: f32 = 0.005;
 /// inside its thresholds leaves the bars sitting still. Chosen by searching this
 /// pair and BAND_GAIN together for the most movement that still satisfies
 /// tests/spectrum.rs - see tests/calibrate.rs.
-const FLOOR_DB: f32 = -78.0;
+const FLOOR_DB: f32 = -72.0;
 const CEILING_DB: f32 = -30.0;
 
 /// Height of one bar, 0.0 to 1.0, from one band's amplitude.
@@ -151,7 +193,7 @@ const MIRROR: [usize; BAR_COUNT] = [3, 2, 1, 0, 1, 2, 3];
 /// Calibrated against tests/fixtures/jfk.wav - see tests/spectrum.rs and
 /// tests/calibrate.rs. That recording is from 1961 and thin at both extremes, so
 /// re-measure against this microphone before trusting bands 0 and 3.
-const BAND_GAIN: [f32; BAND_COUNT] = [0.9, 0.35, 1.0, 4.5];
+const BAND_GAIN: [f32; BAND_COUNT] = [0.7, 0.25, 0.7, 4.5];
 
 /// Sample rate the band edges are expressed against.
 const SAMPLE_RATE: f32 = 16_000.0;
@@ -163,6 +205,16 @@ pub struct Analyzer {
     fft: std::sync::Arc<dyn realfft::RealToComplex<f32>>,
     input: Vec<f32>,
     output: Vec<realfft::num_complex::Complex<f32>>,
+    /// The room, as loud as it has been recently. Falls quickly towards a quiet
+    /// window and leaks upwards otherwise, so a voice can never raise it - only
+    /// the silences between words set it, and a persistently louder room lifts it
+    /// once those silences stop arriving.
+    ///
+    /// A fixed floor was the old approach and it could not work: measured here, a
+    /// quiet room reads rms 0.008 at the median against a constant of 0.005, so
+    /// almost every silent window reached the bars. The right number differs per
+    /// microphone, and this one changes microphones.
+    noise: f32,
     /// Precomputed Hann window. Without it a syllable's hard edges leak across
     /// every band and all five bars rise together on transients.
     taper: Vec<f32>,
@@ -182,14 +234,33 @@ impl Analyzer {
             output: fft.make_output_vec(),
             fft,
             taper,
+            noise: NOISE_START,
         }
     }
 
+    /// The tracked level of the room, for tests and for anyone wondering why the
+    /// bars are resting.
+    pub fn room(&self) -> f32 {
+        self.noise
+    }
+
     /// Bar heights, 0.0 to 1.0, low band first. All zero until the window has
-    /// filled.
+    /// filled, or while the window is only as loud as the room.
     pub fn bands(&mut self, window: &[f32]) -> [f32; BAND_COUNT] {
-        if window.len() < WINDOW || crate::audio::rms(&window[window.len() - WINDOW..]) < NOISE_FLOOR
-        {
+        if window.len() < WINDOW {
+            return [0.0; BAND_COUNT];
+        }
+        let level = crate::audio::rms(&window[window.len() - WINDOW..]);
+
+        // Quick down, slow up. Tracking the minimum is what keeps a voice out of
+        // the estimate; the leak is what lets a louder room eventually raise it.
+        self.noise = if level < self.noise {
+            (self.noise * 0.7 + level * 0.3).max(NOISE_MIN)
+        } else {
+            (self.noise * 1.0004).min(level)
+        };
+
+        if level < self.noise * NOISE_MARGIN {
             return [0.0; BAND_COUNT];
         }
         let mut bands = self.amplitudes(window);
@@ -257,17 +328,19 @@ pub fn sweep(bar: usize, seconds: f32) -> f32 {
     (1.0 - reach).max(0.0) * SWEEP_HEIGHT
 }
 
-/// How much of the previous level survives one frame as it falls.
-const RELEASE: f32 = 0.82;
+/// How much of the previous level survives one frame, rising and falling.
+///
+/// Attack used to be instant, on the level-meter reasoning that the bars must
+/// answer the voice at once. They do answer it - in a single frame, which reads
+/// as a flicker rather than a swell no matter how many frames a second there are.
+/// Both directions ease now, the rise quicker than the fall so a syllable still
+/// arrives before it is over.
+const ATTACK: f32 = 0.80;
+const RELEASE: f32 = 0.93;
 
-/// Fast attack, slow release - the level-meter ballistic. The bars have to
-/// follow the voice, and raw per-frame rms twitches on every syllable edge.
 pub fn smooth(previous: f32, current: f32) -> f32 {
-    if current > previous {
-        current
-    } else {
-        previous * RELEASE + current * (1.0 - RELEASE)
-    }
+    let keep = if current > previous { ATTACK } else { RELEASE };
+    previous * keep + current * (1.0 - keep)
 }
 
 /// Signed distance from a point to a rounded rectangle, negative inside it.
@@ -289,7 +362,11 @@ pub fn rounded_rect_distance(
 #[derive(Clone, Copy)]
 enum Command {
     Record,
-    Transcribe,
+    /// The audio went to the worker. Counted so a finish cannot outrun it, but it
+    /// says nothing about whether there is anything to transcribe yet.
+    Queued,
+    /// Recognition found words, so there is real work to wait for.
+    Working,
     /// The recording was thrown away - a cancel, or a tap too short to count.
     Cancel,
     /// The transcript landed. Ignored once a new dictation has started, so a
@@ -319,8 +396,16 @@ impl Overlay {
         let _ = self.commands.send(Command::Record);
     }
 
-    pub fn transcribe(&self) {
-        let _ = self.commands.send(Command::Transcribe);
+    /// Audio handed over. Does not draw anything: until recognition has run, a
+    /// cough and a sentence are indistinguishable, and a cough must not get a
+    /// spinner.
+    pub fn queued(&self) {
+        let _ = self.commands.send(Command::Queued);
+    }
+
+    /// There are words. Cleanup takes long enough to be worth reporting.
+    pub fn working(&self) {
+        let _ = self.commands.send(Command::Working);
     }
 
     pub fn cancel(&self) {
@@ -408,19 +493,32 @@ impl Canvas {
         colour: (f32, f32, f32),
         alpha: f32,
     ) {
-        self.rounded_rect_shaded(centre, half, radius, colour, alpha, alpha);
+        self.fill(centre, half, radius, None, colour, alpha);
     }
 
-    /// The same shape, with the alpha ramping from `top` at its highest row to
-    /// `bottom` at its lowest.
-    fn rounded_rect_shaded(
+    /// A hairline ring: the shape minus a smaller copy of itself.
+    fn rounded_ring(
         &mut self,
         centre: (f32, f32),
         half: (f32, f32),
         radius: f32,
+        thickness: f32,
         colour: (f32, f32, f32),
-        top: f32,
-        bottom: f32,
+        alpha: f32,
+    ) {
+        self.fill(centre, half, radius, Some(thickness), colour, alpha);
+    }
+
+    /// Shared rasteriser. `hollow` leaves everything further inside than that many
+    /// pixels alone, which is what turns the shape into a ring.
+    fn fill(
+        &mut self,
+        centre: (f32, f32),
+        half: (f32, f32),
+        radius: f32,
+        hollow: Option<f32>,
+        colour: (f32, f32, f32),
+        alpha: f32,
     ) {
         let left = (centre.0 - half.0 - 1.0).floor().max(0.0) as usize;
         let right = ((centre.0 + half.0 + 1.0).ceil() as usize).min(self.width);
@@ -428,13 +526,22 @@ impl Canvas {
         let last_row = ((centre.1 + half.1 + 1.0).ceil() as usize).min(self.height);
 
         for y in first_row..last_row {
-            let down = ((y as f32 + 0.5 - (centre.1 - half.1)) / (half.1 * 2.0)).clamp(0.0, 1.0);
-            let alpha = top + (bottom - top) * down;
             for x in left..right {
                 let point = (x as f32 + 0.5, y as f32 + 0.5);
                 // Distance to coverage across one pixel is the whole anti-alias.
-                let coverage = (0.5 - rounded_rect_distance(point, centre, half, radius))
+                let mut coverage = (0.5 - rounded_rect_distance(point, centre, half, radius))
                     .clamp(0.0, 1.0);
+                if let Some(thickness) = hollow {
+                    let inner = (0.5
+                        - rounded_rect_distance(
+                            point,
+                            centre,
+                            (half.0 - thickness, half.1 - thickness),
+                            radius - thickness,
+                        ))
+                    .clamp(0.0, 1.0);
+                    coverage = (coverage - inner).clamp(0.0, 1.0);
+                }
                 if coverage > 0.0 {
                     self.blend(x, y, colour, coverage * alpha);
                 }
@@ -451,23 +558,11 @@ fn render(canvas: &mut Canvas, bands: &[f32; BAND_COUNT], seconds: f32, transcri
     let centre = (width / 2.0, height / 2.0);
     let corner = height / 2.0;
 
-    // The hairline is the outer rectangle showing past the fill by one pixel.
-    canvas.rounded_rect_shaded(
-        centre,
-        (width / 2.0, height / 2.0),
-        corner,
-        EDGE,
-        EDGE_TOP_ALPHA,
-        EDGE_BOTTOM_ALPHA,
-    );
-    canvas.rounded_rect_shaded(
-        centre,
-        (width / 2.0 - scale, height / 2.0 - scale),
-        corner - scale,
-        ISLAND,
-        ISLAND_TOP_ALPHA,
-        ISLAND_BOTTOM_ALPHA,
-    );
+    // Flat translucent fill over the whole shape, then a hairline around its edge.
+    // The fill is the only thing that fills; nothing is layered underneath it.
+    let half = (width / 2.0, height / 2.0);
+    canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA);
+    canvas.rounded_ring(centre, half, corner, scale, EDGE, EDGE_ALPHA);
 
     let pitch = (BAR_WIDTH + BAR_GAP) * scale;
     let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
@@ -673,12 +768,17 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         .ok_or_else(|| anyhow!("compositor does not support wlr-layer-shell"))?;
 
     let mut island: Option<Island> = None;
+    // Set when the audio is handed over, cleared when the sweep starts or the
+    // transcript comes back empty before it ever did.
+    let mut waiting_to_sweep: Option<std::time::Instant> = None;
     let mut buffers: Option<Buffers> = None;
     let mut analyzer = Analyzer::new();
     let mut window: Vec<f32> = Vec::with_capacity(WINDOW);
     let mut bands = [0.0f32; BAND_COUNT];
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
+    // The bars are still falling to rest; the sweep waits for them.
+    let mut settling = false;
     let mut lifecycle = Lifecycle::default();
 
     loop {
@@ -692,24 +792,34 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             Ok(Command::Record) => {
                 bands = [0.0; BAND_COUNT];
                 transcribing = false;
+                settling = false;
+                // A sweep that had not started yet belongs to the dictation this
+                // one replaces, and must not appear over the new bars.
+                waiting_to_sweep = None;
                 lifecycle.record();
                 started = std::time::Instant::now();
+                // Mapped at once. The duck happens on the same keypress, so any
+                // delay here reads as the island lagging the rest of the response.
                 state.configured = false;
                 state.closed = false;
                 island = Some(Island::map(&compositor, &shell, &handle));
             }
             // The island stays mapped through the handover, so the bars turn
             // into the sweep rather than blinking out and back.
-            Ok(Command::Transcribe) => {
-                transcribing = true;
-                lifecycle.transcribe();
-                started = std::time::Instant::now();
-            }
+            // Counted at once so a finish cannot outrun it. Nothing is drawn:
+            // recognition has not run, so there may be nothing here at all.
+            Ok(Command::Queued) => lifecycle.transcribe(),
+            // Words exist. Still held back by SWEEP_DELAY, because a short
+            // dictation can finish cleanup faster than a spinner is worth showing.
+            Ok(Command::Working) => waiting_to_sweep = Some(std::time::Instant::now()),
+            // Nothing came of the recording and the island never appeared. Leaving
+            // it unshown is the whole point of the delay.
             // Only the finish that leaves nothing in flight takes the island
             // down, so the feedback outlives the paste rather than the other way
             // round. See [`Lifecycle`].
             Ok(Command::Finish) => {
                 if lifecycle.finish() {
+                    waiting_to_sweep = None;
                     island = None;
                     transcribing = false;
                     queue.roundtrip(&mut state)?;
@@ -717,6 +827,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 }
             }
             Ok(Command::Cancel) => {
+                waiting_to_sweep = None;
                 lifecycle.cancel();
                 island = None;
                 transcribing = false;
@@ -725,6 +836,15 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+
+        // Still working after all this time, so it is worth saying so.
+        if let Some(since) = waiting_to_sweep
+            && since.elapsed() >= SWEEP_DELAY
+        {
+            waiting_to_sweep = None;
+            transcribing = true;
+            settling = true;
         }
 
         queue.roundtrip(&mut state)?;
@@ -746,7 +866,19 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         let Some(buffers) = buffers.as_mut() else { continue };
 
         mapped.surface.set_buffer_scale(state.scale);
-        if !transcribing {
+        if settling {
+            // Down to rest before the sweep, so the two do not collide.
+            for bar in bands.iter_mut() {
+                *bar *= SETTLE;
+            }
+            if bands.iter().all(|bar| *bar < SETTLED) {
+                bands = [0.0; BAND_COUNT];
+                settling = false;
+                // The sweep times from the moment the island is flat, so it
+                // always begins at its start rather than partway through.
+                started = std::time::Instant::now();
+            }
+        } else if !transcribing {
             monitor.window(&mut window, WINDOW);
             let measured = analyzer.bands(&window);
             // Per band, so a bar that just spoke falls away on its own rather
@@ -759,7 +891,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             &mapped.surface,
             &bands,
             started.elapsed().as_secs_f32(),
-            transcribing,
+            transcribing && !settling,
         )?;
         connection.flush()?;
     }

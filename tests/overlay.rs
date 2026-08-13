@@ -65,18 +65,124 @@ fn the_sweep_travels_and_repeats() {
     assert!(seen.len() >= 4, "the crest never crossed the island: {seen:?}");
 }
 
-/// Attack is instant so the island answers the voice; release is gradual so it
-/// does not collapse between syllables.
+/// Both directions ease. Attack used to be instant, which is what made the bars
+/// snap rather than swell - a bar that arrives in one frame reads as a flicker
+/// however high the frame rate is.
 #[test]
-fn level_snaps_up_and_falls_away() {
-    assert_eq!(smooth(0.2, 0.9), 0.9, "a rising level must not lag");
+fn level_eases_in_both_directions() {
+    let jumped = smooth(0.2, 0.9);
+    assert!(jumped > 0.2 && jumped < 0.5, "a rise must ease, not snap: {jumped}");
 
-    let mut falling = smooth(0.9, 0.0);
-    assert!(falling < 0.9 && falling > 0.5, "the fall is not gradual: {falling}");
-    for _ in 0..30 {
+    let mut rising = 0.2;
+    for _ in 0..40 {
+        rising = smooth(rising, 0.9);
+    }
+    assert!(rising > 0.85, "a held level must still arrive: {rising}");
+
+    let dropped = smooth(0.9, 0.0);
+    assert!(dropped < 0.9 && dropped > 0.6, "the fall is not gradual: {dropped}");
+    let mut falling = dropped;
+    for _ in 0..120 {
         falling = smooth(falling, 0.0);
     }
     assert!(falling < 0.01, "the island never settles: {falling}");
+}
+
+/// Neither direction may take so long that the island stops tracking the voice.
+/// At the frame rate this runs at, a syllable is a few dozen frames.
+#[test]
+fn easing_still_keeps_up_with_speech() {
+    let frames_to = |from: f32, to: f32, done: f32| {
+        let mut level = from;
+        for frame in 1..500 {
+            level = smooth(level, to);
+            if (level - to).abs() <= (to - from).abs() * (1.0 - done) {
+                return frame;
+            }
+        }
+        500
+    };
+    let up = frames_to(0.0, 1.0, 0.9);
+    let down = frames_to(1.0, 0.0, 0.9);
+    eprintln!("90% rise in {up} frames, fall in {down}");
+    assert!(up <= 20, "the rise takes {up} frames, too slow to follow a syllable");
+    assert!((10..=60).contains(&down), "the fall takes {down} frames");
+}
+
+// -- resting on the room ----------------------------------------------------
+
+use flow::overlay::Analyzer;
+
+/// Measured on this machine: a quiet room reads rms 0.008 at the median and
+/// 0.021 at its loudest, against the old fixed gate of 0.005 - so 92% of silence
+/// was moving the bars. The floor has to come from the room, not a constant,
+/// because these mics range from a webcam to a Bluetooth headset to a phone.
+#[test]
+fn the_bars_rest_on_room_noise() {
+    let mut analyzer = Analyzer::new();
+    let room = noise(0.008, 4_000);
+
+    // A few seconds of room for the floor to settle on.
+    for _ in 0..200 {
+        analyzer.bands(&room);
+    }
+    let resting = analyzer.bands(&room);
+    assert!(
+        resting.iter().all(|height| *height < 0.02),
+        "the bars are moving with the room: {resting:?}"
+    );
+}
+
+/// And it must not gate the voice out along with the room.
+#[test]
+fn speech_still_moves_the_bars_over_a_noisy_room() {
+    let mut analyzer = Analyzer::new();
+    let room = noise(0.008, 4_000);
+    for _ in 0..200 {
+        analyzer.bands(&room);
+    }
+
+    let mut speech = noise(0.008, 4_000);
+    for (index, sample) in speech.iter_mut().enumerate() {
+        *sample += 0.09 * (index as f32 * 0.35).sin();
+    }
+    let heard = analyzer.bands(&speech);
+    assert!(
+        heard.iter().cloned().fold(0.0f32, f32::max) > 0.3,
+        "a voice over a noisy room did not register: {heard:?}"
+    );
+}
+
+/// A louder room must not permanently deafen the island: the floor has to be able
+/// to climb as well as fall, or moving to a noisy desk leaves the bars flat.
+#[test]
+fn the_floor_climbs_when_the_room_gets_louder() {
+    let mut analyzer = Analyzer::new();
+    for _ in 0..200 {
+        analyzer.bands(&noise(0.002, 4_000));
+    }
+    let quiet_floor = analyzer.room();
+    for _ in 0..4_000 {
+        analyzer.bands(&noise(0.02, 4_000));
+    }
+    let loud_floor = analyzer.room();
+    eprintln!("floor went {quiet_floor:.5} -> {loud_floor:.5}");
+    assert!(loud_floor > quiet_floor * 2.0, "the floor did not adapt upward");
+}
+
+/// Deterministic pseudo-noise, so the thresholds above mean the same thing on
+/// every run.
+fn noise(level: f32, samples: usize) -> Vec<f32> {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    (0..samples)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let unit = (state >> 11) as f32 / (1u64 << 53) as f32 * 2.0 - 1.0;
+            unit * level * 1.7
+        })
+        .collect()
 }
 
 /// The rounded corners are the whole shape of the island, and coverage comes
@@ -147,3 +253,4 @@ fn a_stray_finish_never_hides_anything() {
     life.record();
     assert!(!life.finish(), "recording, not transcribing");
 }
+

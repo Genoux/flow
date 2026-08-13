@@ -91,11 +91,13 @@ use flow::cleanup::needs_cleanup;
 
 /// Already capitalised, already punctuated, no fillers - the model can only
 /// return it unchanged, so paying ~200ms to hear that is waste.
+///
+/// "Mm-hmm." used to be here. It is pure filler now and never reaches cleanup at
+/// all, so what this function would say about it no longer matters.
 #[test]
 fn short_and_already_clean_skips_the_model() {
     for already_clean in [
         "Yeah.",
-        "Mm-hmm.",
         "Please.",
         "Thank you.",
         "This test.",

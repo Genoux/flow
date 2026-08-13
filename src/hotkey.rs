@@ -704,9 +704,12 @@ pub fn any_modifier_in(held: &HashSet<KeyCode>) -> bool {
     MODIFIERS.iter().any(|modifier| held.contains(modifier))
 }
 
-/// Block until no modifier is held, so injected keystrokes are not reinterpreted
-/// as compositor shortcuts. Gives up after `timeout` and reports whether the
-/// keyboard actually came to rest.
+/// Block until no modifier is held. Injection no longer waits here: releasing
+/// `d` is the end of the hold, and Flow's own keyboard sends Ctrl+V without
+/// needing the physical modifiers up.
+///
+/// Still used by tests, and by anyone who needs to know whether the board is
+/// actually at rest. Gives up after `timeout`.
 pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     let started = Instant::now();
     let deadline = started + timeout;
@@ -717,13 +720,25 @@ pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     let mut announced = false;
 
     loop {
-        // Releasing `d` ends a super+shift+d hold while both modifiers are still
-        // down, so waiting here is normal and usually over in milliseconds. Say
-        // so once if it lasts, because the alternative was a silent stall ending
-        // in a dictation that only reached the clipboard.
+        // A wait this long is either someone resting a hand on the keys or a
+        // release event this never saw. Injection no longer blocks on this;
+        // the line is for whoever still asks.
         if !announced && started.elapsed() > Duration::from_millis(750) {
             announced = true;
-            eprintln!("waiting for modifiers to be released before pasting");
+            // Names them, because a wait this long is either someone resting a
+            // hand on the keys or a release event this never saw, and the two
+            // need opposite fixes.
+            let stuck: Vec<String> = match &devices {
+                None => observed()
+                    .lock()
+                    .expect("observed modifiers")
+                    .iter()
+                    .filter(|key| MODIFIERS.contains(key))
+                    .map(|key| format!("{key:?}"))
+                    .collect(),
+                Some(_) => vec!["device state".into()],
+            };
+            eprintln!("waiting to paste - still held: {}", stuck.join(", "));
         }
 
         let held = match &devices {

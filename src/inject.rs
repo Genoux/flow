@@ -5,15 +5,6 @@ use std::time::Duration;
 use wl_clipboard_rs::copy::{self, MimeType as CopyMime, Options, Source};
 use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
 
-/// Modifiers must settle before we paste, or the keystroke is reinterpreted by
-/// the compositor's keybind layer.
-///
-/// Generous on purpose. Releasing `d` ends a super+shift+d hold while both
-/// modifiers are still down, and someone who pauses with their hand on the keys
-/// used to lose the dictation to a 2s limit - it reached the clipboard and
-/// nowhere else. Waiting costs nothing; giving up costs the user their words.
-const MODIFIER_TIMEOUT: Duration = Duration::from_secs(20);
-
 /// uinput devices need a moment for udev to create the node and for compositors
 /// to pick them up; emitting immediately after build silently drops events.
 const DEVICE_SETTLE: Duration = Duration::from_millis(300);
@@ -31,9 +22,9 @@ impl Injector {
     /// settle delay every time.
     pub fn new() -> Result<Self> {
         let mut keys = AttributeSet::<KeyCode>::new();
-        keys.insert(KeyCode::KEY_LEFTCTRL);
-        keys.insert(KeyCode::KEY_LEFTSHIFT);
-        keys.insert(KeyCode::KEY_V);
+        for key in paste_keys(true) {
+            keys.insert(key);
+        }
 
         let device = VirtualDevice::builder()
             .context("opening /dev/uinput - is the uaccess udev rule present?")?
@@ -46,8 +37,15 @@ impl Injector {
     }
 
     /// Put `text` in the focused window by staging it on the clipboard and
-    /// sending one paste chord. A single chord rather than per-character typing
-    /// keeps the text off the keybind layer and is layout-independent.
+    /// sending one paste chord from Flow's own keyboard.
+    ///
+    /// Do not wait for Super+Shift to come up. Releasing `d` is the end of the
+    /// hold; the modifiers stay down because that is how a chord is released.
+    /// Waiting for them was the 8s stall on "Okay."
+    ///
+    /// Safe because this is Ctrl+V on this device, not typed characters.
+    /// SUPER+m cannot fire: we never emit M. Super+Shift live on the physical
+    /// board, not on this one, so the chord the focused client sees is Ctrl+V.
     pub fn inject(&mut self, text: &str, terminal: bool) -> Result<()> {
         let saved = read_clipboard();
 
@@ -57,16 +55,6 @@ impl Injector {
             CopyMime::Text,
         )
         .context("staging text on the clipboard")?;
-
-        if !super::hotkey::wait_for_modifiers_released(MODIFIER_TIMEOUT) {
-            // Pasting now would fire shortcuts instead of inserting text. The
-            // text stays on the clipboard, and says so loudly: silence here reads
-            // as a dictation that simply vanished.
-            anyhow::bail!(
-                "modifiers still held after {MODIFIER_TIMEOUT:?} - not pasting, \
-                 press ctrl+v to place the text yourself"
-            );
-        }
 
         self.paste(terminal)?;
 
@@ -82,12 +70,7 @@ impl Injector {
     }
 
     fn paste(&mut self, terminal: bool) -> Result<()> {
-        let mut chord = vec![KeyCode::KEY_LEFTCTRL];
-        if terminal {
-            chord.push(KeyCode::KEY_LEFTSHIFT);
-        }
-        chord.push(KeyCode::KEY_V);
-
+        let chord = paste_keys(terminal);
         for key in &chord {
             self.device.emit(&[*KeyEvent::new(*key, 1)])?;
             std::thread::sleep(KEY_DELAY);
@@ -98,6 +81,18 @@ impl Injector {
         }
         Ok(())
     }
+}
+
+/// The paste chord, and only the paste chord. Super and letters stay off this
+/// list on purpose: the physical hold is still down when we fire, and a typed
+/// character would become a shortcut.
+pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
+    let mut chord = vec![KeyCode::KEY_LEFTCTRL];
+    if terminal {
+        chord.push(KeyCode::KEY_LEFTSHIFT);
+    }
+    chord.push(KeyCode::KEY_V);
+    chord
 }
 
 /// Best effort - an empty or non-text clipboard is normal, not an error.

@@ -61,9 +61,23 @@ fn backend() -> Result<&'static LlamaBackend> {
 const CLEANUP_BUDGET: Duration = Duration::from_millis(2_500);
 
 /// Filler words the prompt asks the model to delete. Only used to decide whether
-/// a short utterance is already finished, never to edit text - deleting these by
-/// string match would eat "I like it" and "sort of thing".
-const FILLERS: [&str; 8] = ["um", "uh", "er", "ah", "like", "you know", "i mean", "sort of"];
+/// an utterance carries anything, never to edit text - deleting these by string
+/// match would eat "I like it" and "sort of thing".
+///
+/// The second row is what the recogniser makes of an empty room. Holding the key
+/// without speaking produced "Mm." and "Mm-hmm." from windows measuring rms 0.008,
+/// which is this room's own noise. Rejecting those on level cannot work: real
+/// quiet dictations measured 0.0139 against room tone at 0.0109, and a threshold
+/// in that gap would start eating speech. Rejecting them on content costs
+/// nothing, because none of these words is ever worth typing.
+///
+/// It is not a complete answer. Room tone also comes back as things no list will
+/// hold - "See no lay no" - and that needs voice detection rather than a longer
+/// list. This covers what the recogniser actually produces most of the time.
+const FILLERS: [&str; 19] = [
+    "um", "uh", "er", "ah", "like", "you know", "i mean", "sort of",
+    "mm", "mmm", "hmm", "hm", "mhm", "mmhm", "mmhmm", "uhhuh", "huh", "mm-hmm", "uh-huh",
+];
 
 /// Longest utterance the gate will call finished. Real dictations that were
 /// already clean topped out at three words ("Oh my god."); beyond that the odds
