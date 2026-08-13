@@ -9,30 +9,14 @@
 
 use std::time::Instant;
 
-/// Longest silence-free run to keep in one piece. Around the length of a spoken
-/// sentence, so a split lands between sentences where one is available.
-const TARGET: usize = 8 * 16_000;
+/// Same minimum the daemon uses, so this measures the real thing.
+const AT_LEAST: usize = 8 * 16_000;
 
-/// Quietest window worth splitting on, and how much of it to require. Reuses the
-/// measured silence floor rather than inventing a second one.
-const WINDOW: usize = 16_000 / 20;
-
-/// Split on the quietest gap after `TARGET`, which is where a word boundary is
-/// most likely to be.
+/// Exactly what the daemon does: hand over prefixes until no safe cut remains.
 fn split_on_silence(samples: &[f32]) -> Vec<&[f32]> {
     let mut pieces = Vec::new();
     let mut rest = samples;
-
-    while rest.len() > TARGET + WINDOW * 2 {
-        let search = &rest[TARGET..];
-        let quietest = search
-            .chunks(WINDOW)
-            .enumerate()
-            .map(|(index, window)| (index, flow::audio::rms(window)))
-            .min_by(|a, b| a.1.partial_cmp(&b.1).expect("no NaN"))
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        let at = (TARGET + quietest * WINDOW + WINDOW / 2).min(rest.len());
+    while let Some(at) = flow::audio::split_at_silence(rest, AT_LEAST) {
         let (piece, tail) = rest.split_at(at);
         pieces.push(piece);
         rest = tail;
@@ -41,6 +25,75 @@ fn split_on_silence(samples: &[f32]) -> Vec<&[f32]> {
         pieces.push(rest);
     }
     pieces
+}
+
+/// How long the quiet runs actually are in real speech, which is what decides
+/// whether the optimisation ever fires.
+#[test]
+#[ignore]
+fn report_the_pauses_in_real_speech() {
+    let samples = flow::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
+    let window = 16_000 / 20;
+    let mut runs = Vec::new();
+    let mut run = 0;
+    for chunk in samples.chunks(window) {
+        if flow::audio::rms(chunk) < flow::audio::SILENCE_RMS {
+            run += 1;
+        } else {
+            if run > 0 {
+                runs.push(run * 50);
+            }
+            run = 0;
+        }
+    }
+    if run > 0 {
+        runs.push(run * 50);
+    }
+    runs.sort_unstable();
+    eprintln!("quiet runs in jfk.wav, ms: {runs:?}");
+    eprintln!("longest: {}ms - the splitter needs 250ms", runs.last().copied().unwrap_or(0));
+}
+
+/// Real speech on both sides of a real cut. The fixture alone has no pause long
+/// enough to split on, so two of them with a pause between is the closest thing
+/// to a long dictation with a breath in the middle.
+#[test]
+#[ignore]
+fn a_cut_in_a_real_pause_keeps_every_word() {
+    let dir = flow::stt::model_dir();
+    if !dir.is_dir() {
+        eprintln!("skipping: no speech model");
+        return;
+    }
+    let mut engine = flow::stt::Stt::load(&dir).expect("load");
+    let one = flow::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
+
+    let mut samples = one.clone();
+    samples.extend(vec![0.0; 16_000 * 3 / 4]);
+    samples.extend(one.clone());
+    eprintln!("{:.1}s with a 750ms pause in the middle", samples.len() as f32 / 16_000.0);
+
+    let whole = engine.transcribe(samples.clone()).expect("whole");
+    let pieces = split_on_silence(&samples);
+    eprintln!("split into {} pieces", pieces.len());
+    assert!(pieces.len() >= 2, "the pause should have been found");
+
+    let joined = pieces
+        .iter()
+        .map(|piece| engine.transcribe(piece.to_vec()).expect("piece"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let words = |text: &str| {
+        text.split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+    };
+    eprintln!("whole:  {whole:?}");
+    eprintln!("joined: {joined:?}");
+    assert_eq!(words(&whole), words(&joined), "a cut in a real pause changed the words");
+    eprintln!("VERDICT: {} words preserved across a real cut", words(&whole).len());
 }
 
 #[test]
