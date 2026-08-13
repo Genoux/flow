@@ -19,7 +19,7 @@ fn compare_with_and_without_vocabulary() {
         return;
     }
 
-    let bare = flow::cleanup::Cleaner::load(&path, vec![]).expect("load");
+    let bare = flow::cleanup::Cleaner::load(&path, vec![], None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
         eprintln!("no vocab:   {:?}", bare.clean(raw).expect("clean"));
@@ -32,7 +32,7 @@ fn compare_with_and_without_vocabulary() {
         "Neovim".to_string(),
         "PipeWire".to_string(),
     ];
-    let informed = flow::cleanup::Cleaner::load(&path, terms).expect("load");
+    let informed = flow::cleanup::Cleaner::load(&path, terms, None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
         eprintln!("with vocab: {:?}", informed.clean(raw).expect("clean"));

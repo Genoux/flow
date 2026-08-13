@@ -3,28 +3,24 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, StreamConfig};
 use std::collections::VecDeque;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const SAMPLE_RATE: u32 = 16_000;
-
-/// PipeWire's ALSA device accepts any rate/channel count and converts internally,
-/// so we ask it for exactly what Parakeet wants and skip resampling entirely.
-const PREFERRED_DEVICE: &str = "pipewire";
 
 /// Audio from just before the bind. A phone-over-network source (WO Mic) is
 /// already late; without this the first word is gone by the time the hold starts.
 const PRE_ROLL: usize = SAMPLE_RATE as usize / 5;
 
+/// Whatever the system calls its default input, and nothing else. Flow used to
+/// hunt for a device named "pipewire" to get free rate conversion, but on a
+/// PipeWire machine `default` already IS PipeWire and converts identically
+/// (measured: both accept 16kHz mono f32 from 48kHz stereo hardware). Preferring
+/// one by name only meant ignoring the source the user had actually selected.
 pub fn open_device() -> Result<Device> {
-    let host = cpal::default_host();
-    for device in host.input_devices()? {
-        if device.id().map(|id| id.to_string()).unwrap_or_default().contains(PREFERRED_DEVICE) {
-            return Ok(device);
-        }
-    }
-    host.default_input_device()
+    cpal::default_host()
+        .default_input_device()
         .ok_or_else(|| anyhow!("no input device available"))
 }
 
@@ -39,39 +35,6 @@ pub fn wake_default_source() {
         .status();
 }
 
-/// Prefer a real USB/webcam mic over PhoneMic. PipeWire often leaves a
-/// Bluetooth speaker *monitor* as the default, which is playback, not a mic.
-pub fn pin_capture_source() {
-    let Some(sources) = list_sources() else { return };
-    let target = sources
-        .iter()
-        .find(|name| name.to_ascii_lowercase().contains("webcam"))
-        .or_else(|| sources.iter().find(|name| *name == "phone_mic"));
-    if let Some(name) = target {
-        let _ = Command::new("pactl")
-            .args(["set-default-source", name])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        return;
-    }
-    if let Some(name) = default_source_name()
-        && name.contains(".monitor")
-    {
-        eprintln!("default source is a monitor ({name}), not a microphone");
-    }
-}
-
-fn list_sources() -> Option<Vec<String>> {
-    let output = Command::new("pactl").args(["list", "short", "sources"]).output().ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    Some(
-        text.lines()
-            .filter_map(|line| line.split('\t').nth(1).map(str::to_string))
-            .collect(),
-    )
-}
-
 pub fn default_source_name() -> Option<String> {
     let output = Command::new("pactl")
         .args(["get-default-source"])
@@ -82,13 +45,51 @@ pub fn default_source_name() -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// A read-only view of what the microphone is hearing right now, for whoever is
+/// drawing it. Reads the pre-roll ring, which is already kept for every chunk
+/// whether or not a recording is live, so the audio callback gains no work.
+#[derive(Clone)]
+pub struct Monitor {
+    recent: Arc<Mutex<VecDeque<f32>>>,
+}
+
+impl Monitor {
+    /// Fill `window` with the newest samples, oldest first. Shorter than
+    /// requested until the ring has filled, so callers must handle a partial
+    /// window rather than assume a full one.
+    pub fn window(&self, window: &mut Vec<f32>, samples: usize) {
+        window.clear();
+        let recent = self.recent.lock().unwrap();
+        let from = recent.len().saturating_sub(samples);
+        window.extend(recent.iter().skip(from).copied());
+    }
+}
+
+/// Process clock. `Instant` cannot live in an atomic, so callback freshness is
+/// tracked as milliseconds since the first call.
+fn now_millis() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// How long without a single callback before the stream is presumed dead. Well
+/// clear of the few-millisecond callback interval, and of the gap PipeWire
+/// introduces when it suspends an idle source, so a healthy capture is never
+/// torn down and rebuilt for nothing.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Always-on capture so a network mic stays RUNNING between holds. Opening a
 /// new stream per press is what let PipeWire suspend PhoneMic and feed silence.
 pub struct Capture {
-    _stream: cpal::Stream,
+    /// Swappable, because the stream has to be rebuilt when its source vanishes.
+    /// The buffers below are deliberately not: they are `Arc`s shared with the
+    /// callback, so a replacement stream keeps feeding the same monitor and the
+    /// same in-flight recording.
+    stream: Mutex<Option<cpal::Stream>>,
     live: Arc<AtomicBool>,
     samples: Arc<Mutex<Vec<f32>>>,
     pre_roll: Arc<Mutex<VecDeque<f32>>>,
+    last_write: Arc<AtomicU64>,
 }
 
 impl Capture {
@@ -100,13 +101,23 @@ impl Capture {
             eprintln!("note: device native format is {format:?}, requesting f32 anyway");
         }
 
-        let live = Arc::new(AtomicBool::new(false));
-        let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let pre_roll = Arc::new(Mutex::new(VecDeque::with_capacity(PRE_ROLL)));
+        let capture = Self {
+            stream: Mutex::new(None),
+            live: Arc::new(AtomicBool::new(false)),
+            samples: Arc::new(Mutex::new(Vec::<f32>::new())),
+            pre_roll: Arc::new(Mutex::new(VecDeque::with_capacity(PRE_ROLL))),
+            last_write: Arc::new(AtomicU64::new(now_millis())),
+        };
+        capture.attach(device)?;
+        Ok(capture)
+    }
 
-        let live_cb = live.clone();
-        let sink = samples.clone();
-        let roll = pre_roll.clone();
+    /// Builds a stream on `device` and installs it, replacing any existing one.
+    fn attach(&self, device: &Device) -> Result<()> {
+        let live = self.live.clone();
+        let sink = self.samples.clone();
+        let roll = self.pre_roll.clone();
+        let last_write = self.last_write.clone();
 
         let config = StreamConfig {
             channels: 1,
@@ -116,18 +127,71 @@ impl Capture {
 
         let stream = device.build_input_stream(
             config,
-            move |data: &[f32], _: &_| write_input(&live_cb, &sink, &roll, data),
+            move |data: &[f32], _: &_| {
+                last_write.store(now_millis(), Ordering::Relaxed);
+                write_input(&live, &sink, &roll, data)
+            },
             |err| eprintln!("stream error: {err}"),
             None,
         )?;
         stream.play()?;
 
-        Ok(Self {
-            _stream: stream,
-            live,
-            samples,
-            pre_roll,
-        })
+        // Dropped only once the replacement is playing, so a failed rebuild
+        // leaves the old stream in place rather than nothing at all.
+        *self.stream.lock().unwrap() = Some(stream);
+        self.last_write.store(now_millis(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Time since the last callback delivered anything.
+    pub fn silent_for(&self) -> Duration {
+        Duration::from_millis(now_millis().saturating_sub(self.last_write.load(Ordering::Relaxed)))
+    }
+
+    /// Reopen the capture if callbacks have stopped arriving.
+    ///
+    /// When the source a stream is attached to disappears - a USB mic unplugged,
+    /// a Bluetooth headset dropping - PipeWire tears the stream down and cpal
+    /// reports no error at all, so the callback simply never fires again. The
+    /// symptom is indistinguishable from a quiet room: every recording returns
+    /// the stale pre-roll and gets skipped as silence, forever.
+    ///
+    /// A *change* of default source needs nothing from us: PipeWire moves a live
+    /// stream to the new source by itself (verified by watching the graph relink
+    /// mid-recording). This only handles the stream being destroyed.
+    pub fn ensure_live(&self) -> bool {
+        if self.silent_for() < STREAM_TIMEOUT {
+            return true;
+        }
+        eprintln!(
+            "capture stopped delivering {:?} ago - reopening",
+            self.silent_for()
+        );
+        match open_device().and_then(|device| self.attach(&device)) {
+            Ok(()) => {
+                if let Some(name) = default_source_name() {
+                    eprintln!("mic source: {name}");
+                }
+                true
+            }
+            Err(err) => {
+                eprintln!("could not reopen the microphone: {err}");
+                false
+            }
+        }
+    }
+
+    /// Drops the stream so callbacks stop with nothing reported - the same shape
+    /// as a source disappearing, without unplugging hardware. Only for tests.
+    #[doc(hidden)]
+    pub fn kill_stream_for_test(&self) {
+        *self.stream.lock().unwrap() = None;
+    }
+
+    pub fn monitor(&self) -> Monitor {
+        Monitor {
+            recent: self.pre_roll.clone(),
+        }
     }
 
     /// Wait until the source is delivering energy, not just empty buffers.
@@ -148,6 +212,9 @@ impl Capture {
 
     pub fn begin(&self) {
         wake_default_source();
+        // Before the pre-roll is copied: a rebuilt stream starts with an empty
+        // ring, and taking the stale one would prepend audio from another device.
+        self.ensure_live();
         let pre = self.pre_roll.lock().unwrap();
         let mut samples = self.samples.lock().unwrap();
         samples.clear();

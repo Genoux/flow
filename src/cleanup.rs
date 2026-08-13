@@ -51,6 +51,100 @@ fn backend() -> Result<&'static LlamaBackend> {
         .ok_or_else(|| anyhow!("llama backend failed to initialise"))
 }
 
+/// Filler words the prompt asks the model to delete. Only used to decide whether
+/// a short utterance is already finished, never to edit text - deleting these by
+/// string match would eat "I like it" and "sort of thing".
+const FILLERS: [&str; 8] = ["um", "uh", "er", "ah", "like", "you know", "i mean", "sort of"];
+
+/// Longest utterance the gate will call finished. Real dictations that were
+/// already clean topped out at three words ("Oh my god."); beyond that the odds
+/// of a missing comma somewhere rise faster than the 200ms is worth.
+const TRIVIAL_WORDS: usize = 4;
+
+/// Is there anything here for the model to do?
+///
+/// A capitalised, terminally punctuated, filler-free phrase of a few words is
+/// already what cleanup would return, and ~20% of real dictations are exactly
+/// that - "Yeah.", "Mm-hmm.", "Thank you." Skipping the model there is the
+/// difference between instant and noticeably late on the shortest inputs.
+///
+/// Deliberately biased towards saying yes: a needless cleanup pass costs
+/// milliseconds, while wrongly skipping one ships unpunctuated text.
+pub fn needs_cleanup(raw: &str) -> bool {
+    let text = raw.trim();
+    if text.is_empty() {
+        return false;
+    }
+    if text.split_whitespace().count() > TRIVIAL_WORDS {
+        return true;
+    }
+    if !text.ends_with(['.', '!', '?']) {
+        return true;
+    }
+    if !text.starts_with(char::is_uppercase) {
+        return true;
+    }
+
+    let lowered = text.to_lowercase();
+    FILLERS.iter().any(|filler| {
+        lowered
+            .split(|c: char| !c.is_alphanumeric() && c != ' ')
+            .any(|part| part.split_whitespace().collect::<Vec<_>>().join(" ") == *filler)
+    })
+}
+
+/// A GPU the cleanup model could be offloaded to. Mirrors the fields of
+/// llama.cpp's device list that matter, so [`choose_device`] can be tested
+/// against real machine topologies without a GPU present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub index: usize,
+    pub description: String,
+    pub discrete: bool,
+    pub free_bytes: u64,
+}
+
+/// Discrete before integrated, then whichever has the most room.
+///
+/// Ranking by free memory alone is wrong, and quietly so: an iGPU reports shared
+/// system RAM, so the machine this was written on offers 16.9GB on the iGPU
+/// against 4.4GB free on the RTX 3060 Ti beside it. The obvious heuristic picks
+/// the slower device every time.
+///
+/// `needed` filters first, because a card that cannot hold the model is not a
+/// candidate at all - that is the case that used to dump 2.4GB onto whatever
+/// happened to enumerate first.
+pub fn choose_device(candidates: &[Candidate], needed: u64) -> Option<&Candidate> {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.free_bytes >= needed)
+        .max_by_key(|candidate| (candidate.discrete, candidate.free_bytes))
+}
+
+/// KV cache plus compute buffers on top of the model file. Measured on the 4B
+/// Q4_K_M at its 512-token context: 108MB KV, 302MB compute.
+const DEVICE_OVERHEAD: u64 = 512 * 1024 * 1024;
+
+fn candidates() -> Vec<Candidate> {
+    use llama_cpp_2::LlamaBackendDeviceType as Kind;
+    llama_cpp_2::list_llama_ggml_backend_devices()
+        .into_iter()
+        .filter_map(|device| {
+            let discrete = match device.device_type {
+                Kind::Gpu => true,
+                Kind::IntegratedGpu => false,
+                _ => return None,
+            };
+            Some(Candidate {
+                index: device.index,
+                description: device.description,
+                discrete,
+                free_bytes: device.memory_free as u64,
+            })
+        })
+        .collect()
+}
+
 pub fn model_path() -> PathBuf {
     super::stt::data_home().join("flow/models/qwen3-4b-instruct-q4km.gguf")
 }
@@ -65,10 +159,7 @@ pub fn model_path() -> PathBuf {
 /// close to what was said - "hyper land" to Hyprland, "pipe wire" to PipeWire -
 /// and cannot recover one that sounds nothing like it.
 pub fn vocabulary() -> Vec<String> {
-    let path = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()).join(".config"))
-        .join("flow/vocabulary.txt");
+    let path = super::config::config_home().join("flow/vocabulary.txt");
 
     std::fs::read_to_string(path)
         .unwrap_or_default()
@@ -88,13 +179,62 @@ pub struct Cleaner {
 }
 
 impl Cleaner {
-    pub fn load(path: &Path, vocabulary: Vec<String>) -> Result<Self> {
+    pub fn load(path: &Path, vocabulary: Vec<String>, gpu: Option<usize>) -> Result<Self> {
         let started = Instant::now();
+        let backend = backend()?;
 
-        // Offload everything: the whole point of leaving STT on the CPU was to
-        // keep the GPU free for this.
-        let params = LlamaModelParams::default().with_n_gpu_layers(99);
-        let model = LlamaModel::load_from_file(backend()?, path, &params)
+        let needed = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) + DEVICE_OVERHEAD;
+        let available = candidates();
+
+        // An explicit index is the escape hatch, and it is deliberately not
+        // validated against `needed`: someone overriding this knows their machine
+        // better than a size estimate does.
+        let chosen = match gpu {
+            Some(index) => match available.iter().find(|c| c.index == index) {
+                Some(candidate) => Some(candidate),
+                None => {
+                    eprintln!(
+                        "config wants gpu {index}, which is not a GPU here - falling back to auto"
+                    );
+                    choose_device(&available, needed)
+                }
+            },
+            None => choose_device(&available, needed),
+        };
+
+        // Offloading everything is the whole point of leaving STT on the CPU, but
+        // only onto a device that can hold it: too little VRAM either fails the
+        // load or thrashes, and slow-but-correct on the CPU beats both.
+        let params = match chosen {
+            Some(candidate) => {
+                eprintln!(
+                    "cleanup on gpu {} ({}, {:.1} GB free)",
+                    candidate.index,
+                    candidate.description,
+                    candidate.free_bytes as f64 / 1e9
+                );
+                LlamaModelParams::default()
+                    .with_n_gpu_layers(99)
+                    .with_devices(&[candidate.index])?
+            }
+            None => {
+                eprintln!(
+                    "cleanup on cpu: no GPU with {:.1} GB free{}",
+                    needed as f64 / 1e9,
+                    if available.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " (best was {:.1} GB)",
+                            available.iter().map(|c| c.free_bytes).max().unwrap_or(0) as f64 / 1e9
+                        )
+                    }
+                );
+                LlamaModelParams::default().with_n_gpu_layers(0)
+            }
+        };
+
+        let model = LlamaModel::load_from_file(backend, path, &params)
             .with_context(|| format!("loading {}", path.display()))?;
 
         eprintln!("cleanup model loaded in {:?}", started.elapsed());
@@ -125,6 +265,11 @@ impl Cleaner {
     pub fn clean(&self, raw: &str) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
+        }
+        // Inside `clean` rather than at the call site so every caller gets it,
+        // and so the gate is impossible to forget when another one appears.
+        if !needs_cleanup(raw) {
+            return Ok(raw.trim().to_string());
         }
 
         let template = self.model.chat_template(None)?;

@@ -546,8 +546,11 @@ dependencies = [
  "libc",
  "llama-cpp-2",
  "parakeet-rs",
+ "realfft",
  "serde_json",
  "signal-hook",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "wl-clipboard-rs",
 ]
 
