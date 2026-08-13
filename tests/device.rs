@@ -139,3 +139,39 @@ fn empty_input_needs_nothing() {
     assert!(!needs_cleanup(""));
     assert!(!needs_cleanup("   "));
 }
+
+// -- hesitation is not text -------------------------------------------------
+
+use flow::cleanup::is_only_filler;
+
+/// Holding the key and saying "uh" is a pause, not a dictation. It used to reach
+/// the model, which deleted the filler, found nothing left, and answered the
+/// question it thought it had been asked - pasting the literal word "None."
+#[test]
+fn a_transcript_of_pure_hesitation_has_nothing_to_write() {
+    for hesitation in ["Um", "Uh", "uh", "Um.", "Uh, um", "er", "Ah!", "you know", "I mean"] {
+        assert!(is_only_filler(hesitation), "{hesitation:?} is not text");
+    }
+}
+
+#[test]
+fn real_words_are_never_mistaken_for_hesitation() {
+    for real in [
+        "Yes.",
+        "I like it.",
+        "Uh, ship it.",
+        "Sort of works now.",
+        "You know what to do.",
+        "Um so the build broke",
+    ] {
+        assert!(!is_only_filler(real), "{real:?} carries words");
+    }
+}
+
+/// Left to the caller's existing empty check, so the two paths cannot disagree
+/// about which one owns an empty transcript.
+#[test]
+fn nothing_at_all_is_not_filler() {
+    assert!(!is_only_filler(""));
+    assert!(!is_only_filler("   "));
+}
