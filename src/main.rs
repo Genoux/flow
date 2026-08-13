@@ -71,8 +71,9 @@ fn main() -> Result<()> {
     }
 }
 
-/// Two ways in: hold the push-to-talk key, or a compositor bind pair calling
-/// `flow start` / `flow stop`, since a bind fires on press and cannot hold.
+/// Two ways in: hold the push-to-talk key, or a compositor bind that only needs
+/// to call `flow start` on press. Flow watches the physical chord and stops on
+/// release - Hyprland's release binds are not reliable with modifier chords.
 fn daemon(
     engine: &mut stt::Stt,
     terminal: bool,
@@ -80,7 +81,20 @@ fn daemon(
     duck: Option<u32>,
     cleaner: Option<cleanup::Cleaner>,
 ) -> Result<()> {
+    audio::pin_capture_source();
     let device = audio::open_device()?;
+    if let Some(name) = audio::default_source_name() {
+        eprintln!("mic source: {name}");
+    }
+    let capture = audio::Capture::open(&device)?;
+    if capture.warmup(Duration::from_secs(2)) {
+        eprintln!("mic is live");
+    } else {
+        eprintln!(
+            "mic is silent - check the webcam is unmuted and picked as the source"
+        );
+    }
+
     let mut injector = inject::Injector::new()?;
 
     duck::restore_stale();
@@ -106,8 +120,9 @@ fn daemon(
     });
 
     ipc::write_pid()?;
+    hotkey::warmup_chord_devices();
     eprintln!(
-        "\nready - {}hold a key bound to `flow start` / `flow stop`\n",
+        "\nready - {}hold a key bound to `flow start`\n",
         if ptt {
             format!("hold {:?}, or ", hotkey::PTT)
         } else {
@@ -115,41 +130,83 @@ fn daemon(
         }
     );
 
-    let mut session: Option<Session> = None;
-    while let Ok(event) = incoming.recv() {
-        // Ending a session drops its ducker, so other apps come back to volume
-        // as soon as recording stops rather than after transcription.
-        let finished = match event {
-            hotkey::Event::Pressed => {
-                start(&device, &mut session, duck);
-                None
-            }
-            // Idempotent: a repeated start keeps the running capture rather
-            // than restarting it and losing what was already said.
-            hotkey::Event::Start => {
-                if session.is_none() {
-                    start(&device, &mut session, duck);
+    let (jobs, job_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            while let Ok((samples, terminal)) = job_rx.recv() {
+                if let Err(err) = handle(engine, &mut injector, samples, terminal, cleaner.as_ref())
+                {
+                    eprintln!("{err}");
                 }
-                None
             }
-            hotkey::Event::Stop => session.take().map(Session::finish),
-            // A shortcut, not dictation - throw the audio away.
-            hotkey::Event::Cancelled => {
-                session.take();
-                None
-            }
-            hotkey::Event::Released { held } => session
-                .take()
-                .map(Session::finish)
-                .filter(|_| hotkey::was_long_enough(held)),
-        };
+        });
 
-        if let Some(samples) = finished
-            && let Err(err) = handle(engine, &mut injector, samples, terminal, cleaner.as_ref())
-        {
-            eprintln!("{err}");
+        let mut session: Option<Session> = None;
+        let mut chord_watch: Option<hotkey::ChordWatch> = None;
+        let mut hold_started: Option<Instant> = None;
+        while let Ok(event) = incoming.recv() {
+            // Ending a session drops its ducker, so other apps come back to volume
+            // as soon as recording stops rather than after transcription.
+            let finished = match event {
+                hotkey::Event::Pressed => {
+                    if let Some(watch) = chord_watch.take() {
+                        watch.disarm();
+                    }
+                    hold_started = Some(Instant::now());
+                    begin(&capture, &mut session, duck);
+                    None
+                }
+                hotkey::Event::Start => {
+                    // A second start during an active hold is key-repeat - keep
+                    // the capture. A quick tap that already released is stopped
+                    // by the chord watcher seeing keys already up.
+                    if session.is_some() {
+                        None
+                    } else {
+                        hold_started = Some(Instant::now());
+                        begin(&capture, &mut session, duck);
+                        chord_watch = Some(hotkey::ChordWatch::arm(events.clone()));
+                        None
+                    }
+                }
+                hotkey::Event::Stop => {
+                    if let Some(watch) = chord_watch.take() {
+                        watch.disarm();
+                    }
+                    hold_started.take();
+                    session.take().map(|s| s.finish(&capture))
+                }
+                // A shortcut, not dictation - throw the audio away.
+                hotkey::Event::Cancelled => {
+                    if let Some(watch) = chord_watch.take() {
+                        watch.disarm();
+                    }
+                    hold_started = None;
+                    if let Some(session) = session.take() {
+                        session.discard(&capture);
+                    }
+                    None
+                }
+                hotkey::Event::Released { held } => {
+                    if let Some(watch) = chord_watch.take() {
+                        watch.disarm();
+                    }
+                    hold_started = None;
+                    session
+                        .take()
+                        .map(|s| s.finish(&capture))
+                        .filter(|_| hotkey::was_long_enough(held))
+                }
+            };
+
+            if let Some(samples) = finished
+                && jobs.send((samples, terminal)).is_err()
+            {
+                break;
+            }
         }
-    }
+        drop(jobs);
+    });
 
     ipc::remove_pid();
     Ok(())
@@ -158,33 +215,35 @@ fn daemon(
 /// A recording in progress. Holding the ducker here ties the volume of other
 /// apps to the life of the capture, including on cancel.
 struct Session {
-    recorder: audio::Recorder,
     ducker: Option<duck::Ducker>,
 }
 
 impl Session {
-    fn finish(self) -> Vec<f32> {
-        let Self { recorder, ducker } = self;
-        let samples = recorder.stop();
-        drop(ducker);
+    fn finish(self, capture: &audio::Capture) -> Vec<f32> {
+        let samples = capture.end();
+        drop(self.ducker);
         samples
+    }
+
+    fn discard(self, capture: &audio::Capture) {
+        let _ = capture.end();
+        drop(self.ducker);
     }
 }
 
-fn start(device: &cpal::Device, slot: &mut Option<Session>, duck: Option<u32>) {
-    match audio::Recorder::start(device) {
-        Ok(recorder) => {
-            let ducker = duck.and_then(|percent| match duck::Ducker::duck(percent) {
-                Ok(ducker) => Some(ducker),
-                Err(err) => {
-                    eprintln!("could not duck other apps: {err}");
-                    None
+fn begin(capture: &audio::Capture, slot: &mut Option<Session>, duck: Option<u32>) {
+    capture.begin();
+    eprintln!("recording...");
+    *slot = Some(Session { ducker: None });
+    if let Some(percent) = duck {
+        match duck::Ducker::duck(percent) {
+            Ok(ducker) => {
+                if let Some(session) = slot.as_mut() {
+                    session.ducker = Some(ducker);
                 }
-            });
-            eprintln!("recording...");
-            *slot = Some(Session { recorder, ducker });
+            }
+            Err(err) => eprintln!("could not duck other apps: {err}"),
         }
-        Err(err) => eprintln!("could not open mic: {err}"),
     }
 }
 
