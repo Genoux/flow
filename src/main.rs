@@ -182,6 +182,7 @@ fn daemon(
         let mut chord_watch: Option<hotkey::ChordWatch> = None;
         let mut hold_started: Option<Instant> = None;
         while let Ok(event) = incoming.recv() {
+            let was_recording = session.is_some();
             // Ending a session drops its ducker, so other apps come back to volume
             // as soon as recording stops rather than after transcription.
             let finished = match event {
@@ -243,12 +244,17 @@ fn daemon(
             };
 
             // Audio on its way to the model hands the island to the transcribe
-            // sweep, and the worker ends it. Anything else - a cancel, a tap
-            // too short to count - ends it here, or it would sweep forever.
-            match (&finished, session.is_some()) {
-                (Some(_), _) => overlay.transcribe(),
-                (None, false) => overlay.cancel(),
-                (None, true) => {}
+            // sweep, and the worker ends it once the text has landed.
+            match (&finished, session.is_some(), was_recording) {
+                (Some(_), _, _) => overlay.transcribe(),
+                // A recording ended with nothing usable - a cancel, a tap too
+                // short. End the island here or it would sweep forever.
+                (None, false, true) => overlay.cancel(),
+                // Nothing started and nothing ended: a stray `flow stop`, a
+                // duplicate start. The island may be sweeping for a dictation
+                // still being transcribed, so it is not ours to take down.
+                (None, false, false) => {}
+                (None, true, _) => {}
             }
 
             if let Some(samples) = finished
