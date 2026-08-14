@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};
 use std::time::Duration;
-use wl_clipboard_rs::copy::{self, MimeType as CopyMime, Options, Source};
+use wl_clipboard_rs::copy::{self, MimeSource, MimeType as CopyMime, Options, Source};
 use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
 
 /// uinput devices need a moment for udev to create the node and for compositors
@@ -47,7 +47,7 @@ impl Injector {
     /// SUPER+m cannot fire: we never emit M. Super+Shift live on the physical
     /// board, not on this one, so the chord the focused client sees is Ctrl+V.
     pub fn inject(&mut self, text: &str, terminal: bool) -> Result<()> {
-        let saved = read_clipboard();
+        let saved = snapshot_clipboard();
 
         copy::copy(
             Options::new(),
@@ -58,13 +58,9 @@ impl Injector {
 
         self.paste(terminal)?;
 
-        if let Some(previous) = saved {
+        if !saved.is_empty() {
             std::thread::sleep(KEY_DELAY * 4);
-            let _ = copy::copy(
-                Options::new(),
-                Source::Bytes(previous.into_bytes().into()),
-                CopyMime::Text,
-            );
+            let _ = copy::copy_multi(Options::new(), saved);
         }
         Ok(())
     }
@@ -95,11 +91,33 @@ pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
     chord
 }
 
-/// Best effort - an empty or non-text clipboard is normal, not an error.
-fn read_clipboard() -> Option<String> {
-    let (mut reader, _) =
-        paste::get_contents(ClipboardType::Regular, Seat::Unspecified, PasteMime::Text).ok()?;
-    let mut buffer = String::new();
-    std::io::Read::read_to_string(&mut reader, &mut buffer).ok()?;
-    Some(buffer)
+/// Snapshot every mime the clipboard is currently offering, so the restore
+/// after paste can put back an image, files, or anything else - not just text.
+/// The old text-only read returned None for an image and silently lost it,
+/// leaving the transcript on the clipboard.
+///
+/// Best effort - an empty clipboard or a read failure on any mime is normal.
+fn snapshot_clipboard() -> Vec<MimeSource> {
+    let Ok(mimes) = paste::get_mime_types(ClipboardType::Regular, Seat::Unspecified) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(mimes.len());
+    for mime in mimes {
+        let Ok((mut reader, _)) = paste::get_contents(
+            ClipboardType::Regular,
+            Seat::Unspecified,
+            PasteMime::Specific(&mime),
+        ) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        if std::io::Read::read_to_end(&mut reader, &mut bytes).is_err() {
+            continue;
+        }
+        out.push(MimeSource {
+            source: Source::Bytes(bytes.into_boxed_slice()),
+            mime_type: CopyMime::Specific(mime),
+        });
+    }
+    out
 }
