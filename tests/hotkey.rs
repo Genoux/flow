@@ -30,19 +30,23 @@ fn the_default_is_super_shift_d() {
 /// frustrated double-tap shipped whatever the recogniser made of 200ms of
 /// pre-roll, which is where a run of stray "Yeah." and "Mm." came from.
 ///
-/// The numbers are the measured gap: stray taps held for up to 400ms, real
-/// dictations for 2.2s and up.
+/// The floor sits at 200ms: the measured stray range was 0-400ms and real
+/// dictations started at 2.2s, but 500ms silently ate fast deliberate holds
+/// like "yes" or "okay". 200ms catches those - the audio window has a 200ms
+/// pre-roll on top of the hold, so a 200ms hold is 400ms of audio, plenty for
+/// a short word. Any 200-400ms strays that slip through are filtered
+/// downstream by voice detection and the hesitation-only skip.
 #[test]
 fn a_tap_too_short_to_hold_speech_is_discarded() {
     use flow::hotkey::was_long_enough;
 
-    for stray in [0, 120, 250, 400] {
+    for stray in [0, 50, 120, 199] {
         assert!(
             !was_long_enough(Duration::from_millis(stray)),
             "{stray}ms should not count as a dictation"
         );
     }
-    for real in [700, 2_200, 25_000] {
+    for real in [200, 300, 700, 2_200, 25_000] {
         assert!(
             was_long_enough(Duration::from_millis(real)),
             "{real}ms is a real hold"
