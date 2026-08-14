@@ -13,9 +13,12 @@ use std::time::{Duration, Instant};
 /// is where a stream of "Yeah." and "Mm." came from.
 ///
 /// Measured from real use, where held time is the recorded length minus PRE_ROLL:
-/// stray taps ran 0 to 400ms held, real dictations started at 2.2s. Anywhere in
-/// that gap works; this sits low in it so a genuinely short "Yes." still lands.
-const MIN_HOLD: Duration = Duration::from_millis(500);
+/// stray taps ran 0 to 400ms held, real dictations started at 2.2s. 500ms sat
+/// too high - a fast, deliberate "yes" or "okay" landed in the gap and vanished
+/// silently, which is what "released too quickly, nothing pasted" turned out to
+/// be. 200ms sits at the top of the stray-tap range but still under any real
+/// utterance the recogniser can make sense of.
+const MIN_HOLD: Duration = Duration::from_millis(200);
 
 /// If the chord is not visible by then, the tap already ended and we stop.
 const CHORD_APPEAR: Duration = Duration::from_millis(40);
@@ -702,6 +705,18 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 /// True when a modifier is down. Pure, so the rule is testable without a keyboard.
 pub fn any_modifier_in(held: &HashSet<KeyCode>) -> bool {
     MODIFIERS.iter().any(|modifier| held.contains(modifier))
+}
+
+/// Which modifiers are currently observed as held. Named for diagnostics when
+/// paste fires with a modifier still down - the compositor eats the chord and
+/// we need to know which key is stuck to fix it.
+pub fn currently_held_modifiers() -> Vec<KeyCode> {
+    let observed = observed().lock().expect("observed modifiers");
+    MODIFIERS
+        .iter()
+        .filter(|key| observed.contains(key))
+        .copied()
+        .collect()
 }
 
 /// Block until no modifier is held. Injection no longer waits here: releasing
