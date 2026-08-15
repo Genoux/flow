@@ -10,6 +10,12 @@ pub struct Config {
     /// Percentage of its current volume each other app is held at while
     /// recording. 0 disables ducking.
     pub duck: u32,
+    /// Milliseconds to wait after ducking before the microphone starts
+    /// recording, so a video that is being turned down is quiet by the time
+    /// capture begins. Only applies when `duck` is non-zero. Tunable because
+    /// how long `pactl` plus PipeWire's own volume ramp take is a property of
+    /// the machine, not something a default can know.
+    pub duck_settle_ms: u64,
     pub cleanup: bool,
     pub terminal: bool,
     /// Key combination held to dictate. Only consulted when `push_to_talk` is on.
@@ -18,6 +24,15 @@ pub struct Config {
     /// which is right on every machine tested so far; an index is the escape hatch
     /// for when it is not.
     pub gpu: Option<usize>,
+    /// Run RNNoise denoising between capture and STT. Off by default so the A/B
+    /// case is the current, known-good behaviour; on, it runs the utterance
+    /// through nnnoiseless to strip hiss and fan noise before Parakeet sees it.
+    pub denoise: bool,
+    /// Save every dictation's audio as WAV files to `~/.local/share/flow/recordings/`,
+    /// one raw and (when denoise is on) one denoised. Off by default because
+    /// long sessions add up on disk fast; on, it is the only way to A/B the
+    /// denoiser on the same source audio.
+    pub record_debug: bool,
 }
 
 impl Default for Config {
@@ -27,10 +42,13 @@ impl Default for Config {
         Self {
             push_to_talk: true,
             duck: 50,
+            duck_settle_ms: 150,
             cleanup: true,
             terminal: false,
             chord: super::hotkey::Chord::default(),
             gpu: None,
+            denoise: false,
+            record_debug: false,
         }
     }
 }
@@ -74,6 +92,13 @@ impl Config {
                 "push_to_talk" => config.push_to_talk = boolean(&at, key, value)?,
                 "cleanup" => config.cleanup = boolean(&at, key, value)?,
                 "terminal" => config.terminal = boolean(&at, key, value)?,
+                "duck_settle_ms" => {
+                    config.duck_settle_ms = value.parse().with_context(|| {
+                        format!("{at}: duck_settle_ms wants milliseconds, found {value:?}")
+                    })?
+                }
+                "denoise" => config.denoise = boolean(&at, key, value)?,
+                "record_debug" => config.record_debug = boolean(&at, key, value)?,
                 "hotkey" => {
                     config.chord = super::hotkey::Chord::parse(value)
                         .with_context(|| format!("{at}: bad hotkey"))?
@@ -106,6 +131,9 @@ impl Config {
         self.push_to_talk &= !present("--no-ptt");
         self.cleanup &= !present("--raw");
         self.terminal |= present("--terminal");
+        self.denoise |= present("--denoise");
+        self.denoise &= !present("--no-denoise");
+        self.record_debug |= present("--record-debug");
         // Clamped rather than assigned: the file rejects anything over 100, and
         // without the same limit here `--duck 200` reached `Ducker`, which clamps
         // to 100 - and 100 means "hold every stream at its current volume", so the

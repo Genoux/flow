@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
-use flow::{audio, cleanup, config, duck, hotkey, inject, install, ipc, overlay, stt, wav};
+use flow::{
+    audio, cleanup, config, denoise, duck, hotkey, inject, install, ipc, overlay, stt, wav,
+};
 use std::time::{Duration, Instant};
 
 /// Audio that must be spoken before any of it is transcribed early. Long enough
@@ -93,7 +95,12 @@ fn main() -> Result<()> {
                 settings.chord.clone(),
                 settings.push_to_talk,
                 settings.ducking(),
+                Duration::from_millis(settings.duck_settle_ms),
                 cleaner,
+                DebugOptions {
+                    denoise: settings.denoise,
+                    record: settings.record_debug,
+                },
             )
         }
         other => {
@@ -113,13 +120,25 @@ fn main() -> Result<()> {
 /// Only `start` is needed from those callers: Flow watches the physical chord to
 /// find the release itself, because Hyprland's release binds are unreliable with
 /// modifier chords.
+/// Per-run diagnostic switches: whether to run RNNoise before STT, and whether
+/// to dump the raw (+ denoised, if on) samples as WAV for A/B listening. Off
+/// by default; both are here so `handle` doesn't need to reach back into
+/// `Config`.
+#[derive(Clone, Copy)]
+struct DebugOptions {
+    denoise: bool,
+    record: bool,
+}
+
 fn daemon(
     engine: &mut stt::Stt,
     terminal: bool,
     chord: hotkey::Chord,
     ptt: bool,
     duck: Option<u32>,
+    settle: Duration,
     cleaner: Option<cleanup::Cleaner>,
+    debug: DebugOptions,
 ) -> Result<()> {
     let device = audio::open_device()?;
     if let Some(name) = audio::default_source_name() {
@@ -191,9 +210,16 @@ fn daemon(
                 // guarantees its text is already in `early` before this reads it.
                 let mut engine = engine.lock().expect("stt engine");
                 let done = std::mem::take(&mut *early.lock().expect("early transcripts"));
-                if let Err(err) =
-                    handle(*engine, &mut injector, samples, done, terminal, cleaner.as_ref(), island)
-                {
+                if let Err(err) = handle(
+                    *engine,
+                    &mut injector,
+                    samples,
+                    done,
+                    terminal,
+                    cleaner.as_ref(),
+                    island,
+                    debug,
+                ) {
                     eprintln!("{err}");
                 }
                 drop(engine);
@@ -239,7 +265,7 @@ fn daemon(
                         watch.disarm();
                     }
                     hold_started = Some(Instant::now());
-                    begin(&capture, &mut session, duck, &overlay, early);
+                    begin(&capture, &mut session, duck, settle, &overlay, early);
                     None
                 }
                 hotkey::Event::Start => {
@@ -250,7 +276,7 @@ fn daemon(
                         None
                     } else {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, duck, &overlay, early);
+                        begin(&capture, &mut session, duck, settle, &overlay, early);
                         chord_watch = Some(hotkey::ChordWatch::arm(events.clone(), chord.clone()));
                         None
                     }
@@ -346,6 +372,7 @@ fn begin(
     capture: &audio::Capture,
     slot: &mut Option<Session>,
     duck: Option<u32>,
+    settle: Duration,
     overlay: &overlay::Overlay,
     early: &std::sync::Mutex<Vec<String>>,
 ) {
@@ -354,19 +381,39 @@ fn begin(
     // Reachable with both trigger paths live: a signal starts a session and the
     // physical chord then starts another.
     early.lock().expect("early transcripts").clear();
-    capture.begin();
+
+    // The island goes up first so the key press is acknowledged immediately,
+    // even though capture may be a moment behind it while other apps are
+    // turned down.
     overlay.record();
     eprintln!("recording...");
     *slot = Some(Session { ducker: None });
+
+    let mut ducked = false;
     if let Some(percent) = duck {
         match duck::Ducker::duck(percent) {
             Ok(ducker) => {
+                ducked = true;
                 if let Some(session) = slot.as_mut() {
                     session.ducker = Some(ducker);
                 }
             }
             Err(err) => eprintln!("could not duck other apps: {err}"),
         }
+    }
+
+    // Ducking used to happen *after* capture started, so the opening moments of
+    // every recording held whatever was playing at full volume - and the
+    // pre-roll ring, being the 200ms before the key went down, could never be
+    // anything else. Both are dropped here: turn the room down, let the volume
+    // ramp land, then start listening.
+    if ducked {
+        std::thread::sleep(settle);
+        capture.begin_without_pre_roll();
+    } else {
+        // Nothing was turned down, so there is nothing to wait for and the
+        // pre-roll is pure gain: it catches a first word spoken on the press.
+        capture.begin();
     }
 }
 
@@ -378,6 +425,7 @@ fn handle(
     terminal: bool,
     cleaner: Option<&cleanup::Cleaner>,
     island: &overlay::Overlay,
+    debug: DebugOptions,
 ) -> Result<()> {
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
     let peak = audio::peak(&samples);
@@ -411,7 +459,27 @@ fn handle(
         }
         String::new()
     } else {
-        engine.transcribe(samples)?
+        // A/B pair. Recording happens BEFORE denoise so the raw wav is exactly
+        // what the mic gave us and the denoised wav is exactly what the model
+        // saw. Both write on best-effort - a full disk must not lose the
+        // dictation. Naming uses a monotonic counter under a start-time root,
+        // so files sort by utterance and never collide across a single run.
+        let denoised = debug.denoise.then(|| denoise::denoise_16k_mono(&samples));
+        if debug.record {
+            let dir = debug_recording_dir();
+            let n = next_recording_index();
+            if let Err(err) = wav::write_16k_mono(dir.join(format!("{n:04}_raw.wav")), &samples) {
+                eprintln!("record_debug: raw wav write failed: {err:#}");
+            }
+            if let Some(denoised) = denoised.as_ref() {
+                if let Err(err) =
+                    wav::write_16k_mono(dir.join(format!("{n:04}_denoised.wav")), denoised)
+                {
+                    eprintln!("record_debug: denoised wav write failed: {err:#}");
+                }
+            }
+        }
+        engine.transcribe(denoised.unwrap_or(samples))?
     };
     let transcribed = started.elapsed();
 
@@ -523,4 +591,28 @@ fn benchmark(engine: &mut stt::Stt, path: &str) -> Result<()> {
     }
     println!("\n{text}\n");
     Ok(())
+}
+
+/// Where `record_debug` dumps its A/B pairs. A fresh directory per daemon
+/// start (`recordings/{unix_ts}/`) keeps runs from interleaving in the same
+/// folder and makes it obvious which pair belongs to which session.
+fn debug_recording_dir() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        stt::data_home().join(format!("flow/recordings/{ts}"))
+    })
+    .clone()
+}
+
+/// Monotonic per-utterance index for filenames. Reset per daemon start
+/// alongside the directory, so pairs stay grouped inside their folder.
+fn next_recording_index() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }

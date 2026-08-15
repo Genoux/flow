@@ -28,11 +28,11 @@ fn file_overrides_every_key() {
         parsed,
         Config {
             push_to_talk: false,
-            duck: 20,
+            duck: 20, duck_settle_ms: 150,
             cleanup: false,
             terminal: true,
             chord: Default::default(),
-            gpu: None,
+            gpu: None, denoise: false, record_debug: false,
         }
     );
 }
@@ -131,11 +131,11 @@ fn a_line_without_a_value_is_an_error() {
 fn flags_win_over_the_file() {
     let from_file = Config {
         push_to_talk: true,
-        duck: 50,
+        duck: 50, duck_settle_ms: 150,
         cleanup: true,
         terminal: false,
         chord: Default::default(),
-        gpu: None,
+        gpu: None, denoise: false, record_debug: false,
     };
     let flags = ["daemon", "--no-ptt", "--raw", "--duck", "20", "--terminal"]
         .map(String::from)
@@ -152,11 +152,11 @@ fn flags_win_over_the_file() {
 fn absent_flags_leave_the_file_alone() {
     let from_file = Config {
         push_to_talk: false,
-        duck: 20,
+        duck: 20, duck_settle_ms: 150,
         cleanup: false,
         terminal: true,
         chord: Default::default(),
-        gpu: None,
+        gpu: None, denoise: false, record_debug: false,
     };
     assert_eq!(
         from_file.clone().overridden_by(&[String::from("daemon")]),
