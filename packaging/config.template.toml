@@ -27,6 +27,12 @@
 # keeps the speakers out of the microphone; too low just mutes your music.
 # duck = 50
 
+# How long to wait after turning other apps down before the microphone starts,
+# so a video is already quiet by the time capture begins. Only applies when
+# duck is non-zero. Raise it if the first moment of a dictation still catches
+# what was playing; lower it if the start of your first word gets clipped.
+# duck_settle_ms = 150
+
 # Pass the raw transcript through the local cleanup model. This is the point of
 # the tool, so off is only for comparing against what the recogniser heard.
 # cleanup = true
