@@ -2,6 +2,35 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+/// A new stream sitting at the ducked level inherited it. Restoring that
+/// number is how a track change left the music at 50%.
+#[test]
+fn a_stream_already_at_the_duck_remembers_full_volume() {
+    let known = [(1, 100)];
+    assert_eq!(flow::duck::original_volume(50, 50, &known), 100);
+    assert_eq!(flow::duck::original_volume(50, 50, &[]), 100);
+}
+
+#[test]
+fn a_stream_that_appears_loud_keeps_that_as_original() {
+    assert_eq!(flow::duck::original_volume(80, 50, &[]), 80);
+    assert_eq!(flow::duck::original_volume(100, 50, &[(1, 80)]), 100);
+}
+
+#[test]
+fn a_stream_matching_a_known_original_reuses_it() {
+    let known = [(1, 80)];
+    assert_eq!(flow::duck::original_volume(40, 50, &known), 80);
+}
+
+#[test]
+fn a_player_that_jumps_back_up_has_escaped() {
+    assert!(flow::duck::escaped(100, 100, 50));
+    assert!(flow::duck::escaped(80, 100, 50));
+    assert!(!flow::duck::escaped(50, 100, 50));
+    assert!(!flow::duck::escaped(52, 100, 50));
+}
+
 /// Ducking is process-global state, and cargo runs tests as parallel threads,
 /// so two of these at once would fight over the same streams.
 fn exclusive() -> MutexGuard<'static, ()> {
