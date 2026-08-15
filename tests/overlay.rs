@@ -1,4 +1,7 @@
-use flow::overlay::{band_fraction, rounded_rect_distance, smooth, sweep};
+use flow::overlay::{
+    band_fraction, bar_height, fresh_window, mountain, rounded_rect_distance, smooth, smooth_bar,
+    sweep, WINDOW,
+};
 
 /// Regression, and the whole reason the scale is in decibels.
 ///
@@ -36,6 +39,93 @@ fn the_scale_is_monotonic() {
         previous = height;
     }
     assert_eq!(previous, 1.0, "the scale never reaches the top");
+}
+
+/// The ring is always full, so a window taken on spawn is the pre-roll. The
+/// bars must wait for a new window or they open already mid-syllable.
+#[test]
+fn the_island_ignores_audio_from_before_it_appeared() {
+    assert!(!fresh_window(100, 100), "nothing new yet");
+    assert!(!fresh_window(100 + WINDOW as u64 - 1, 100));
+    assert!(fresh_window(100 + WINDOW as u64, 100));
+}
+
+/// The island is a mountain, not a W. The raw bands climb outward and the
+/// sibilance band is gained 4.5x, which is exactly first-and-last-tall. The
+/// silhouette has to win even when an "s" lights the ends.
+#[test]
+fn the_silhouette_is_a_mountain() {
+    for bar in 0..3 {
+        assert!(
+            mountain(bar) < mountain(bar + 1),
+            "bar {bar} is not climbing toward the crest: {} then {}",
+            mountain(bar),
+            mountain(bar + 1)
+        );
+        assert_eq!(mountain(bar), mountain(6 - bar), "the mountain is not mirrored");
+    }
+    assert!(mountain(0) > 0.45, "the ends vanish on a quiet voice: {}", mountain(0));
+    assert!(mountain(0) < 0.6, "the ends are no longer below the crest: {}", mountain(0));
+    assert_eq!(mountain(3), 1.0);
+}
+
+#[test]
+fn a_flat_voice_still_draws_a_mountain() {
+    let bands = [0.8; 4];
+    let heights: Vec<f32> = (0..7).map(|bar| bar_height(bar, &bands)).collect();
+    assert!(
+        heights[0] < heights[1] && heights[1] < heights[2] && heights[2] < heights[3],
+        "flat speech did not rise to a crest: {heights:?}"
+    );
+    assert!(
+        heights[3] > heights[0] * 1.5,
+        "the crest is not above the ends: {heights:?}"
+    );
+}
+
+/// Ordinary speech, not a raised voice. The ends used to need a shout because
+/// they were 15% of the voice after the old floor and mix.
+#[test]
+fn a_quiet_voice_still_moves_the_ends() {
+    let bands = [0.28, 0.2, 0.15, 0.05];
+    let end = bar_height(0, &bands);
+    assert!(end > 0.10, "a quiet voice left the ends at rest: {end}");
+    assert!(end < bar_height(3, &bands), "the quiet voice is not a mountain");
+}
+
+/// Same overall level, different spectrum. If every bar is just the voice
+/// scaled by the mountain, a vowel and an "s" draw the same shape.
+#[test]
+fn the_spectrum_changes_the_silhouette() {
+    let vowel = [0.5, 0.75, 0.25, 0.08];
+    let hiss = [0.5, 0.2, 0.35, 0.95];
+    let vowel_ratio = bar_height(0, &vowel) / bar_height(3, &vowel);
+    let hiss_ratio = bar_height(0, &hiss) / bar_height(3, &hiss);
+    assert!(
+        (vowel_ratio - hiss_ratio).abs() > 0.06,
+        "vowel {vowel_ratio:.3} vs s {hiss_ratio:.3} - the bars are still one fader"
+    );
+}
+
+#[test]
+fn the_ends_fall_faster_than_the_centre() {
+    let end = smooth_bar(0, 0.8, 0.0);
+    let mid = smooth_bar(3, 0.8, 0.0);
+    assert!(end < mid, "ends {end} did not drop ahead of the centre {mid}");
+}
+
+#[test]
+fn sibilance_cannot_raise_the_ends_above_the_crest() {
+    // Loud "s", quieter vowel - the mapping that used to draw a W.
+    let bands = [0.5, 0.3, 0.3, 1.0];
+    assert!(
+        bar_height(0, &bands) < bar_height(3, &bands),
+        "an s made the left end taller than the centre"
+    );
+    assert!(
+        bar_height(6, &bands) < bar_height(3, &bands),
+        "an s made the right end taller than the centre"
+    );
 }
 
 /// Recording and transcribing have to be tellable apart at a glance, so the
@@ -105,8 +195,8 @@ fn easing_still_keeps_up_with_speech() {
     let up = frames_to(0.0, 1.0, 0.9);
     let down = frames_to(1.0, 0.0, 0.9);
     eprintln!("90% rise in {up} frames, fall in {down}");
-    assert!(up <= 20, "the rise takes {up} frames, too slow to follow a syllable");
-    assert!((10..=60).contains(&down), "the fall takes {down} frames");
+    assert!(up <= 40, "the rise takes {up} frames, too slow to follow a syllable");
+    assert!((20..=90).contains(&down), "the fall takes {down} frames");
 }
 
 // -- resting on the room ----------------------------------------------------

@@ -1,9 +1,8 @@
 //! A small island that floats above everything while flow is recording. The
-//! five bars are frequency bands of the live microphone, mirrored about the
-//! centre, so the island moves with what is actually being said and crests in
-//! the middle: a vowel swells the centre, an "s" flicks the two ends. Nothing
-//! here runs on a timer except the sweep shown while the transcript is being
-//! produced.
+//! bars are a mountain of the live voice: low at the ends, high in the middle.
+//! Frequency still colours them, but it is not allowed to raise the ends above
+//! the crest - that is how the island used to draw a W. Nothing here runs on a
+//! timer except the sweep shown while the transcript is being produced.
 //!
 //! It is a wlr-layer-shell surface painted into a shared-memory buffer by hand.
 //! A toolkit would mean GTK or Qt in a daemon that otherwise has no UI, and the
@@ -160,6 +159,15 @@ pub fn band_fraction(amplitude: f32) -> f32 {
 /// them together.
 pub const WINDOW: usize = 512;
 
+/// True once the capture has delivered a full analysis window after `since`.
+///
+/// Capture never stops, so the ring already holds the room when the island
+/// maps. Drawing that window makes the bars spawn mid-syllable. Waiting for
+/// this many new samples means the first motion is the voice from this hold.
+pub fn fresh_window(heard: u64, since: u64) -> bool {
+    heard.saturating_sub(since) >= WINDOW as u64
+}
+
 /// How many frequency bands the voice is split into. Fewer than there are
 /// bars, because the island mirrors them about its centre.
 pub const BAND_COUNT: usize = 4;
@@ -179,11 +187,48 @@ pub const BAND_COUNT: usize = 4;
 const BANDS: [(f32, f32); BAND_COUNT] =
     [(80.0, 6500.0), (300.0, 900.0), (900.0, 2500.0), (2500.0, 6500.0)];
 
-/// Which band each bar draws, left to right. The lowest band sits in the middle
-/// and frequency climbs outward, so the island moves out from its centre rather
-/// than piling up on the left - speech energy lives at the bottom of the range,
-/// and laying the bands out in order put all of it at one end.
-const MIRROR: [usize; BAR_COUNT] = [3, 2, 1, 0, 1, 2, 3];
+/// How tall a bar may be relative to the centre. A parabola, not a gain table:
+/// the bands already have their own gains, and those are what made the W.
+///
+/// The floor used to be 0.20, which compounded with a 75% voice mix into 15% of
+/// the voice on the ends - they only moved for a raised voice. Half the centre
+/// is still a mountain; it is also still a bar.
+pub fn mountain(bar: usize) -> f32 {
+    let centre = (BAR_COUNT - 1) as f32 / 2.0;
+    let t = (bar as f32 - centre).abs() / centre;
+    0.50 + 0.50 * (1.0 - t * t)
+}
+
+/// What this bar listens to, besides the shared voice. Ends mix presence with
+/// sibilance so they move on a vowel and still flick on an "s" - pure sibilance
+/// is silent for most of a sentence, which is why they used to sit still.
+fn tint(bar: usize, bands: &[f32; BAND_COUNT]) -> f32 {
+    match bar {
+        0 | 6 => bands[2] * 0.6 + bands[3] * 0.4,
+        1 | 5 => bands[2],
+        2 | 4 => bands[1],
+        _ => bands[0],
+    }
+}
+
+/// How far a given voice level moves the bars. Separate from the mountain and
+/// from the lerp: those are shape and speed. This is how readily a normal
+/// speaking voice fills them - set for a few feet from the mic, not a raised
+/// voice into it. Slowing the lerp without this made short syllables die
+/// before they arrived, which read as the island going deaf.
+const SENSE: f32 = 1.75;
+
+/// Height of one bar, 0.0 to 1.0. Enough shared voice that a quiet sentence
+/// still moves the ends; enough of each bar's own band that a vowel and an "s"
+/// do not draw the same silhouette.
+pub fn bar_height(bar: usize, bands: &[f32; BAND_COUNT]) -> f32 {
+    let voice = bands[0];
+    let local = tint(bar, bands);
+    let edge = (bar as f32 - 3.0).abs() / 3.0;
+    let mix = 0.28 + 0.18 * edge;
+    let level = ((voice * (1.0 - mix) + local * mix) * SENSE).min(1.0);
+    (level * mountain(bar)).clamp(0.0, 1.0)
+}
 
 /// Per-band gain, so the island crests in the middle and every bar carries part
 /// of the picture. Not a loudness correction: measured on real speech the first
@@ -330,16 +375,31 @@ pub fn sweep(bar: usize, seconds: f32) -> f32 {
 
 /// How much of the previous level survives one frame, rising and falling.
 ///
-/// Attack used to be instant, on the level-meter reasoning that the bars must
-/// answer the voice at once. They do answer it - in a single frame, which reads
-/// as a flicker rather than a swell no matter how many frames a second there are.
-/// Both directions ease now, the rise quicker than the fall so a syllable still
-/// arrives before it is over.
-const ATTACK: f32 = 0.80;
-const RELEASE: f32 = 0.93;
+/// Held high on purpose: the island is a swell, not a meter. 0.80/0.93 still
+/// covered most of the distance in a couple of frames and read as the bars
+/// snapping to the voice. A syllable is a few hundred milliseconds; this can
+/// take its time inside that and still arrive before the next one.
+const ATTACK: f32 = 0.91;
+const RELEASE: f32 = 0.96;
 
 pub fn smooth(previous: f32, current: f32) -> f32 {
     let keep = if current > previous { ATTACK } else { RELEASE };
+    previous * keep + current * (1.0 - keep)
+}
+
+/// Same easing as [`smooth`], but the ends answer faster than the centre.
+///
+/// One shared attack/release made the mountain sink as a single slab: every bar
+/// was a scaled copy of the same voice, decaying on the same clock. Outer bars
+/// catching a consonant and letting go of it first is what reads as a voice
+/// instead of a fader.
+pub fn smooth_bar(bar: usize, previous: f32, current: f32) -> f32 {
+    let edge = (bar as f32 - 3.0).abs() / 3.0;
+    let keep = if current > previous {
+        ATTACK - 0.08 * edge
+    } else {
+        RELEASE - 0.06 * edge
+    };
     previous * keep + current * (1.0 - keep)
 }
 
@@ -550,7 +610,7 @@ impl Canvas {
     }
 }
 
-fn render(canvas: &mut Canvas, bands: &[f32; BAND_COUNT], seconds: f32, transcribing: bool, scale: f32) {
+fn render(canvas: &mut Canvas, heights: &[f32; BAR_COUNT], seconds: f32, transcribing: bool, scale: f32) {
     canvas.clear();
 
     let width = WIDTH as f32 * scale;
@@ -572,10 +632,10 @@ fn render(canvas: &mut Canvas, bands: &[f32; BAND_COUNT], seconds: f32, transcri
         true => BAR_WORKING_ALPHA,
         false => BAR_ALPHA,
     };
-    for (index, band) in MIRROR.iter().enumerate() {
+    for index in 0..BAR_COUNT {
         let height = match transcribing {
             true => sweep(index, seconds),
-            false => bands[*band],
+            false => heights[index],
         };
         let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
         let at = (first + pitch * index as f32, centre.1);
@@ -692,13 +752,13 @@ impl Buffers {
     fn present(
         &mut self,
         surface: &wl_surface::WlSurface,
-        bands: &[f32; BAND_COUNT],
+        heights: &[f32; BAR_COUNT],
         seconds: f32,
         transcribing: bool,
     ) -> Result<()> {
         render(
             &mut self.canvas,
-            bands,
+            heights,
             seconds,
             transcribing,
             self.scale as f32,
@@ -774,7 +834,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut buffers: Option<Buffers> = None;
     let mut analyzer = Analyzer::new();
     let mut window: Vec<f32> = Vec::with_capacity(WINDOW);
-    let mut bands = [0.0f32; BAND_COUNT];
+    let mut heights = [0.0f32; BAR_COUNT];
+    // Samples already in the ring when this hold began. None once a fresh
+    // window has arrived and the bars may follow the voice.
+    let mut born: Option<u64> = None;
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
     // The bars are still falling to rest; the sweep waits for them.
@@ -790,7 +853,9 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
 
         match waiting {
             Ok(Command::Record) => {
-                bands = [0.0; BAND_COUNT];
+                heights = [0.0; BAR_COUNT];
+                window.clear();
+                born = Some(monitor.heard());
                 transcribing = false;
                 settling = false;
                 // A sweep that had not started yet belongs to the dictation this
@@ -868,28 +933,36 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         mapped.surface.set_buffer_scale(state.scale);
         if settling {
             // Down to rest before the sweep, so the two do not collide.
-            for bar in bands.iter_mut() {
+            for bar in heights.iter_mut() {
                 *bar *= SETTLE;
             }
-            if bands.iter().all(|bar| *bar < SETTLED) {
-                bands = [0.0; BAND_COUNT];
+            if heights.iter().all(|bar| *bar < SETTLED) {
+                heights = [0.0; BAR_COUNT];
                 settling = false;
                 // The sweep times from the moment the island is flat, so it
                 // always begins at its start rather than partway through.
                 started = std::time::Instant::now();
             }
         } else if !transcribing {
-            monitor.window(&mut window, WINDOW);
-            let measured = analyzer.bands(&window);
-            // Per band, so a bar that just spoke falls away on its own rather
-            // than being held up by whichever band is loudest.
-            for (bar, fresh) in bands.iter_mut().zip(measured) {
-                *bar = smooth(*bar, fresh);
+            let ready = match born {
+                Some(since) if !fresh_window(monitor.heard(), since) => false,
+                Some(_) => {
+                    born = None;
+                    false
+                }
+                None => true,
+            };
+            if ready {
+                monitor.window(&mut window, WINDOW);
+                let measured = analyzer.bands(&window);
+                for (index, held) in heights.iter_mut().enumerate() {
+                    *held = smooth_bar(index, *held, bar_height(index, &measured));
+                }
             }
         }
         buffers.present(
             &mapped.surface,
-            &bands,
+            &heights,
             started.elapsed().as_secs_f32(),
             transcribing && !settling,
         )?;

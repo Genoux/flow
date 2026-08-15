@@ -51,6 +51,7 @@ pub fn default_source_name() -> Option<String> {
 #[derive(Clone)]
 pub struct Monitor {
     recent: Arc<Mutex<VecDeque<f32>>>,
+    heard: Arc<AtomicU64>,
 }
 
 impl Monitor {
@@ -62,6 +63,13 @@ impl Monitor {
         let recent = self.recent.lock().unwrap();
         let from = recent.len().saturating_sub(samples);
         window.extend(recent.iter().skip(from).copied());
+    }
+
+    /// Samples delivered since the stream opened. The island uses this to ignore
+    /// the pre-roll: the ring is always full, so the newest window on spawn is
+    /// whatever the room was doing before the key went down.
+    pub fn heard(&self) -> u64 {
+        self.heard.load(Ordering::Relaxed)
     }
 }
 
@@ -179,6 +187,7 @@ pub struct Capture {
     samples: Arc<Mutex<Vec<f32>>>,
     pre_roll: Arc<Mutex<VecDeque<f32>>>,
     last_write: Arc<AtomicU64>,
+    heard: Arc<AtomicU64>,
 }
 
 impl Capture {
@@ -196,6 +205,7 @@ impl Capture {
             samples: Arc::new(Mutex::new(Vec::<f32>::new())),
             pre_roll: Arc::new(Mutex::new(VecDeque::with_capacity(PRE_ROLL))),
             last_write: Arc::new(AtomicU64::new(now_millis())),
+            heard: Arc::new(AtomicU64::new(0)),
         };
         capture.attach(device)?;
         Ok(capture)
@@ -207,6 +217,7 @@ impl Capture {
         let sink = self.samples.clone();
         let roll = self.pre_roll.clone();
         let last_write = self.last_write.clone();
+        let heard = self.heard.clone();
 
         let config = StreamConfig {
             channels: 1,
@@ -218,6 +229,7 @@ impl Capture {
             config,
             move |data: &[f32], _: &_| {
                 last_write.store(now_millis(), Ordering::Relaxed);
+                heard.fetch_add(data.len() as u64, Ordering::Relaxed);
                 write_input(&live, &sink, &roll, data)
             },
             |err| eprintln!("stream error: {err}"),
@@ -286,6 +298,7 @@ impl Capture {
     pub fn monitor(&self) -> Monitor {
         Monitor {
             recent: self.pre_roll.clone(),
+            heard: self.heard.clone(),
         }
     }
 
@@ -306,6 +319,20 @@ impl Capture {
     }
 
     pub fn begin(&self) {
+        self.begin_inner(true);
+    }
+
+    /// Start recording from this instant, discarding the pre-roll ring.
+    ///
+    /// For the ducked path: the ring holds the 200ms *before* the key went
+    /// down, which is by definition before other apps were turned down, so it
+    /// is the one slice of a ducked recording guaranteed to carry the video
+    /// the user was trying to mute.
+    pub fn begin_without_pre_roll(&self) {
+        self.begin_inner(false);
+    }
+
+    fn begin_inner(&self, keep_pre_roll: bool) {
         wake_default_source();
         // Before the pre-roll is copied: a rebuilt stream starts with an empty
         // ring, and taking the stale one would prepend audio from another device.
@@ -313,7 +340,9 @@ impl Capture {
         let pre = self.pre_roll.lock().unwrap();
         let mut samples = self.samples.lock().unwrap();
         samples.clear();
-        samples.extend(pre.iter().copied());
+        if keep_pre_roll {
+            samples.extend(pre.iter().copied());
+        }
         self.live.store(true, Ordering::Relaxed);
     }
 

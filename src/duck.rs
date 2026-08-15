@@ -29,10 +29,10 @@ const FADE_IN: Duration = Duration::from_millis(260);
 /// so a slow step drops frames instead of stretching the fade.
 const STEP: Duration = Duration::from_millis(20);
 
-/// How often to look for streams that started after ducking began. A scan costs
-/// one pactl call, so this is cheap; the interval bounds how long a new track
-/// can be heard at full volume.
-const WATCH_INTERVAL: Duration = Duration::from_millis(250);
+/// How often to look for streams that started after ducking began, or that
+/// jumped back to full volume. A scan is one pactl call; 250ms left a whole
+/// chorus audible on a track change.
+const WATCH_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Where the ramp currently is, as a percentage of each stream's own level.
 /// Global because only one dictation runs at a time, and a new fade must be
@@ -144,9 +144,39 @@ fn fade(streams: Vec<(u32, u32)>, target: u32, duration: Duration, clear_state: 
     });
 }
 
-/// Catch streams that appear after ducking began. A track change gives the new
-/// track a new stream id, so without this the music returns to full volume
-/// part-way through a recording - which is exactly when it is least wanted.
+/// The volume a new stream should be restored to.
+///
+/// A track change often inherits the already-ducked level of the stream it
+/// replaced. Treating that as the original is how music came back at 50% after
+/// a dictation. If the new stream is sitting where a known original would be
+/// after the duck, remember that original; if it appeared exactly at the duck
+/// target, it was a 100% stream that PipeWire cloned already quiet.
+pub fn original_volume(current: u32, level: u32, known: &[(u32, u32)]) -> u32 {
+    if !(1..100).contains(&level) {
+        return current;
+    }
+    if let Some((_, original)) = known
+        .iter()
+        .find(|(_, original)| current.abs_diff(*original * level / 100) <= 2)
+    {
+        return *original;
+    }
+    if current.abs_diff(level) <= 2 {
+        return 100;
+    }
+    current
+}
+
+/// True when a stream we already ducked has gone louder than the duck allows.
+/// Players do this on a track change without changing the stream id.
+pub fn escaped(current: u32, original: u32, level: u32) -> bool {
+    current > original * level / 100 + 2
+}
+
+/// Catch streams that appear after ducking began, and streams that jump back
+/// up. A track change may reuse an id or mint a new one; either way the music
+/// must stay down for the rest of the hold and come back at the volume it had
+/// before we touched it.
 fn watch(known: Arc<Mutex<Vec<(u32, u32)>>>, active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while active.load(Ordering::SeqCst) {
@@ -157,19 +187,23 @@ fn watch(known: Arc<Mutex<Vec<(u32, u32)>>>, active: Arc<AtomicBool>) {
 
             let Ok(current) = streams() else { continue };
             let mut known = known.lock().unwrap();
+            let level = LEVEL.load(Ordering::SeqCst);
+            let mut dirty = false;
 
-            for (index, original) in current {
-                if known.iter().any(|(seen, _)| *seen == index) {
+            for (index, volume) in current {
+                if let Some((_, original)) = known.iter().find(|(seen, _)| *seen == index) {
+                    if escaped(volume, *original, level) {
+                        set_volume(index, *original * level / 100);
+                    }
                     continue;
                 }
-                // Straight to the current level, not faded: this stream was not
-                // audible a moment ago, so there is nothing to ramp down from.
-                set_volume(index, original * LEVEL.load(Ordering::SeqCst) / 100);
+                let original = original_volume(volume, level, &known);
+                set_volume(index, original * level / 100);
                 known.push((index, original));
+                dirty = true;
             }
 
-            // Keep the crash-recovery record in step with what we have touched.
-            if let Ok(encoded) = serde_json::to_vec(&*known) {
+            if dirty && let Ok(encoded) = serde_json::to_vec(&*known) {
                 let _ = std::fs::write(state_file(), encoded);
             }
         }
