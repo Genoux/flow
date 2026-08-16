@@ -171,6 +171,72 @@ pub fn path() -> PathBuf {
     config_home().join("flow/config.toml")
 }
 
+/// How often the config file is checked for changes. Fast enough that moving a
+/// slider in the console feels immediate, slow enough to be free.
+const POLL: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Keep `shared` in step with the file, so a setting changed in the console or
+/// in an editor takes effect without restarting the daemon.
+///
+/// # Why a poll and not inotify
+///
+/// A single save is not a single event. Writing this file in place fires
+/// several `IN_MODIFY`s, and an editor that saves atomically renames a
+/// temporary over it, which fires nothing for the original inode at all - so
+/// an inotify watch has to be on the directory, and then debounced back down
+/// to one reload. All of that machinery exists to answer "what does the file
+/// say now", which is the only question here, and which a stat answers
+/// directly. Polling is also inherently coalesced: half-written files are
+/// simply read on the next tick.
+///
+/// A malformed file keeps the last good config and says so once, rather than
+/// repeating itself four times a second: someone is mid-edit, and the daemon
+/// must not lose its settings because a brace is briefly unbalanced.
+pub fn watch(shared: std::sync::Arc<std::sync::Mutex<Config>>) {
+    let path = path();
+    std::thread::spawn(move || {
+        let mut last = stamp(&path);
+        let mut complained = false;
+        loop {
+            std::thread::sleep(POLL);
+            let now = stamp(&path);
+            if now == last {
+                continue;
+            }
+            last = now;
+
+            match Config::load_from(&path) {
+                Ok(config) => {
+                    complained = false;
+                    let changed = {
+                        let mut current = shared.lock().expect("config");
+                        let changed = *current != config;
+                        *current = config;
+                        changed
+                    };
+                    if changed {
+                        eprintln!("config reloaded");
+                    }
+                }
+                Err(err) => {
+                    if !complained {
+                        complained = true;
+                        eprintln!("config not reloaded, keeping the last good one: {err:#}");
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Mtime and length together: either changing means the file did. Absent is a
+/// state like any other, so deleting the config falls back to the defaults on
+/// the next tick rather than being ignored.
+fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
 pub fn config_home() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

@@ -34,6 +34,10 @@ pub struct Settings {
     pub denoise: bool,
     pub duck: u32,
     pub duck_settle_ms: u64,
+    /// Which GPU runs the cleanup model. `None` means the daemon picks, and is
+    /// written as no line at all rather than a value - the daemon's default is
+    /// "choose for me", and there is no number that spells that.
+    pub gpu: Option<u32>,
 }
 
 impl Default for Settings {
@@ -48,6 +52,7 @@ impl Default for Settings {
             denoise: false,
             duck: 50,
             duck_settle_ms: 150,
+            gpu: None,
         }
     }
 }
@@ -80,6 +85,7 @@ impl Settings {
                         settings.duck_settle_ms = parsed;
                     }
                 }
+                "gpu" => settings.gpu = value.parse().ok(),
                 _ => {}
             }
         }
@@ -97,30 +103,44 @@ impl Settings {
 
     /// Apply our values onto `existing`, editing the lines that set a key we
     /// manage and appending the ones that were never there.
+    ///
+    /// A `None` value means the key must not appear at all: the daemon reads an
+    /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted = [
-            ("push_to_talk", self.push_to_talk.to_string()),
-            ("cleanup", self.cleanup.to_string()),
-            ("terminal", self.terminal.to_string()),
-            ("denoise", self.denoise.to_string()),
-            ("duck", self.duck.to_string()),
-            ("duck_settle_ms", self.duck_settle_ms.to_string()),
+        let wanted: [(&str, Option<String>); 7] = [
+            ("push_to_talk", Some(self.push_to_talk.to_string())),
+            ("cleanup", Some(self.cleanup.to_string())),
+            ("terminal", Some(self.terminal.to_string())),
+            ("denoise", Some(self.denoise.to_string())),
+            ("duck", Some(self.duck.to_string())),
+            ("duck_settle_ms", Some(self.duck_settle_ms.to_string())),
+            ("gpu", self.gpu.map(|index| index.to_string())),
         ];
 
         let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
         let mut written = Vec::new();
 
-        for line in lines.iter_mut() {
-            let Some(key) = setting_key(line) else { continue };
-            if let Some((name, value)) = wanted.iter().find(|(name, _)| *name == key) {
-                *line = format!("{name} = {value}");
-                written.push(*name);
+        // Edit in place, and drop the line entirely for a key that should now
+        // be absent.
+        lines.retain_mut(|line| {
+            let Some(key) = setting_key(line) else {
+                return true;
+            };
+            match wanted.iter().find(|(name, _)| *name == key) {
+                Some((name, Some(value))) => {
+                    *line = format!("{name} = {value}");
+                    written.push(*name);
+                    true
+                }
+                Some((_, None)) => false,
+                None => true,
             }
-        }
+        });
 
         let missing: Vec<_> = wanted
             .iter()
-            .filter(|(name, _)| !written.contains(name))
+            .filter_map(|(name, value)| value.as_ref().map(|value| (name, value)))
+            .filter(|(name, _)| !written.contains(*name))
             .collect();
 
         if !missing.is_empty() {
@@ -181,7 +201,9 @@ mod tests {
 
     #[test]
     fn existing_keys_are_edited_in_place_and_others_untouched() {
-        let existing = "# keep me\nduck = 20\ngpu = 1\n";
+        // record_debug has no control in the window, so it stands in for any
+        // key a future daemon might add that this version knows nothing about.
+        let existing = "# keep me\nduck = 20\nrecord_debug = true\n";
         let settings = Settings {
             duck: 75,
             ..Settings::default()
@@ -192,7 +214,10 @@ mod tests {
         assert!(out.contains("duck = 75"), "duck not updated:\n{out}");
         assert!(!out.contains("duck = 20"));
         // A key the window does not manage must survive a save.
-        assert!(out.contains("gpu = 1"), "unknown key dropped:\n{out}");
+        assert!(
+            out.contains("record_debug = true"),
+            "unknown key dropped:\n{out}"
+        );
     }
 
     #[test]
@@ -204,6 +229,7 @@ mod tests {
             denoise: true,
             duck: 0,
             duck_settle_ms: 400,
+            gpu: Some(0),
         };
         assert_eq!(Settings::parse(&settings.render("")), settings);
     }
@@ -211,5 +237,24 @@ mod tests {
     #[test]
     fn trailing_comments_parse() {
         assert_eq!(Settings::parse("duck = 30 # quieter\n").duck, 30);
+    }
+
+    /// "Let the daemon choose" is the absence of the key, so switching back to
+    /// automatic has to remove a line that is already there - writing `gpu = 0`
+    /// would pin the first device instead.
+    #[test]
+    fn automatic_gpu_removes_the_key() {
+        let pinned = Settings {
+            gpu: Some(1),
+            ..Settings::default()
+        };
+        let out = pinned.render("");
+        assert!(out.contains("gpu = 1"), "gpu not written:\n{out}");
+        assert_eq!(Settings::parse(&out).gpu, Some(1));
+
+        let automatic = Settings::default();
+        let back = automatic.render(&out);
+        assert!(!back.contains("gpu ="), "gpu line survived:\n{back}");
+        assert_eq!(Settings::parse(&back).gpu, None);
     }
 }

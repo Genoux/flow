@@ -89,18 +89,18 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+            // Shared so the file watcher can swap in new values while the
+            // daemon runs. The chord and push_to_talk are read once below:
+            // both own a thread that would have to be torn down and rebuilt,
+            // which is a restart's job.
+            let live = std::sync::Arc::new(std::sync::Mutex::new(settings.clone()));
+            config::watch(std::sync::Arc::clone(&live));
             daemon(
                 &mut engine,
-                terminal,
                 settings.chord.clone(),
                 settings.push_to_talk,
-                settings.ducking(),
-                Duration::from_millis(settings.duck_settle_ms),
                 cleaner,
-                DebugOptions {
-                    denoise: settings.denoise,
-                    record: settings.record_debug,
-                },
+                live,
             )
         }
         other => {
@@ -120,25 +120,16 @@ fn main() -> Result<()> {
 /// Only `start` is needed from those callers: Flow watches the physical chord to
 /// find the release itself, because Hyprland's release binds are unreliable with
 /// modifier chords.
-/// Per-run diagnostic switches: whether to run RNNoise before STT, and whether
-/// to dump the raw (+ denoised, if on) samples as WAV for A/B listening. Off
-/// by default; both are here so `handle` doesn't need to reach back into
-/// `Config`.
-#[derive(Clone, Copy)]
-struct DebugOptions {
-    denoise: bool,
-    record: bool,
-}
+/// The live config, shared with the file watcher. Read at the point of use so a
+/// change lands on the next dictation rather than the next restart.
+type Live = std::sync::Arc<std::sync::Mutex<config::Config>>;
 
 fn daemon(
     engine: &mut stt::Stt,
-    terminal: bool,
     chord: hotkey::Chord,
     ptt: bool,
-    duck: Option<u32>,
-    settle: Duration,
     cleaner: Option<cleanup::Cleaner>,
-    debug: DebugOptions,
+    live: Live,
 ) -> Result<()> {
     let device = audio::open_device()?;
     if let Some(name) = audio::default_source_name() {
@@ -199,6 +190,9 @@ fn daemon(
     let (jobs, job_rx) = std::sync::mpsc::channel();
     let island = &overlay;
     let status = &reporter;
+    // Both the job thread and the event loop read the live config, so they
+    // share a borrow rather than the Arc being moved into the first one.
+    let live = &live;
     // Shared so the start of a long dictation can be transcribed while the rest is
     // still being spoken. The lock is held only for the duration of one
     // transcription, and taking it before taking audio is what keeps the early
@@ -210,7 +204,7 @@ fn daemon(
 
     std::thread::scope(|scope| {
         scope.spawn(move || {
-            while let Ok((samples, terminal)) = job_rx.recv() {
+            while let Ok(samples) = job_rx.recv() {
                 // Waits out any in-flight early piece, which is also what
                 // guarantees its text is already in `early` before this reads it.
                 let mut engine = engine.lock().expect("stt engine");
@@ -220,11 +214,10 @@ fn daemon(
                     &mut injector,
                     samples,
                     done,
-                    terminal,
                     cleaner.as_ref(),
                     island,
                     status,
-                    debug,
+                    live,
                 ) {
                     // The console shows this until the next dictation lands, so
                     // a failure the user would otherwise only find in the
@@ -285,7 +278,7 @@ fn daemon(
                     // then measure under MIN_HOLD and be discarded as a tap.
                     if session.is_none() {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, duck, settle, &overlay, &reporter, early);
+                        begin(&capture, &mut session, live, &overlay, &reporter, early);
                     }
                     None
                 }
@@ -297,7 +290,7 @@ fn daemon(
                         None
                     } else {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, duck, settle, &overlay, &reporter, early);
+                        begin(&capture, &mut session, live, &overlay, &reporter, early);
                         chord_watch = Some(hotkey::ChordWatch::arm(events.clone(), chord.clone()));
                         None
                     }
@@ -363,7 +356,7 @@ fn daemon(
             }
 
             if let Some(samples) = finished
-                && jobs.send((samples, terminal)).is_err()
+                && jobs.send(samples).is_err()
             {
                 break;
             }
@@ -399,12 +392,20 @@ impl Session {
 fn begin(
     capture: &audio::Capture,
     slot: &mut Option<Session>,
-    duck: Option<u32>,
-    settle: Duration,
+    live: &Live,
     overlay: &overlay::Overlay,
     reporter: &status::Reporter,
     early: &std::sync::Mutex<Vec<String>>,
 ) {
+    // Read once, here, so the whole of this recording uses one consistent set
+    // of values even if the file changes while it runs.
+    let (duck, settle) = {
+        let config = live.lock().expect("config");
+        (
+            config.ducking(),
+            Duration::from_millis(config.duck_settle_ms),
+        )
+    };
     // A new recording abandons whatever came before it, including anything already
     // transcribed early - otherwise those words would prepend to this dictation.
     // Reachable with both trigger paths live: a signal starts a session and the
@@ -452,12 +453,23 @@ fn handle(
     injector: &mut inject::Injector,
     samples: Vec<f32>,
     early: Vec<String>,
-    terminal: bool,
+
     cleaner: Option<&cleanup::Cleaner>,
     island: &overlay::Overlay,
     reporter: &status::Reporter,
-    debug: DebugOptions,
+    live: &Live,
 ) -> Result<()> {
+    // One read for the whole of this dictation, so a file change part-way
+    // through cannot clean the text but paste it with the other chord.
+    let (terminal, denoise_audio, record_debug, cleanup_wanted) = {
+        let config = live.lock().expect("config");
+        (
+            config.terminal,
+            config.denoise,
+            config.record_debug,
+            config.cleanup,
+        )
+    };
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
     let peak = audio::peak(&samples);
     let rms = audio::rms(&samples);
@@ -495,8 +507,8 @@ fn handle(
         // saw. Both write on best-effort - a full disk must not lose the
         // dictation. Naming uses a monotonic counter under a start-time root,
         // so files sort by utterance and never collide across a single run.
-        let denoised = debug.denoise.then(|| denoise::denoise_16k_mono(&samples));
-        if debug.record {
+        let denoised = denoise_audio.then(|| denoise::denoise_16k_mono(&samples));
+        if record_debug {
             let dir = debug_recording_dir();
             let n = next_recording_index();
             if let Err(err) = wav::write_16k_mono(dir.join(format!("{n:04}_raw.wav")), &samples) {
@@ -545,7 +557,12 @@ fn handle(
 
     // A cleanup failure must never cost the user their words, so the raw
     // transcript stands in whenever the model errors or returns nothing.
-    let final_text = match cleaner {
+    //
+    // `cleanup_wanted` is read live, so turning it off takes effect on the next
+    // dictation. Turning it back on only works if the model was loaded at
+    // startup - loading one here would stall the paste for several seconds,
+    // which is exactly the trade this whole path refuses to make.
+    let final_text = match cleaner.filter(|_| cleanup_wanted) {
         Some(cleaner) => match cleaner.clean(&text) {
             Ok(cleaned) if !cleaned.trim().is_empty() => cleaned,
             Ok(_) => {
