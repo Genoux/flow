@@ -22,6 +22,17 @@ const KEY_DELAY: Duration = Duration::from_millis(12);
 /// compositor no longer conflates our Ctrl with a still-held physical Super.
 const MODIFIER_WAIT: Duration = Duration::from_millis(500);
 
+/// How long the clipboard has to answer before its contents are written off.
+/// A responsive owner answers in single-digit milliseconds; this is generous
+/// enough that a real image round-trips, and short enough that an unresponsive
+/// one is barely felt.
+const CLIPBOARD_BUDGET: Duration = Duration::from_millis(500);
+
+/// How long the compositor has to say which window has focus. Only decides
+/// which paste chord to send, so falling back to the configured default costs
+/// far less than waiting.
+const FOCUS_BUDGET: Duration = Duration::from_millis(200);
+
 /// Two ways to deliver the paste chord to the focused window.
 ///
 /// The Wayland virtual-keyboard protocol (`zwp_virtual_keyboard_v1`) is the
@@ -146,6 +157,13 @@ impl Injector {
 /// (e.g. a Wayland client that never set `app_id`); the caller falls back to
 /// the configured hint in that case.
 pub fn detect_terminal_focus() -> Option<bool> {
+    // Bounded: `.output()` waits for the child forever, and a compositor busy
+    // enough not to answer would otherwise take the dictation down with it.
+    let class = with_deadline(FOCUS_BUDGET, focused_window_class)??;
+    Some(is_terminal_class(&class))
+}
+
+fn focused_window_class() -> Option<String> {
     let output = std::process::Command::new("hyprctl")
         .arg("activewindow")
         .output()
@@ -158,10 +176,7 @@ pub fn detect_terminal_focus() -> Option<bool> {
         .lines()
         .find_map(|line| line.trim().strip_prefix("class:"))
         .map(|s| s.trim().to_ascii_lowercase())?;
-    if class.is_empty() {
-        return None;
-    }
-    Some(is_terminal_class(&class))
+    (!class.is_empty()).then_some(class)
 }
 
 /// Match by exact class or reverse-DNS suffix so both `kitty` and
@@ -200,13 +215,68 @@ pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
     chord
 }
 
-/// Snapshot every mime the clipboard is currently offering, so the restore
-/// after paste can put back an image, files, or anything else - not just text.
-/// The old text-only read returned None for an image and silently lost it,
-/// leaving the transcript on the clipboard.
+/// Snapshot the clipboard, or give up and return nothing after
+/// [`CLIPBOARD_BUDGET`].
+///
+/// # Why this is not just a function call
+///
+/// Reading the clipboard means reading a pipe served by whatever application
+/// owns the selection, and nothing obliges that application to answer. An app
+/// that advertises a mime type and then never writes it - or that has since
+/// stopped responding - leaves `read_to_end` blocked with no timeout of its
+/// own. This runs on the dictation path while the STT engine lock is held, so
+/// one unresponsive clipboard owner froze every subsequent dictation until the
+/// daemon was restarted. That was the "recording... and then nothing" bug.
+///
+/// Losing the ability to restore a clipboard is a small cost. Losing every
+/// dictation until a restart is not, so the budget wins and the snapshot is
+/// abandoned.
+///
+/// The worker thread is deliberately left running if it never returns: it is
+/// blocked in a kernel read that cannot be interrupted from here, it holds no
+/// lock this path needs, and it exits on its own if the peer ever answers.
+fn snapshot_clipboard() -> Vec<MimeSource> {
+    with_deadline(CLIPBOARD_BUDGET, read_clipboard).unwrap_or_else(|| {
+        eprintln!(
+            "clipboard did not answer within {CLIPBOARD_BUDGET:?}; \
+             pasting without saving what was there"
+        );
+        Vec::new()
+    })
+}
+
+/// Run `work` on a throwaway thread and give up on it after `budget`.
+///
+/// Everything on the dictation path that talks to another process needs this.
+/// A clipboard owner that never serves the mime it advertised, or a compositor
+/// too busy to answer `hyprctl`, is not an error any of them will report - it
+/// is simply a read that never returns, and one of those is enough to freeze
+/// every dictation until the daemon restarts.
+///
+/// The abandoned thread is left alone on purpose: it is blocked in a kernel
+/// read that cannot be interrupted from here, it holds no lock this path
+/// needs, and it exits by itself if the peer ever answers.
+fn with_deadline<T: Send + 'static>(
+    budget: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // A send failure only means we already gave up on it.
+        let _ = tx.send(work());
+    });
+    rx.recv_timeout(budget).ok()
+}
+
+/// Read every mime the clipboard is currently offering, so the restore after
+/// paste can put back an image, files, or anything else - not just text. The
+/// old text-only read returned None for an image and silently lost it, leaving
+/// the transcript on the clipboard.
 ///
 /// Best effort - an empty clipboard or a read failure on any mime is normal.
-fn snapshot_clipboard() -> Vec<MimeSource> {
+/// Always call this through [`snapshot_clipboard`], never directly: on its own
+/// it can block forever.
+fn read_clipboard() -> Vec<MimeSource> {
     let Ok(mimes) = paste::get_mime_types(ClipboardType::Regular, Seat::Unspecified) else {
         return Vec::new();
     };

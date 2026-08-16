@@ -7,6 +7,7 @@
 
 mod daemon;
 mod settings;
+mod system;
 
 use iced::widget::{button, column, container, pick_list, row, scrollable, slider, text, toggler, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
@@ -99,27 +100,6 @@ impl Section {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Input {
-    SystemDefault,
-    Webcam,
-    Headset,
-}
-
-impl Input {
-    const ALL: [Input; 3] = [Input::SystemDefault, Input::Webcam, Input::Headset];
-}
-
-impl std::fmt::Display for Input {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Input::SystemDefault => "System default",
-            Input::Webcam => "Full HD webcam",
-            Input::Headset => "USB headset",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Gpu {
     Auto,
     Device(u32),
@@ -162,7 +142,6 @@ enum Message {
     Autostart(bool),
     Duck(u32),
     Settle(u32),
-    SetInput(Input),
     SetGpu(Gpu),
     Daemon(daemon::Event),
     Noop,
@@ -178,8 +157,11 @@ struct Console {
     /// True once anything has been written. The daemon only reads its config at
     /// startup, so the window has to say so rather than imply a live change.
     saved: bool,
-    autostart: bool,
-    input: Input,
+    /// None when systemd cannot answer - the control is hidden rather than
+    /// shown in a state we cannot vouch for.
+    autostart: Option<bool>,
+    /// The microphone PipeWire is actually handing the daemon.
+    input: Option<String>,
 }
 
 impl Console {
@@ -191,8 +173,8 @@ impl Console {
                 settings: settings::Settings::load(),
                 save_error: None,
                 saved: false,
-                autostart: true,
-                input: Input::SystemDefault,
+                autostart: system::autostart_enabled(),
+                input: system::default_input(),
             },
             Task::none(),
         )
@@ -237,10 +219,15 @@ impl Console {
                 self.settings.duck_settle_ms = value as u64;
                 self.persist();
             }
-            // Not in the config file yet - the daemon has no key for either, so
-            // these stay window-local rather than writing something it ignores.
-            Message::Autostart(on) => self.autostart = on,
-            Message::SetInput(input) => self.input = input,
+            Message::Autostart(on) => match system::set_autostart(on) {
+                // Re-read rather than assume: systemd is the authority on
+                // whether that worked, not our optimism.
+                Ok(()) => {
+                    self.autostart = system::autostart_enabled();
+                    self.save_error = None;
+                }
+                Err(err) => self.save_error = Some(err),
+            },
             Message::SetGpu(gpu) => {
                 self.settings.gpu = gpu.to_config();
                 self.persist();
@@ -406,7 +393,7 @@ impl Console {
     }
 
     fn dictation_section(&self) -> Element<'_, Message> {
-        let rows: Vec<Element<Message>> = vec![
+        let mut rows: Vec<Element<Message>> = vec![
             setting(
                 "Push to talk",
                 "Flow watches the chord itself, so no compositor binding is needed. Takes effect when Flow restarts.",
@@ -444,12 +431,17 @@ impl Console {
                 .align_y(iced::Center)
                 .into(),
             ),
-            setting(
-                "Start with session",
-                "Launch the daemon when you log in.",
-                toggle(self.autostart, Message::Autostart),
-            ),
         ];
+
+        // Only offered when systemd actually answered. A switch we cannot read
+        // the true state of is worse than no switch.
+        if let Some(enabled) = self.autostart {
+            rows.push(setting(
+                "Start with session",
+                "Enables the flow.service user unit so the daemon launches when you log in.",
+                toggle(enabled, Message::Autostart),
+            ));
+        }
 
         section_shell(
             "Dictation",
@@ -460,11 +452,23 @@ impl Console {
     }
 
     fn audio_section(&self) -> Element<'_, Message> {
-        let rows: Vec<Element<Message>> = vec![
+        let mut rows: Vec<Element<Message>> = vec![
+            // Read-only, and deliberately so: the daemon records from the
+            // system default source, which means changing your microphone in
+            // your desktop's own settings already works. A picker here could
+            // only ever be a second answer to the same question.
             setting(
-                "Input",
-                "Whichever source PipeWire is sending Flow.",
-                picker(&Input::ALL[..], self.input, Message::SetInput),
+                "Microphone",
+                "Follows your system's default input. Change it in your sound settings.",
+                text(
+                    self.input
+                        .clone()
+                        .unwrap_or_else(|| "not detected".to_string()),
+                )
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(MUTED)
+                .into(),
             ),
             setting(
                 "Turn other apps down",
@@ -492,7 +496,7 @@ impl Console {
     }
 
     fn models_section(&self) -> Element<'_, Message> {
-        let rows: Vec<Element<Message>> = vec![
+        let mut rows: Vec<Element<Message>> = vec![
             model_row("Speech", "parakeet-tdt-0.6b · int8", "620 MB", true),
             model_row("Cleanup", "qwen3-1.7b · Q4_K_M", "1.1 GB", true),
             setting(
@@ -522,7 +526,7 @@ impl Console {
     }
 
     fn about_section(&self) -> Element<'_, Message> {
-        let rows: Vec<Element<Message>> = vec![
+        let mut rows: Vec<Element<Message>> = vec![
             fact_row("Version", "0.3.1"),
             fact_row("Config", "~/.config/flow/config.toml"),
             fact_row("Models", "~/.local/share/flow/models"),
@@ -573,7 +577,9 @@ fn section_shell<'a>(
         Space::new().height(10),
         text(subtitle).size(13).color(MUTED),
         Space::new().height(26),
-        scrollable(list).height(Fill),
+        // Right padding so the scrollbar, which iced overlays on top of the
+        // content rather than beside it, cannot sit over the controls.
+        scrollable(container(list).padding(iced::Padding::default().right(16))).height(Fill),
     ];
 
     if let Some(foot) = foot {
