@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Flow
+GenericName=Dictation Settings
+Comment=History and settings for Flow push-to-talk dictation
+# Resolved from PATH so the same file works for a system install and a
+# ~/.local/bin one.
+Exec=flow-console
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Settings;AudioVideo;
+Keywords=dictation;speech;voice;transcription;
+# Matches the app_id the window sets, so the compositor ties the running
+# window to this entry.
+StartupWMClass=flow-console

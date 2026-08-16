@@ -163,25 +163,87 @@ pub fn detect_terminal_focus() -> Option<bool> {
     Some(is_terminal_class(&class))
 }
 
+/// Ask whichever compositor is running which window has focus.
+///
+/// There is no Wayland protocol for this - a client is not allowed to know
+/// what else is on screen - so the only way is to ask the compositor through
+/// its own control socket. Each one has a different answer, so each is tried
+/// in turn and the first that responds wins. Wanting the paste chord right on
+/// Sway and niri is not optional: those are the same audience as Hyprland, and
+/// hyprctl alone silently gave every one of them the wrong chord.
 fn focused_window_class() -> Option<String> {
-    let output = std::process::Command::new("hyprctl")
-        .arg("activewindow")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    let candidates: [(&str, &[&str]); 4] = [
+        ("hyprctl", &["activewindow", "-j"]),
+        ("swaymsg", &["-t", "get_tree", "-r"]),
+        ("niri", &["msg", "--json", "focused-window"]),
+        // Sends JSON on stdout for the focused toplevel on wlroots setups that
+        // ship it; harmless where it is absent.
+        ("lswt", &["--json"]),
+    ];
+
+    for (program, args) in candidates {
+        let Ok(output) = std::process::Command::new(program).args(args).output() else {
+            continue; // not installed - almost certainly not this compositor
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&output.stdout) else {
+            continue;
+        };
+        if let Some(class) = parse_focused_class(text) {
+            return Some(class);
+        }
     }
-    let text = std::str::from_utf8(&output.stdout).ok()?;
-    let class = text
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("class:"))
-        .map(|s| s.trim().to_ascii_lowercase())?;
-    (!class.is_empty()).then_some(class)
+    None
+}
+
+/// Pull the focused window's class out of a compositor's JSON.
+///
+/// Deliberately key-based rather than schema-based: Hyprland calls it `class`,
+/// Sway `app_id` (with `class` for XWayland), niri `app_id`. Rather than three
+/// parsers that each rot separately, take the first of those keys belonging to
+/// a focused window. Pure, so the shapes are testable without a compositor.
+pub fn parse_focused_class(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let node = focused_node(&value)?;
+    for key in ["app_id", "class", "initialClass"] {
+        if let Some(name) = node.get(key).and_then(|v| v.as_str()) {
+            let name = name.trim().to_ascii_lowercase();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// The object describing the focused window. Hyprland and niri return it
+/// directly; Sway returns a whole tree in which one node has `focused: true`.
+fn focused_node(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    if value.get("focused").and_then(|f| f.as_bool()) == Some(true) {
+        return Some(value);
+    }
+    // A bare object with a class and no `focused` key is Hyprland's or niri's
+    // answer: it only ever describes the focused window.
+    if value.is_object()
+        && value.get("focused").is_none()
+        && ["app_id", "class"].iter().any(|k| value.get(k).is_some())
+    {
+        return Some(value);
+    }
+    match value {
+        serde_json::Value::Array(items) => items.iter().find_map(focused_node),
+        serde_json::Value::Object(fields) => fields.values().find_map(focused_node),
+        _ => None,
+    }
 }
 
 /// Match by exact class or reverse-DNS suffix so both `kitty` and
 /// `com.mitchellh.ghostty` are recognised. Substring matches would misfire
 /// (a `.footnote` app would look like `foot`).
+
+
 pub fn is_terminal_class(class: &str) -> bool {
     const TERMINALS: &[&str] = &[
         "kitty",

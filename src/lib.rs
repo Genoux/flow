@@ -3,6 +3,7 @@ pub mod cleanup;
 pub mod config;
 pub mod denoise;
 pub mod duck;
+pub mod history;
 pub mod hotkey;
 pub mod inject;
 pub mod install;
