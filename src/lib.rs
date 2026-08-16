@@ -8,5 +8,6 @@ pub mod inject;
 pub mod install;
 pub mod ipc;
 pub mod overlay;
+pub mod status;
 pub mod stt;
 pub mod wav;

@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use flow::{
-    audio, cleanup, config, denoise, duck, hotkey, inject, install, ipc, overlay, stt, wav,
+    audio, cleanup, config, denoise, duck, hotkey, inject, install, ipc, overlay, status, stt, wav,
 };
 use std::time::{Duration, Instant};
 
@@ -153,6 +153,7 @@ fn daemon(
 
     let mut injector = inject::Injector::new()?;
     let overlay = overlay::Overlay::spawn(capture.monitor());
+    let reporter = status::Reporter::spawn();
 
     duck::restore_stale();
 
@@ -191,9 +192,13 @@ fn daemon(
             "trigger `flow start`".to_string()
         }
     );
+    // Everything that could still fail has happened by here, so this is the
+    // first honest moment to tell a watching console the daemon is up.
+    reporter.ready();
 
     let (jobs, job_rx) = std::sync::mpsc::channel();
     let island = &overlay;
+    let status = &reporter;
     // Shared so the start of a long dictation can be transcribed while the rest is
     // still being spoken. The lock is held only for the duration of one
     // transcription, and taking it before taking audio is what keeps the early
@@ -218,14 +223,20 @@ fn daemon(
                     terminal,
                     cleaner.as_ref(),
                     island,
+                    status,
                     debug,
                 ) {
+                    // The console shows this until the next dictation lands, so
+                    // a failure the user would otherwise only find in the
+                    // journal has somewhere to appear.
+                    status.problem(err.to_string());
                     eprintln!("{err}");
                 }
                 drop(engine);
                 // The island is showing the sweep until the text lands, error
                 // or not - a failed transcription must not leave it spinning.
                 island.finish();
+                status.ready();
             }
         });
 
@@ -265,7 +276,7 @@ fn daemon(
                         watch.disarm();
                     }
                     hold_started = Some(Instant::now());
-                    begin(&capture, &mut session, duck, settle, &overlay, early);
+                    begin(&capture, &mut session, duck, settle, &overlay, &reporter, early);
                     None
                 }
                 hotkey::Event::Start => {
@@ -276,7 +287,7 @@ fn daemon(
                         None
                     } else {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, duck, settle, &overlay, early);
+                        begin(&capture, &mut session, duck, settle, &overlay, &reporter, early);
                         chord_watch = Some(hotkey::ChordWatch::arm(events.clone(), chord.clone()));
                         None
                     }
@@ -324,10 +335,16 @@ fn daemon(
             // Audio on its way to the model is only counted here. Whether it earns
             // a sweep is decided in `handle`, once there is something to say.
             match (&finished, session.is_some(), was_recording) {
-                (Some(_), _, _) => overlay.queued(),
+                (Some(_), _, _) => {
+                    overlay.queued();
+                    reporter.working();
+                }
                 // A recording ended with nothing usable - a cancel, a tap too
                 // short. End the island here or it would sweep forever.
-                (None, false, true) => overlay.cancel(),
+                (None, false, true) => {
+                    overlay.cancel();
+                    reporter.ready();
+                }
                 // Nothing started and nothing ended: a stray `flow stop`, a
                 // duplicate start. The island may be sweeping for a dictation
                 // still being transcribed, so it is not ours to take down.
@@ -346,6 +363,7 @@ fn daemon(
     });
 
     ipc::remove_pid();
+    status::remove_socket();
     Ok(())
 }
 
@@ -374,6 +392,7 @@ fn begin(
     duck: Option<u32>,
     settle: Duration,
     overlay: &overlay::Overlay,
+    reporter: &status::Reporter,
     early: &std::sync::Mutex<Vec<String>>,
 ) {
     // A new recording abandons whatever came before it, including anything already
@@ -386,6 +405,7 @@ fn begin(
     // even though capture may be a moment behind it while other apps are
     // turned down.
     overlay.record();
+    reporter.listening();
     eprintln!("recording...");
     *slot = Some(Session { ducker: None });
 
@@ -425,6 +445,7 @@ fn handle(
     terminal: bool,
     cleaner: Option<&cleanup::Cleaner>,
     island: &overlay::Overlay,
+    reporter: &status::Reporter,
     debug: DebugOptions,
 ) -> Result<()> {
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
@@ -534,6 +555,12 @@ fn handle(
     // Injection is timed because it was once the largest term of the three and
     // nothing pointed at it: a device probe on every paste, invisible in a total.
     let injected = started.elapsed() - cleaned_at;
+
+    reporter.finished(status::Dictation {
+        text: final_text.clone(),
+        spoken,
+        paste_ms: injected.as_millis(),
+    });
 
     if final_text == text {
         eprintln!(
