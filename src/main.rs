@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use flow::{
-    audio, cleanup, config, denoise, duck, hotkey, inject, install, ipc, overlay, status, stt, wav,
+    audio, cleanup, config, denoise, duck, history, hotkey, inject, install, ipc, overlay, status,
+    stt, wav,
 };
 use std::time::{Duration, Instant};
 
@@ -588,6 +589,14 @@ fn handle(
         spoken,
         paste_ms: injected.as_millis(),
     });
+    // On disk as well as in the reporter: the console reads history from the
+    // file, so it is there before the daemon starts and survives it stopping.
+    history::append(
+        &final_text,
+        spoken,
+        injected.as_millis(),
+        history::now(),
+    );
 
     if final_text == text {
         eprintln!(

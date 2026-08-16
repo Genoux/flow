@@ -7,6 +7,7 @@
 //! remembers what it set is a window that disagrees with the system the moment
 //! anything else touches it.
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -109,9 +110,168 @@ fn description_of(listing: &str, name: &str) -> Option<String> {
     None
 }
 
+/// What is actually running the session, e.g. "Hyprland · Wayland". Read from
+/// the environment rather than assumed: the About screen used to say Hyprland
+/// on every machine, including the ones where it was wrong.
+pub fn session() -> String {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("XDG_SESSION_DESKTOP"))
+        .unwrap_or_default();
+    let kind = match std::env::var("XDG_SESSION_TYPE").as_deref() {
+        Ok("wayland") => "Wayland",
+        Ok("x11") => "X11",
+        _ if std::env::var_os("WAYLAND_DISPLAY").is_some() => "Wayland",
+        _ if std::env::var_os("DISPLAY").is_some() => "X11",
+        _ => "unknown",
+    };
+    if desktop.is_empty() {
+        kind.to_string()
+    } else {
+        format!("{desktop} · {kind}")
+    }
+}
+
+pub fn data_home() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".local/share")
+        })
+}
+
+/// How many terms are in the vocabulary file. Counts the same way the daemon
+/// does - non-empty, non-comment lines - so the number shown is the number
+/// that reaches the model.
+pub fn vocabulary_terms() -> usize {
+    let path = super::settings::config_path()
+        .parent()
+        .map(|dir| dir.join("vocabulary.txt"))
+        .unwrap_or_default();
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .filter(|line| {
+                    let line = line.trim();
+                    !line.is_empty() && !line.starts_with('#')
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// A model directory as the window reports it: present or not, and how big.
+pub struct Model {
+    pub label: &'static str,
+    pub detail: String,
+    pub bytes: u64,
+    pub installed: bool,
+}
+
+/// Measure what is actually on disk. The sizes used to be written into the
+/// source, so they stayed the same however much was really there - including
+/// when nothing was.
+pub fn models() -> Vec<Model> {
+    let root = data_home().join("flow/models");
+
+    // The speech model is a directory of onnx files; the cleanup model is a
+    // single gguf beside it. Found by extension rather than by name so that
+    // swapping the gguf for a different one does not turn this into a lie the
+    // moment the daemon moves on.
+    let speech = root.join("tdt");
+    let cleanup = largest_gguf(&root);
+
+    vec![
+        Model {
+            label: "Speech",
+            detail: describe(&speech),
+            bytes: size_of(&speech),
+            installed: speech.is_dir(),
+        },
+        Model {
+            label: "Cleanup",
+            detail: cleanup
+                .as_ref()
+                .map(|path| describe(path))
+                .unwrap_or_else(|| "not installed".to_string()),
+            bytes: cleanup.as_deref().map(size_of).unwrap_or(0),
+            installed: cleanup.is_some(),
+        },
+    ]
+}
+
+/// The biggest `.gguf` in `root`, which is the cleanup model. Biggest rather
+/// than first so a leftover from an older, smaller model is not mistaken for
+/// the one in use.
+fn largest_gguf(root: &std::path::Path) -> Option<PathBuf> {
+    std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "gguf"))
+        .max_by_key(|path| size_of(path))
+}
+
+/// The file or directory name, which is what identifies a model to a person -
+/// the full path is already shown once at the bottom of the screen.
+fn describe(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Bytes on disk, counting a directory's contents recursively.
+fn size_of(path: &std::path::Path) -> u64 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    if meta.is_file() {
+        return meta.len();
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| size_of(&entry.path()))
+        .sum()
+}
+
+/// Bytes as a human reads them. Kept here so the same rounding is used for a
+/// single model and for the total.
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 3] = [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)];
+    for (unit, size) in UNITS {
+        if bytes >= size {
+            return format!("{:.1} {unit}", bytes as f64 / size as f64);
+        }
+    }
+    format!("{bytes} B")
+}
+
+/// Hand a path to the desktop's own handler. Used by the buttons that used to
+/// do nothing at all.
+pub fn open(path: &std::path::Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("{} does not exist yet", path.display()));
+    }
+    match run("xdg-open", &[&path.display().to_string()]) {
+        Some(output) if output.status.success() => Ok(()),
+        Some(_) => Err("xdg-open could not open it".to_string()),
+        None => Err("xdg-open is not available".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_read_the_way_a_person_would() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(2048), "2.0 KB");
+        assert_eq!(human_bytes(650 * (1 << 20)), "650.0 MB");
+        assert_eq!(human_bytes(3 * (1 << 30) / 2), "1.5 GB");
+    }
 
     const LISTING: &str = "\
 Source #184594

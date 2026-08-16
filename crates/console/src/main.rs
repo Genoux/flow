@@ -6,6 +6,7 @@
 //! window can be navigated and judged before any of it is wired up.
 
 mod daemon;
+mod history;
 mod settings;
 mod system;
 
@@ -72,7 +73,7 @@ fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
-    Status,
+    History,
     Dictation,
     Audio,
     Models,
@@ -81,7 +82,7 @@ enum Section {
 
 impl Section {
     const ALL: [Section; 5] = [
-        Section::Status,
+        Section::History,
         Section::Dictation,
         Section::Audio,
         Section::Models,
@@ -90,7 +91,7 @@ impl Section {
 
     fn label(self) -> &'static str {
         match self {
-            Section::Status => "Status",
+            Section::History => "History",
             Section::Dictation => "Dictation",
             Section::Audio => "Audio",
             Section::Models => "Models",
@@ -143,6 +144,8 @@ enum Message {
     Duck(u32),
     Settle(u32),
     SetGpu(Gpu),
+    OpenConfig,
+    OpenVocabulary,
     Daemon(daemon::Event),
     Noop,
 }
@@ -162,19 +165,27 @@ struct Console {
     autostart: Option<bool>,
     /// The microphone PipeWire is actually handing the daemon.
     input: Option<String>,
+    entries: Vec<history::Entry>,
+    models: Vec<system::Model>,
+    vocabulary_terms: usize,
+    session: String,
 }
 
 impl Console {
     fn new() -> (Self, Task<Message>) {
         (
             Self {
-                section: Section::Status,
+                section: Section::History,
                 daemon: daemon::State::default(),
                 settings: settings::Settings::load(),
                 save_error: None,
                 saved: false,
                 autostart: system::autostart_enabled(),
                 input: system::default_input(),
+                entries: history::recent(),
+                models: system::models(),
+                vocabulary_terms: system::vocabulary_terms(),
+                session: system::session(),
             },
             Task::none(),
         )
@@ -232,9 +243,32 @@ impl Console {
                 self.settings.gpu = gpu.to_config();
                 self.persist();
             }
-            Message::Daemon(daemon::Event::Line(line)) => self.daemon.apply(&line),
+            Message::Daemon(daemon::Event::Line(line)) => {
+                let before = self.daemon.words;
+                self.daemon.apply(&line);
+                // Re-read the file rather than trust the socket's copy: the
+                // file is what this window shows, and it is the thing that
+                // outlives the daemon.
+                if self.daemon.words != before {
+                    self.entries = history::recent();
+                }
+            }
             Message::Daemon(daemon::Event::Disconnected) => {
                 self.daemon = daemon::State::default()
+            }
+            Message::OpenConfig => {
+                if let Err(err) = system::open(&settings::config_path()) {
+                    self.save_error = Some(err);
+                }
+            }
+            Message::OpenVocabulary => {
+                let path = settings::config_path()
+                    .parent()
+                    .map(|dir| dir.join("vocabulary.txt"))
+                    .unwrap_or_default();
+                if let Err(err) = system::open(&path) {
+                    self.save_error = Some(err);
+                }
             }
             Message::Noop => {}
         }
@@ -277,7 +311,7 @@ impl Console {
             column![
                 items,
                 Space::new().height(Fill),
-                text("0.3.1").size(11).font(Font::MONOSPACE).color(FAINT),
+                text(env!("CARGO_PKG_VERSION")).size(11).font(Font::MONOSPACE).color(FAINT),
             ]
             .spacing(0),
         )
@@ -291,7 +325,7 @@ impl Console {
 
     fn pane(&self) -> Element<'_, Message> {
         let content = match self.section {
-            Section::Status => self.status_section(),
+            Section::History => self.history_section(),
             Section::Dictation => self.dictation_section(),
             Section::Audio => self.audio_section(),
             Section::Models => self.models_section(),
@@ -305,89 +339,79 @@ impl Console {
             .into()
     }
 
-    fn status_section(&self) -> Element<'_, Message> {
-        use daemon::Activity;
+    /// What was dictated, newest first.
+    ///
+    /// No live activity here on purpose. You dictate with the keybinding, not
+    /// by looking at this window - so a "listening" indicator on a screen you
+    /// are not looking at says nothing. What is worth opening the window for
+    /// is what it actually wrote.
+    fn history_section(&self) -> Element<'_, Message> {
+        let now = history::now();
 
-        // A problem the daemon reported outranks whatever it is nominally
-        // doing: the user cannot act on "ready" if the last paste failed.
-        let (pip_colour, heading, sub) = match (&self.daemon.problem, self.daemon.activity) {
-            (Some(problem), _) => (ERR, "Something went wrong", problem.as_str()),
-            (None, Activity::Offline) => (
-                FAINT,
-                "Flow isn't running",
-                "Start the daemon and this window will connect on its own.",
-            ),
-            (None, Activity::Starting) => (
-                ACCENT,
-                "Starting",
-                "Loading the speech and cleanup models. This happens once.",
-            ),
-            (None, Activity::Ready) => (
-                FAINT,
-                "Ready",
-                "Hold the chord anywhere. Flow types into whatever has focus.",
-            ),
-            (None, Activity::Listening) => (
-                ACCENT,
-                "Listening",
-                "Other apps are turned down. Release to transcribe.",
-            ),
-            (None, Activity::Working) => (
-                ACCENT,
-                "Transcribing",
-                "Working on what you just said.",
-            ),
-        };
-
-        let last = self
-            .daemon
-            .recent
-            .first()
-            .map(|d| format!("{} ms", d.paste_ms))
-            .unwrap_or_else(|| "-".to_string());
-        let words = self.daemon.words.to_string();
-
-        let mut body = column![
-            row![pip(pip_colour), text(heading).size(22).color(FG)]
-                .spacing(10)
-                .align_y(iced::Center),
-            Space::new().height(10),
-            text(sub).size(13).color(MUTED),
-            Space::new().height(30),
-        ];
-
-        if self.daemon.activity == Activity::Offline {
-            body = body.push(
-                text("Nothing to show until the daemon is up.")
-                    .size(12)
+        let mut list = column![];
+        if self.entries.is_empty() {
+            list = list.push(
+                text("Nothing yet. Hold the chord and say something.")
+                    .size(13)
                     .color(FAINT),
             );
         } else {
-            body = body.push(recent(&self.daemon.recent));
-            body = body.push(Space::new().height(26));
-            body = body.push(facts_row(&[
-                ("last paste", last.as_str()),
-                ("words", words.as_str()),
-                ("model", "parakeet-tdt"),
-            ]));
+            for (index, entry) in self.entries.iter().enumerate() {
+                let when = history::ago(entry.at, now);
+                list = list.push(
+                    container(
+                        column![
+                            text(entry.text.clone()).size(13).color(FG),
+                            Space::new().height(4),
+                            text(if when.is_empty() {
+                                format!("{:.1}s", entry.spoken)
+                            } else {
+                                format!("{:.1}s  ·  {when}", entry.spoken)
+                            })
+                            .size(11)
+                            .font(Font::MONOSPACE)
+                            .color(FAINT),
+                        ]
+                    )
+                    .padding([10, 0]),
+                );
+                if index + 1 < self.entries.len() {
+                    list = list.push(hairline());
+                }
+            }
         }
 
+        let running = self.daemon.activity != daemon::Activity::Offline;
+        let foot = row![
+            pip(if running { ACCENT } else { FAINT }),
+            Space::new().width(8),
+            text(if running {
+                "Flow is running"
+            } else {
+                "Flow isn't running"
+            })
+            .size(12)
+            .color(FAINT),
+            Space::new().width(Fill),
+            text(format!("{} kept", self.entries.len()))
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(FAINT),
+        ]
+        .align_y(iced::Center);
+
         column![
-            body,
-            Space::new().height(Fill),
-            row![
-                text("Hold super shift d").size(12).color(FAINT),
-                Space::new().width(Fill),
-                action(
-                    if self.daemon.activity == Activity::Offline {
-                        "Start"
-                    } else {
-                        "Stop"
-                    },
-                    false
-                ),
-            ]
-            .align_y(iced::Center),
+            text("History").size(22).color(FG),
+            Space::new().height(10),
+            text("Everything Flow has typed for you, most recent first.")
+                .size(13)
+                .color(MUTED),
+            Space::new().height(26),
+            scrollable(container(list).padding(iced::Padding::default().right(16))).height(Fill),
+            Space::new().height(16),
+            hairline(),
+            Space::new().height(16),
+            foot,
         ]
         .into()
     }
@@ -405,7 +429,7 @@ impl Console {
                 row![
                     text("super shift d").size(12).font(Font::MONOSPACE).color(MUTED),
                     Space::new().width(12),
-                    action("Change", false),
+                    action_msg("Change", false, Message::OpenConfig),
                 ]
                 .align_y(iced::Center)
                 .into(),
@@ -424,9 +448,12 @@ impl Console {
                 "Vocabulary",
                 "Names and jargon the recogniser should get right.",
                 row![
-                    text("12 terms").size(12).font(Font::MONOSPACE).color(MUTED),
+                    text(format!("{} terms", self.vocabulary_terms))
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .color(MUTED),
                     Space::new().width(12),
-                    action("Edit", false),
+                    action_msg("Edit", false, Message::OpenVocabulary),
                 ]
                 .align_y(iced::Center)
                 .into(),
@@ -496,15 +523,33 @@ impl Console {
     }
 
     fn models_section(&self) -> Element<'_, Message> {
-        let mut rows: Vec<Element<Message>> = vec![
-            model_row("Speech", "parakeet-tdt-0.6b · int8", "620 MB", true),
-            model_row("Cleanup", "qwen3-1.7b · Q4_K_M", "1.1 GB", true),
-            setting(
+        // Bound so the borrows in the rows outlive their construction.
+        let sizes: Vec<String> = self
+            .models
+            .iter()
+            .map(|model| system::human_bytes(model.bytes))
+            .collect();
+
+        let mut rows: Vec<Element<Message>> = self
+            .models
+            .iter()
+            .zip(&sizes)
+            .map(|(model, size)| {
+                model_row(model.label, model.detail.clone(), size.clone(), model.installed)
+            })
+            .collect();
+
+        rows.push(setting(
                 "Run cleanup on",
                 "Speech recognition always runs on the CPU. Takes effect when Flow restarts.",
                 picker(&Gpu::ALL[..], Gpu::from_config(self.settings.gpu), Message::SetGpu),
-            ),
-        ];
+        ));
+
+        let total = format!(
+            "{} in {}",
+            system::human_bytes(self.models.iter().map(|m| m.bytes).sum()),
+            system::data_home().join("flow/models").display()
+        );
 
         section_shell(
             "Models",
@@ -512,12 +557,9 @@ impl Console {
             rows,
             Some(
                 row![
-                    text("1.7 GB in ~/.local/share/flow")
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .color(FAINT),
-                    Space::new().width(Fill),
-                    action("Check for updates", false),
+                    text(total).size(12)
+                    .font(Font::MONOSPACE)
+                    .color(FAINT),
                 ]
                 .align_y(iced::Center)
                 .into(),
@@ -526,12 +568,14 @@ impl Console {
     }
 
     fn about_section(&self) -> Element<'_, Message> {
-        let mut rows: Vec<Element<Message>> = vec![
-            fact_row("Version", "0.3.1"),
-            fact_row("Config", "~/.config/flow/config.toml"),
-            fact_row("Models", "~/.local/share/flow/models"),
-            fact_row("Compositor", "Hyprland · Wayland"),
-            fact_row("Licence", "MIT"),
+        // Bound so the borrows outlive the rows built from them.
+        let config = settings::config_path().display().to_string();
+        let history_file = history::path().display().to_string();
+        let rows: Vec<Element<Message>> = vec![
+            fact_row("Version", env!("CARGO_PKG_VERSION")),
+            fact_row("Session", self.session.clone()),
+            fact_row("Config", config),
+            fact_row("History", history_file),
         ];
 
         section_shell(
@@ -540,9 +584,8 @@ impl Console {
             rows,
             Some(
                 row![
-                    text("Up to date").size(12).color(FAINT),
                     Space::new().width(Fill),
-                    action("Open config", false),
+                    action_msg("Open config", false, Message::OpenConfig),
                 ]
                 .align_y(iced::Center)
                 .into(),
@@ -634,12 +677,12 @@ fn setting<'a>(
 }
 
 /// A read-only pair, for About. Same rhythm as `setting` without a control.
-fn fact_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
+fn fact_row(label: &'static str, value: impl Into<String>) -> Element<'static, Message> {
     container(
         row![
             text(label).size(13.5).color(FG),
             Space::new().width(Fill),
-            text(value).size(12).font(Font::MONOSPACE).color(MUTED),
+            text(value.into()).size(12).font(Font::MONOSPACE).color(MUTED),
         ]
         .align_y(iced::Center),
     )
@@ -647,23 +690,23 @@ fn fact_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
     .into()
 }
 
-fn model_row<'a>(
-    label: &'a str,
-    detail: &'a str,
-    size: &'a str,
+fn model_row(
+    label: &'static str,
+    detail: impl Into<String>,
+    size: impl Into<String>,
     installed: bool,
-) -> Element<'a, Message> {
+) -> Element<'static, Message> {
     container(
         row![
             column![
                 text(label).size(13.5).color(FG),
                 Space::new().height(3),
-                text(detail).size(12).font(Font::MONOSPACE).color(FAINT),
+                text(detail.into()).size(12).font(Font::MONOSPACE).color(FAINT),
             ]
             .width(Length::FillPortion(3)),
             Space::new().width(20),
             row![
-                text(size).size(12).font(Font::MONOSPACE).color(FAINT),
+                text(size.into()).size(12).font(Font::MONOSPACE).color(FAINT),
                 Space::new().width(14),
                 pip(if installed { FAINT } else { ACCENT }),
                 Space::new().width(7),
@@ -860,6 +903,10 @@ fn facts_row(pairs: &[(&str, &str)]) -> Element<'static, Message> {
 }
 
 fn action(label: &str, primary: bool) -> Element<'static, Message> {
+    action_msg(label, primary, Message::Noop)
+}
+
+fn action_msg(label: &str, primary: bool, on_press: Message) -> Element<'static, Message> {
     button(
         text(label.to_string())
             .size(13)
@@ -885,7 +932,7 @@ fn action(label: &str, primary: bool) -> Element<'static, Message> {
             ..Default::default()
         }
     })
-    .on_press(Message::Noop)
+    .on_press(on_press)
     .into()
 }
 
