@@ -5,8 +5,10 @@
 //! over the existing ipc socket - every value here is still mock, so the whole
 //! window can be navigated and judged before any of it is wired up.
 
+mod daemon;
+
 use iced::widget::{button, column, container, pick_list, row, scrollable, slider, text, toggler, Space};
-use iced::{Background, Border, Color, Element, Fill, Font, Length, Task, Theme};
+use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 // ---------------------------------------------------------------------------
 // Tokens. Taken from the island in overlay.rs so the window and the overlay
@@ -29,6 +31,7 @@ fn main() -> iced::Result {
     iced::application(Console::new, Console::update, Console::view)
         .title("Flow")
         .theme(theme)
+        .subscription(subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(880.0, 580.0),
             min_size: Some(iced::Size::new(640.0, 460.0)),
@@ -48,6 +51,10 @@ fn main() -> iced::Result {
 // borrow, and an inline closure infers a lifetime that is too specific.
 fn theme(_state: &Console) -> Theme {
     Theme::Dark
+}
+
+fn subscription(_state: &Console) -> Subscription<Message> {
+    Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon))
 }
 
 fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
@@ -88,18 +95,6 @@ impl Section {
             Section::About => "About",
         }
     }
-}
-
-/// What the daemon is doing. Only `Ready` is reachable today; the rest are the
-/// contract the ipc channel will drive once the daemon can report itself, and
-/// each already has its rendering below.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Activity {
-    Ready,
-    Listening,
-    Working,
-    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,12 +151,13 @@ enum Message {
     Settle(u32),
     SetInput(Input),
     SetGpu(Gpu),
+    Daemon(daemon::Event),
     Noop,
 }
 
 struct Console {
     section: Section,
-    activity: Activity,
+    daemon: daemon::State,
     push_to_talk: bool,
     cleanup: bool,
     terminal: bool,
@@ -178,7 +174,7 @@ impl Console {
         (
             Self {
                 section: Section::Status,
-                activity: Activity::Ready,
+                daemon: daemon::State::default(),
                 push_to_talk: true,
                 cleanup: true,
                 terminal: false,
@@ -205,6 +201,10 @@ impl Console {
             Message::Settle(value) => self.settle = value,
             Message::SetInput(input) => self.input = input,
             Message::SetGpu(gpu) => self.gpu = gpu,
+            Message::Daemon(daemon::Event::Line(line)) => self.daemon.apply(&line),
+            Message::Daemon(daemon::Event::Disconnected) => {
+                self.daemon = daemon::State::default()
+            }
             Message::Noop => {}
         }
         Task::none()
@@ -258,50 +258,86 @@ impl Console {
     }
 
     fn status_section(&self) -> Element<'_, Message> {
-        let (pip_colour, heading, sub) = match self.activity {
-            Activity::Ready => (
+        use daemon::Activity;
+
+        // A problem the daemon reported outranks whatever it is nominally
+        // doing: the user cannot act on "ready" if the last paste failed.
+        let (pip_colour, heading, sub) = match (&self.daemon.problem, self.daemon.activity) {
+            (Some(problem), _) => (ERR, "Something went wrong", problem.as_str()),
+            (None, Activity::Offline) => (
+                FAINT,
+                "Flow isn't running",
+                "Start the daemon and this window will connect on its own.",
+            ),
+            (None, Activity::Starting) => (
+                ACCENT,
+                "Starting",
+                "Loading the speech and cleanup models. This happens once.",
+            ),
+            (None, Activity::Ready) => (
                 FAINT,
                 "Ready",
                 "Hold the chord anywhere. Flow types into whatever has focus.",
             ),
-            Activity::Listening => (
+            (None, Activity::Listening) => (
                 ACCENT,
                 "Listening",
                 "Other apps are turned down. Release to transcribe.",
             ),
-            Activity::Working => (ACCENT, "Transcribing", "Working on what you just said."),
-            Activity::Error => (
-                ERR,
-                "Can't type",
-                "Transcription works, but Flow can't reach the virtual keyboard.",
+            (None, Activity::Working) => (
+                ACCENT,
+                "Transcribing",
+                "Working on what you just said.",
             ),
         };
 
-        let facts = if self.activity == Activity::Listening {
-            facts_row(&[("elapsed", "3.4 s"), ("input", "webcam mic"), ("ducked", "3 apps")])
-        } else {
-            facts_row(&[
-                ("last paste", "103 ms"),
-                ("today", "2,847 words"),
-                ("model", "parakeet-tdt"),
-            ])
-        };
+        let last = self
+            .daemon
+            .recent
+            .first()
+            .map(|d| format!("{} ms", d.paste_ms))
+            .unwrap_or_else(|| "-".to_string());
+        let words = self.daemon.words.to_string();
 
-        column![
+        let mut body = column![
             row![pip(pip_colour), text(heading).size(22).color(FG)]
                 .spacing(10)
                 .align_y(iced::Center),
             Space::new().height(10),
             text(sub).size(13).color(MUTED),
             Space::new().height(30),
-            recent(),
-            Space::new().height(26),
-            facts,
+        ];
+
+        if self.daemon.activity == Activity::Offline {
+            body = body.push(
+                text("Nothing to show until the daemon is up.")
+                    .size(12)
+                    .color(FAINT),
+            );
+        } else {
+            body = body.push(recent(&self.daemon.recent));
+            body = body.push(Space::new().height(26));
+            body = body.push(facts_row(&[
+                ("last paste", last.as_str()),
+                ("words", words.as_str()),
+                ("model", "parakeet-tdt"),
+            ]));
+        }
+
+        column![
+            body,
             Space::new().height(Fill),
             row![
                 text("Hold super shift d").size(12).color(FAINT),
                 Space::new().width(Fill),
-                action("Stop", false),
+                action(
+                    if self.daemon.activity == Activity::Offline {
+                        "Start"
+                    } else {
+                        "Stop"
+                    },
+                    false
+                ),
             ]
             .align_y(iced::Center),
         ]
@@ -698,28 +734,35 @@ fn hairline() -> Element<'static, Message> {
 
 /// Rows separated by a hairline, with no box around them - the container was
 /// furniture, the separation is the only part that carried meaning.
-fn recent() -> Element<'static, Message> {
-    let entries = [
-        ("Let's commit the duck ordering fix first.", "1.2s"),
-        ("The island crests in the middle now.", "0.9s"),
-        ("Check whether pactl settles before capture.", "1.4s"),
-    ];
-
+fn recent(entries: &[daemon::Dictation]) -> Element<'_, Message> {
     let mut list = column![text("Recent").size(12).color(FAINT), Space::new().height(4)];
 
-    for (index, (line, spoken)) in entries.iter().enumerate() {
+    if entries.is_empty() {
+        return list
+            .push(
+                container(text("Nothing dictated yet.").size(13).color(FAINT)).padding([8, 0]),
+            )
+            .into();
+    }
+
+    // Three is what the pane has room for without scrolling; the daemon keeps
+    // more than that, and the rest belong in a history view rather than here.
+    for (index, entry) in entries.iter().take(3).enumerate() {
         list = list.push(
             container(
                 row![
-                    text(*line).size(13).color(FG),
+                    text(entry.text.clone()).size(13).color(FG),
                     Space::new().width(Fill),
-                    text(*spoken).size(11).font(Font::MONOSPACE).color(FAINT),
+                    text(format!("{:.1}s", entry.spoken))
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .color(FAINT),
                 ]
                 .align_y(iced::Center),
             )
             .padding([8, 0]),
         );
-        if index + 1 < entries.len() {
+        if index + 1 < entries.len().min(3) {
             list = list.push(hairline());
         }
     }

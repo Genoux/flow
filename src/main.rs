@@ -275,8 +275,18 @@ fn daemon(
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
                     }
-                    hold_started = Some(Instant::now());
-                    begin(&capture, &mut session, duck, settle, &overlay, &reporter, early);
+                    // A press while a session is already live is the physical
+                    // chord catching up with a `flow start`, or key repeat -
+                    // not a new dictation. `Event::Start` has always guarded
+                    // this way; this arm did not, so the second begin replaced
+                    // the live session and threw away everything said up to
+                    // that point. Resetting hold_started was the other half of
+                    // the bug: it restarted the clock, so a real hold could
+                    // then measure under MIN_HOLD and be discarded as a tap.
+                    if session.is_none() {
+                        hold_started = Some(Instant::now());
+                        begin(&capture, &mut session, duck, settle, &overlay, &reporter, early);
+                    }
                     None
                 }
                 hotkey::Event::Start => {
