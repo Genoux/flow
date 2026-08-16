@@ -6,6 +6,7 @@
 //! window can be navigated and judged before any of it is wired up.
 
 mod daemon;
+mod settings;
 
 use iced::widget::{button, column, container, pick_list, row, scrollable, slider, text, toggler, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
@@ -158,13 +159,14 @@ enum Message {
 struct Console {
     section: Section,
     daemon: daemon::State,
-    push_to_talk: bool,
-    cleanup: bool,
-    terminal: bool,
-    denoise: bool,
+    settings: settings::Settings,
+    /// Set when a save fails, so a read-only config or a full disk is visible
+    /// rather than a control that silently springs back.
+    save_error: Option<String>,
+    /// True once anything has been written. The daemon only reads its config at
+    /// startup, so the window has to say so rather than imply a live change.
+    saved: bool,
     autostart: bool,
-    duck: u32,
-    settle: u32,
     input: Input,
     gpu: Gpu,
 }
@@ -175,13 +177,10 @@ impl Console {
             Self {
                 section: Section::Status,
                 daemon: daemon::State::default(),
-                push_to_talk: true,
-                cleanup: true,
-                terminal: false,
-                denoise: false,
+                settings: settings::Settings::load(),
+                save_error: None,
+                saved: false,
                 autostart: true,
-                duck: 50,
-                settle: 150,
                 input: Input::SystemDefault,
                 gpu: Gpu::Auto,
             },
@@ -189,16 +188,48 @@ impl Console {
         )
     }
 
+    /// Write after every change. There is no Save button on purpose: a settings
+    /// window with an unsaved state is a window that can lose your settings.
+    fn persist(&mut self) {
+        match self.settings.save() {
+            Ok(()) => {
+                self.save_error = None;
+                self.saved = true;
+            }
+            Err(err) => self.save_error = Some(err.to_string()),
+        }
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Select(section) => self.section = section,
-            Message::PushToTalk(on) => self.push_to_talk = on,
-            Message::Cleanup(on) => self.cleanup = on,
-            Message::Terminal(on) => self.terminal = on,
-            Message::Denoise(on) => self.denoise = on,
+            Message::PushToTalk(on) => {
+                self.settings.push_to_talk = on;
+                self.persist();
+            }
+            Message::Cleanup(on) => {
+                self.settings.cleanup = on;
+                self.persist();
+            }
+            Message::Terminal(on) => {
+                self.settings.terminal = on;
+                self.persist();
+            }
+            Message::Denoise(on) => {
+                self.settings.denoise = on;
+                self.persist();
+            }
+            Message::Duck(value) => {
+                self.settings.duck = value;
+                self.persist();
+            }
+            Message::Settle(value) => {
+                self.settings.duck_settle_ms = value as u64;
+                self.persist();
+            }
+            // Not in the config file yet - the daemon has no key for either, so
+            // these stay window-local rather than writing something it ignores.
             Message::Autostart(on) => self.autostart = on,
-            Message::Duck(value) => self.duck = value,
-            Message::Settle(value) => self.settle = value,
             Message::SetInput(input) => self.input = input,
             Message::SetGpu(gpu) => self.gpu = gpu,
             Message::Daemon(daemon::Event::Line(line)) => self.daemon.apply(&line),
@@ -208,6 +239,22 @@ impl Console {
             Message::Noop => {}
         }
         Task::none()
+    }
+
+    /// The line under a settings screen: a failed write, or the fact that the
+    /// daemon will not notice until it restarts.
+    fn save_note(&self) -> Element<'_, Message> {
+        match (&self.save_error, self.saved) {
+            (Some(err), _) => text(format!("Couldn't save: {err}")).size(12).color(ERR),
+            (None, true) => text("Saved. Restart Flow for changes to take effect.")
+                .size(12)
+                .color(FAINT),
+            (None, false) => text(settings::config_path().display().to_string())
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(FAINT),
+        }
+        .into()
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -349,7 +396,7 @@ impl Console {
             setting(
                 "Push to talk",
                 "Flow watches the chord itself, so no compositor binding is needed.",
-                toggle(self.push_to_talk, Message::PushToTalk),
+                toggle(self.settings.push_to_talk, Message::PushToTalk),
             ),
             setting(
                 "Chord",
@@ -365,12 +412,12 @@ impl Console {
             setting(
                 "Clean up transcript",
                 "Removes filler and fixes punctuation with the local model.",
-                toggle(self.cleanup, Message::Cleanup),
+                toggle(self.settings.cleanup, Message::Cleanup),
             ),
             setting(
                 "Terminal paste chord",
                 "Send Ctrl+Shift+V when a terminal has focus.",
-                toggle(self.terminal, Message::Terminal),
+                toggle(self.settings.terminal, Message::Terminal),
             ),
             setting(
                 "Vocabulary",
@@ -390,7 +437,12 @@ impl Console {
             ),
         ];
 
-        section_shell("Dictation", "How the chord behaves and what happens to your words.", rows, None)
+        section_shell(
+            "Dictation",
+            "How the chord behaves and what happens to your words.",
+            rows,
+            Some(self.save_note()),
+        )
     }
 
     fn audio_section(&self) -> Element<'_, Message> {
@@ -403,17 +455,17 @@ impl Console {
             setting(
                 "Turn other apps down",
                 "Keeps your speakers out of the microphone while you dictate.",
-                value_slider(0..=100, self.duck, Message::Duck, &format!("{}%", self.duck)),
+                value_slider(0..=100, self.settings.duck, Message::Duck, &format!("{}%", self.settings.duck)),
             ),
             setting(
                 "Settle before recording",
                 "Wait for the volume to actually drop before the mic opens.",
-                value_slider(0..=600, self.settle, Message::Settle, &format!("{} ms", self.settle)),
+                value_slider(0..=600, self.settings.duck_settle_ms as u32, Message::Settle, &format!("{} ms", self.settings.duck_settle_ms)),
             ),
             setting(
                 "Noise suppression",
                 "Runs RNNoise over the audio. Can blunt consonants on a weak mic.",
-                toggle(self.denoise, Message::Denoise),
+                toggle(self.settings.denoise, Message::Denoise),
             ),
         ];
 
@@ -421,7 +473,7 @@ impl Console {
             "Audio",
             "What Flow listens to, and what it does to the room first.",
             rows,
-            None,
+            Some(self.save_note()),
         )
     }
 
