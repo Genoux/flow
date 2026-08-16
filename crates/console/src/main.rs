@@ -5,13 +5,14 @@
 //! over the existing ipc socket - every value here is still mock, so the whole
 //! window can be navigated and judged before any of it is wired up.
 
+mod chord;
 mod daemon;
 mod history;
 mod settings;
 mod system;
 mod vocabulary;
 
-use iced::widget::{button, column, container, pick_list, row, scrollable, slider, text, toggler, Space};
+use iced::widget::{button, column, container, row, scrollable, slider, text, toggler, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 // ---------------------------------------------------------------------------
@@ -57,98 +58,15 @@ fn theme(_state: &Console) -> Theme {
     Theme::Dark
 }
 
-fn subscription(state: &Console) -> Subscription<Message> {
-    let daemon = Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon));
-    if !state.capturing {
-        return daemon;
-    }
-    // Only while capturing: a settings window that swallows every keystroke
-    // the rest of the time would be its own bug.
-    Subscription::batch([
-        daemon,
-        iced::keyboard::listen().map(|event| match event {
-            iced::keyboard::Event::KeyPressed {
-                key, modifiers, ..
-            } => Message::Captured(key, modifiers),
-            _ => Message::Noop,
-        }),
-    ])
-}
-
-/// Turn a captured keypress into the daemon's chord spelling, or `None` when
-/// it is not a usable binding.
-///
-/// Rejects a bare key and a lone modifier deliberately: push-to-talk means
-/// holding something, and the daemon refuses a chord whose trigger is itself a
-/// modifier because it could never complete.
-fn chord_from(
-    key: &iced::keyboard::Key,
-    modifiers: iced::keyboard::Modifiers,
-) -> Option<String> {
-    let mut parts = Vec::new();
-    if modifiers.logo() {
-        parts.push("super".to_string());
-    }
-    if modifiers.control() {
-        parts.push("ctrl".to_string());
-    }
-    if modifiers.alt() {
-        parts.push("alt".to_string());
-    }
-    if modifiers.shift() {
-        parts.push("shift".to_string());
-    }
-    if parts.is_empty() {
-        return None;
-    }
-
-    let trigger = match key {
-        iced::keyboard::Key::Character(c) => {
-            let c = c.trim().to_lowercase();
-            // One character, and not punctuation the daemon has no keycode for.
-            (c.len() == 1 && c.chars().all(|ch| ch.is_ascii_alphanumeric())).then_some(c)?
-        }
-        iced::keyboard::Key::Named(named) => named_trigger(*named)?,
-        _ => return None,
-    };
-
-    parts.push(trigger);
-    Some(parts.join("+"))
-}
-
-/// The named keys worth binding. Anything not here is left out rather than
-/// guessed at: a chord the daemon cannot parse would be written to the config
-/// and only fail at its next startup.
-fn named_trigger(named: iced::keyboard::key::Named) -> Option<String> {
-    use iced::keyboard::key::Named;
-    Some(
-        match named {
-            Named::Space => "space",
-            Named::Enter => "enter",
-            Named::Tab => "tab",
-            Named::F1 => "f1",
-            Named::F2 => "f2",
-            Named::F3 => "f3",
-            Named::F4 => "f4",
-            Named::F5 => "f5",
-            Named::F6 => "f6",
-            Named::F7 => "f7",
-            Named::F8 => "f8",
-            Named::F9 => "f9",
-            Named::F10 => "f10",
-            Named::F11 => "f11",
-            Named::F12 => "f12",
-            _ => return None,
-        }
-        .to_string(),
-    )
-}
-
 fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
     iced::theme::Style {
         background_color: BG,
         text_color: FG,
     }
+}
+
+fn subscription(_state: &Console) -> Subscription<Message> {
+    Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon))
 }
 
 // ---------------------------------------------------------------------------
@@ -187,39 +105,6 @@ impl Section {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Gpu {
-    Auto,
-    Device(u32),
-}
-
-impl Gpu {
-    const ALL: [Gpu; 3] = [Gpu::Auto, Gpu::Device(0), Gpu::Device(1)];
-
-    fn from_config(index: Option<u32>) -> Self {
-        match index {
-            None => Gpu::Auto,
-            Some(index) => Gpu::Device(index),
-        }
-    }
-
-    fn to_config(self) -> Option<u32> {
-        match self {
-            Gpu::Auto => None,
-            Gpu::Device(index) => Some(index),
-        }
-    }
-}
-
-impl std::fmt::Display for Gpu {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Gpu::Auto => f.write_str("Automatic"),
-            Gpu::Device(index) => write!(f, "Device {index}"),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 enum Message {
     Select(Section),
@@ -230,13 +115,12 @@ enum Message {
     Autostart(bool),
     Duck(u32),
     Settle(u32),
-    SetGpu(Gpu),
     OpenConfig,
     OpenVocabulary,
     /// Start listening for the next chord the user presses.
     CaptureChord,
     /// A key arrived while capturing.
-    Captured(iced::keyboard::Key, iced::keyboard::Modifiers),
+    Captured(Option<String>),
     CancelCapture,
     TypingTerm(String),
     AddTerm,
@@ -263,11 +147,14 @@ struct Console {
     entries: Vec<history::Entry>,
     models: Vec<system::Model>,
     session: String,
-    /// True while waiting for the user to press a new chord.
     terms: Vec<String>,
     typing: String,
     term_error: Option<String>,
+    /// True while waiting for the user to press a new chord.
     capturing: bool,
+    /// False when /dev/input cannot be read, so the chord cannot be captured.
+    can_capture: bool,
+    cancel_capture: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Why the last attempted chord was rejected, shown in place of the hint.
     chord_error: Option<String>,
 }
@@ -290,6 +177,8 @@ impl Console {
                 typing: String::new(),
                 term_error: None,
                 capturing: false,
+                can_capture: chord::available(),
+                cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
             },
             Task::none(),
@@ -344,10 +233,6 @@ impl Console {
                 }
                 Err(err) => self.save_error = Some(err),
             },
-            Message::SetGpu(gpu) => {
-                self.settings.gpu = gpu.to_config();
-                self.persist();
-            }
             Message::Daemon(daemon::Event::Line(line)) => {
                 let before = self.daemon.words;
                 self.daemon.apply(&line);
@@ -387,24 +272,32 @@ impl Console {
             Message::CaptureChord => {
                 self.capturing = true;
                 self.chord_error = None;
+                let cancelled = std::sync::Arc::clone(&self.cancel_capture);
+                cancelled.store(false, std::sync::atomic::Ordering::Relaxed);
+                // Off the UI thread: this blocks on the keyboard until a chord
+                // arrives or the user gives up.
+                return Task::perform(
+                    async move {
+                        tokio_free_capture(cancelled)
+                    },
+                    Message::Captured,
+                );
             }
-            Message::CancelCapture => self.capturing = false,
-            Message::Captured(key, modifiers) => {
-                if let Some(chord) = chord_from(&key, modifiers) {
-                    self.capturing = false;
-                    self.settings.hotkey = chord;
-                    self.persist();
-                } else if matches!(
-                    key,
-                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
-                ) {
-                    self.capturing = false;
-                } else {
-                    // A bare key, or a modifier on its own. Say why and keep
-                    // listening rather than saving something the daemon would
-                    // refuse at startup.
-                    self.chord_error =
-                        Some("Hold at least one modifier, then a letter or number.".into());
+            Message::CancelCapture => {
+                self.capturing = false;
+                self.cancel_capture
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Message::Captured(captured) => {
+                self.capturing = false;
+                match captured {
+                    Some(chord) => {
+                        self.settings.hotkey = chord;
+                        self.persist();
+                    }
+                    // Cancelled, or no readable keyboard. The control is hidden
+                    // in the second case, so this is nearly always the first.
+                    None => {}
                 }
             }
             Message::OpenConfig => {
@@ -590,8 +483,12 @@ impl Console {
                     Space::new().width(12),
                     if self.capturing {
                         action_msg("Cancel", false, Message::CancelCapture)
-                    } else {
+                    } else if self.can_capture {
                         action_msg("Change", false, Message::CaptureChord)
+                    } else {
+                        // No readable keyboard, so offer the file instead of a
+                        // button that could only fail.
+                        action_msg("Open config", false, Message::OpenConfig)
                     },
                 ]
                 .align_y(iced::Center)
@@ -782,10 +679,12 @@ impl Console {
             })
             .collect();
 
-        rows.push(setting(
-                "Run cleanup on",
-                "Speech recognition always runs on the CPU. Takes effect when Flow restarts.",
-                picker(&Gpu::ALL[..], Gpu::from_config(self.settings.gpu), Message::SetGpu),
+        rows.push(fact_row(
+            "Cleanup runs on",
+            match self.settings.gpu {
+                None => "the best available GPU".to_string(),
+                Some(index) => format!("GPU {index}, pinned in the config"),
+            },
         ));
 
         let total = format!(
@@ -1032,27 +931,6 @@ fn value_slider<'a>(
     .into()
 }
 
-fn picker<'a, T>(options: &'a [T], selected: T, on_select: fn(T) -> Message) -> Element<'a, Message>
-where
-    T: ToString + PartialEq + Clone + 'a,
-{
-    pick_list(options, Some(selected), on_select)
-        .text_size(12)
-        .padding([6, 10])
-        .style(|_theme, _status| pick_list::Style {
-            text_color: FG,
-            placeholder_color: FAINT,
-            handle_color: FAINT,
-            background: Background::Color(BG),
-            border: Border {
-                color: LINE,
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-        })
-        .into()
-}
-
 /// A 7px dot. The only place the accent appears besides a primary button.
 fn pip(colour: Color) -> Element<'static, Message> {
     container(Space::new().width(0))
@@ -1128,4 +1006,10 @@ fn ghost(_theme: &Theme, _status: button::Status) -> button::Style {
         border: Border::default(),
         ..Default::default()
     }
+}
+
+/// Read the keyboard until a chord arrives, on whatever thread the runtime
+/// gives us. Split out so the async block above stays a one-liner.
+fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<String> {
+    chord::capture(&|| cancelled.load(std::sync::atomic::Ordering::Relaxed))
 }
