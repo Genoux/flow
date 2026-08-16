@@ -74,6 +74,25 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
     })
 }
 
+/// Start, stop or restart the daemon.
+///
+/// The window is not how you dictate, but it is a reasonable place to turn the
+/// thing on - especially when it is not running, which is the one state where
+/// the keybinding cannot help you.
+pub fn service(verb: &str) -> Result<(), String> {
+    let output = run("systemctl", &["--user", verb, "flow.service"])
+        .ok_or_else(|| "systemctl did not respond".to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if reason.is_empty() {
+        format!("systemctl {verb} failed")
+    } else {
+        reason
+    })
+}
+
 /// The description of the default PipeWire source, which is the microphone
 /// Flow records from. Read-only on purpose: the daemon deliberately follows
 /// the system default so that changing your microphone in your desktop's own

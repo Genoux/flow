@@ -315,6 +315,23 @@ impl PttState {
         Self { chord, ..Self::default() }
     }
 
+    /// Adopt a new chord, but only between holds.
+    ///
+    /// Swapping mid-hold would strand the recording: the release watcher looks
+    /// for the keys of the chord that started it, and those are no longer the
+    /// keys being held. Waiting costs nothing - nobody rebinds their hotkey
+    /// while dictating - and it keeps the state machine honest.
+    ///
+    /// Returns whether the swap happened, so the caller can say so once rather
+    /// than every time it checks.
+    pub fn retune(&mut self, chord: &Chord) -> bool {
+        if self.chord == *chord || self.down_at.is_some() || !self.held.is_empty() {
+            return false;
+        }
+        self.chord = chord.clone();
+        true
+    }
+
     /// Returns the transition this key caused, or `None` if it told us nothing
     /// new (autorepeat, a duplicate from a second device, keys while cancelled).
     pub fn apply(&mut self, key: KeyCode, pressed: bool) -> Option<Event> {
@@ -378,14 +395,17 @@ impl PttState {
 
 /// Spawn a reader per keyboard, feeding push-to-talk transitions into `events`.
 /// Shares the channel with the signal handler so the daemon has one input stream.
-pub fn spawn(events: Sender<Event>, chord: Chord) -> Result<()> {
+/// `chord` is shared rather than owned so a rebinding in the console reaches
+/// the running daemon. The reader adopts it between holds - see
+/// [`PttState::retune`].
+pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord>>) -> Result<()> {
     let devices = keyboards();
     if devices.is_empty() {
         return Err(anyhow!(
             "no readable keyboard found - is this user in the 'input' group?"
         ));
     }
-    eprintln!("push-to-talk: {chord}");
+    eprintln!("push-to-talk: {}", chord.lock().expect("chord"));
 
     for (path, device) in &devices {
         eprintln!("watching {} ({})", path.display(), device.name().unwrap_or("?"));
@@ -415,8 +435,17 @@ pub fn spawn(events: Sender<Event>, chord: Chord) -> Result<()> {
 
     WATCHING.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
-        let mut state = PttState::new(chord);
+        let mut state = PttState::new(chord.lock().expect("chord").clone());
         while let Ok((key, pressed)) = raw_rx.recv() {
+            // Checked per event rather than on a timer: it is one comparison,
+            // and it means a rebinding takes effect on the very next key
+            // rather than at some interval after it was saved.
+            {
+                let wanted = chord.lock().expect("chord");
+                if state.retune(&wanted) {
+                    eprintln!("push-to-talk rebound: {wanted}");
+                }
+            }
             if MODIFIERS.contains(&key) {
                 let mut observed = observed().lock().expect("observed modifiers");
                 if pressed {

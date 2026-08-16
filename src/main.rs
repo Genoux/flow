@@ -153,8 +153,23 @@ fn daemon(
     // Degrades rather than bails, the way a missing cleanup model does: the signal
     // path is independent, so a machine without /dev/input access should still
     // dictate from a compositor bind instead of refusing to start.
+    // Shared with the config watcher, so rebinding the chord in the console
+    // reaches this running daemon instead of waiting for a restart.
+    let chord = std::sync::Arc::new(std::sync::Mutex::new(chord));
+    {
+        let chord = std::sync::Arc::clone(&chord);
+        let live = std::sync::Arc::clone(&live);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(400));
+            let wanted = live.lock().expect("config").chord.clone();
+            let mut current = chord.lock().expect("chord");
+            if *current != wanted {
+                *current = wanted;
+            }
+        });
+    }
     let mut ptt = ptt;
-    if ptt && let Err(err) = hotkey::spawn(events.clone(), chord.clone()) {
+    if ptt && let Err(err) = hotkey::spawn(events.clone(), std::sync::Arc::clone(&chord)) {
         eprintln!("push-to-talk disabled: {err}");
         ptt = false;
     }
@@ -179,7 +194,7 @@ fn daemon(
     eprintln!(
         "\nready - {}\n",
         if ptt {
-            format!("hold {chord}, or trigger `flow start`")
+            format!("hold {}, or trigger `flow start`", chord.lock().expect("chord"))
         } else {
             "trigger `flow start`".to_string()
         }
@@ -292,7 +307,10 @@ fn daemon(
                     } else {
                         hold_started = Some(Instant::now());
                         begin(&capture, &mut session, live, &overlay, &reporter, early);
-                        chord_watch = Some(hotkey::ChordWatch::arm(events.clone(), chord.clone()));
+                        chord_watch = Some(hotkey::ChordWatch::arm(
+                            events.clone(),
+                            chord.lock().expect("chord").clone(),
+                        ));
                         None
                     }
                 }

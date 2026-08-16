@@ -117,6 +117,8 @@ enum Message {
     Settle(u32),
     OpenConfig,
     OpenVocabulary,
+    /// systemctl --user <verb> flow.service
+    Service(&'static str),
     /// Start listening for the next chord the user presses.
     CaptureChord,
     /// A key arrived while capturing.
@@ -300,6 +302,11 @@ impl Console {
                     None => {}
                 }
             }
+            Message::Service(verb) => {
+                if let Err(err) = system::service(verb) {
+                    self.save_error = Some(err);
+                }
+            }
             Message::OpenConfig => {
                 if let Err(err) = system::open(&settings::config_path()) {
                     self.save_error = Some(err);
@@ -442,6 +449,12 @@ impl Console {
                 .size(12)
                 .font(Font::MONOSPACE)
                 .color(FAINT),
+            Space::new().width(14),
+            action_msg(
+                if running { "Restart" } else { "Start" },
+                false,
+                Message::Service(if running { "restart" } else { "start" }),
+            ),
         ]
         .align_y(iced::Center);
 
@@ -465,12 +478,12 @@ impl Console {
         let mut rows: Vec<Element<Message>> = vec![
             setting(
                 "Push to talk",
-                "Flow watches the chord itself, so no compositor binding is needed. Takes effect when Flow restarts.",
+                "Flow watches the chord itself, so no compositor binding is needed. Turning it on needs a restart.",
                 toggle(self.settings.push_to_talk, Message::PushToTalk),
             ),
             setting(
                 "Chord",
-                "Held down while you speak. Takes effect when Flow restarts.",
+                "Held down while you speak. Applies straight away.",
                 row![
                     text(if self.capturing {
                         "press the chord…".to_string()
