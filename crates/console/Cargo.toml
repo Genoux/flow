@@ -1,0 +1,16 @@
+[package]
+name = "flow-console"
+version = "0.1.0"
+edition = "2021"
+description = "Status and settings window for the Flow dictation daemon"
+
+# Its own workspace root on purpose: iced pulls in wgpu, and the daemon must
+# never carry that dependency tree.
+[workspace]
+
+[dependencies]
+iced = "0.14"
+
+[[bin]]
+name = "flow-console"
+path = "src/main.rs"
