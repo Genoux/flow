@@ -31,13 +31,6 @@ pub enum Activity {
     Working,
 }
 
-#[derive(Debug, Clone)]
-pub struct Dictation {
-    pub text: String,
-    pub spoken: f32,
-    pub paste_ms: u64,
-}
-
 /// Everything the console knows about the daemon. Starts offline and stays
 /// that way until a line arrives.
 #[derive(Debug, Clone)]
@@ -45,7 +38,6 @@ pub struct State {
     pub activity: Activity,
     pub problem: Option<String>,
     pub words: usize,
-    pub recent: Vec<Dictation>,
 }
 
 impl Default for State {
@@ -54,7 +46,6 @@ impl Default for State {
             activity: Activity::Offline,
             problem: None,
             words: 0,
-            recent: Vec::new(),
         }
     }
 }
@@ -83,22 +74,6 @@ impl State {
 
         self.words = value.get("words").and_then(|w| w.as_u64()).unwrap_or(0) as usize;
 
-        self.recent = value
-            .get("recent")
-            .and_then(|r| r.as_array())
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| {
-                        Some(Dictation {
-                            text: entry.get("text")?.as_str()?.to_owned(),
-                            spoken: entry.get("spoken")?.as_f64()? as f32,
-                            paste_ms: entry.get("paste_ms")?.as_u64()?,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
     }
 }
 

@@ -10,7 +10,7 @@ Type=simple
 # No flags: behaviour belongs in ~/.config/flow/config.toml, which the daemon
 # reads at startup and which works just as well absent. Flags here would win
 # over that file and quietly make it look ignored.
-ExecStart=%h/Desktop/@john/flow/target/release/flow daemon
+ExecStart=%h/.local/bin/flow daemon
 Restart=on-failure
 RestartSec=2
 

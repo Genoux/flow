@@ -1,10 +1,28 @@
 # Words the recogniser gets wrong, spelled the way you want them written.
 # One per line. Lines starting with # are ignored.
 #
-# Worth adding: product and tool names, colleagues' names, project codenames,
-# domain jargon - anything the recogniser splits or hears as a common word.
+# You do not need to edit this by hand: the Vocabulary screen in the Flow
+# window adds and removes terms for you, and writes this same file.
 #
-# It fixes terms that sound close to what you said:
-#   "hyper land" -> Hyprland,  "pipe wire" -> PipeWire,  "nvm" -> Neovim
-# It cannot fix a word that sounds nothing like the target, so a name heard as
-# an unrelated everyday word will need correcting by hand.
+# WHAT TO PUT HERE
+#   Product and tool names   Hyprland, PipeWire, Neovim, Postgres, Kubernetes
+#   People you talk about    Aurélie, Nguyen, Siobhan
+#   Project codenames        Halcyon, Bluebird
+#   Domain jargon            idempotent, kanban, OAuth
+#
+# HOW IT WORKS
+# The terms are given to the cleanup model as context - they are not searched
+# and replaced. That matters: "flow" and "Flow" are both real words, and only
+# the sentence around them says which one you meant, so the model decides.
+#
+# It reliably fixes a term that SOUNDS CLOSE to what you said:
+#   "hyper land"  -> Hyprland
+#   "pipe wire"   -> PipeWire
+#   "post grass"  -> Postgres
+#
+# It cannot fix one that sounds nothing like the target. If a name comes out
+# as an unrelated everyday word, adding it here will not rescue it - the sound
+# the recogniser heard has no path back to the spelling you want.
+#
+# Add terms as you notice them getting mangled. A short list of things you
+# actually say beats a long list copied from somewhere else.

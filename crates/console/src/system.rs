@@ -139,26 +139,6 @@ pub fn data_home() -> PathBuf {
         })
 }
 
-/// How many terms are in the vocabulary file. Counts the same way the daemon
-/// does - non-empty, non-comment lines - so the number shown is the number
-/// that reaches the model.
-pub fn vocabulary_terms() -> usize {
-    let path = super::settings::config_path()
-        .parent()
-        .map(|dir| dir.join("vocabulary.txt"))
-        .unwrap_or_default();
-    std::fs::read_to_string(path)
-        .map(|text| {
-            text.lines()
-                .filter(|line| {
-                    let line = line.trim();
-                    !line.is_empty() && !line.starts_with('#')
-                })
-                .count()
-        })
-        .unwrap_or(0)
-}
-
 /// A model directory as the window reports it: present or not, and how big.
 pub struct Model {
     pub label: &'static str,
