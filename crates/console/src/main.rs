@@ -9,6 +9,7 @@ mod daemon;
 mod history;
 mod settings;
 mod system;
+mod vocabulary;
 
 use iced::widget::{button, column, container, pick_list, row, scrollable, slider, text, toggler, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
@@ -56,8 +57,91 @@ fn theme(_state: &Console) -> Theme {
     Theme::Dark
 }
 
-fn subscription(_state: &Console) -> Subscription<Message> {
-    Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon))
+fn subscription(state: &Console) -> Subscription<Message> {
+    let daemon = Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon));
+    if !state.capturing {
+        return daemon;
+    }
+    // Only while capturing: a settings window that swallows every keystroke
+    // the rest of the time would be its own bug.
+    Subscription::batch([
+        daemon,
+        iced::keyboard::listen().map(|event| match event {
+            iced::keyboard::Event::KeyPressed {
+                key, modifiers, ..
+            } => Message::Captured(key, modifiers),
+            _ => Message::Noop,
+        }),
+    ])
+}
+
+/// Turn a captured keypress into the daemon's chord spelling, or `None` when
+/// it is not a usable binding.
+///
+/// Rejects a bare key and a lone modifier deliberately: push-to-talk means
+/// holding something, and the daemon refuses a chord whose trigger is itself a
+/// modifier because it could never complete.
+fn chord_from(
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if modifiers.logo() {
+        parts.push("super".to_string());
+    }
+    if modifiers.control() {
+        parts.push("ctrl".to_string());
+    }
+    if modifiers.alt() {
+        parts.push("alt".to_string());
+    }
+    if modifiers.shift() {
+        parts.push("shift".to_string());
+    }
+    if parts.is_empty() {
+        return None;
+    }
+
+    let trigger = match key {
+        iced::keyboard::Key::Character(c) => {
+            let c = c.trim().to_lowercase();
+            // One character, and not punctuation the daemon has no keycode for.
+            (c.len() == 1 && c.chars().all(|ch| ch.is_ascii_alphanumeric())).then_some(c)?
+        }
+        iced::keyboard::Key::Named(named) => named_trigger(*named)?,
+        _ => return None,
+    };
+
+    parts.push(trigger);
+    Some(parts.join("+"))
+}
+
+/// The named keys worth binding. Anything not here is left out rather than
+/// guessed at: a chord the daemon cannot parse would be written to the config
+/// and only fail at its next startup.
+fn named_trigger(named: iced::keyboard::key::Named) -> Option<String> {
+    use iced::keyboard::key::Named;
+    Some(
+        match named {
+            Named::Space => "space",
+            Named::Enter => "enter",
+            Named::Tab => "tab",
+            Named::F1 => "f1",
+            Named::F2 => "f2",
+            Named::F3 => "f3",
+            Named::F4 => "f4",
+            Named::F5 => "f5",
+            Named::F6 => "f6",
+            Named::F7 => "f7",
+            Named::F8 => "f8",
+            Named::F9 => "f9",
+            Named::F10 => "f10",
+            Named::F11 => "f11",
+            Named::F12 => "f12",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
@@ -76,15 +160,17 @@ enum Section {
     History,
     Dictation,
     Audio,
+    Vocabulary,
     Models,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 5] = [
+    const ALL: [Section; 6] = [
         Section::History,
         Section::Dictation,
         Section::Audio,
+        Section::Vocabulary,
         Section::Models,
         Section::About,
     ];
@@ -94,6 +180,7 @@ impl Section {
             Section::History => "History",
             Section::Dictation => "Dictation",
             Section::Audio => "Audio",
+            Section::Vocabulary => "Vocabulary",
             Section::Models => "Models",
             Section::About => "About",
         }
@@ -146,6 +233,14 @@ enum Message {
     SetGpu(Gpu),
     OpenConfig,
     OpenVocabulary,
+    /// Start listening for the next chord the user presses.
+    CaptureChord,
+    /// A key arrived while capturing.
+    Captured(iced::keyboard::Key, iced::keyboard::Modifiers),
+    CancelCapture,
+    TypingTerm(String),
+    AddTerm,
+    RemoveTerm(usize),
     Daemon(daemon::Event),
     Noop,
 }
@@ -167,8 +262,14 @@ struct Console {
     input: Option<String>,
     entries: Vec<history::Entry>,
     models: Vec<system::Model>,
-    vocabulary_terms: usize,
     session: String,
+    /// True while waiting for the user to press a new chord.
+    terms: Vec<String>,
+    typing: String,
+    term_error: Option<String>,
+    capturing: bool,
+    /// Why the last attempted chord was rejected, shown in place of the hint.
+    chord_error: Option<String>,
 }
 
 impl Console {
@@ -184,8 +285,12 @@ impl Console {
                 input: system::default_input(),
                 entries: history::recent(),
                 models: system::models(),
-                vocabulary_terms: system::vocabulary_terms(),
                 session: system::session(),
+                terms: vocabulary::load(),
+                typing: String::new(),
+                term_error: None,
+                capturing: false,
+                chord_error: None,
             },
             Task::none(),
         )
@@ -255,6 +360,52 @@ impl Console {
             }
             Message::Daemon(daemon::Event::Disconnected) => {
                 self.daemon = daemon::State::default()
+            }
+            Message::TypingTerm(text) => {
+                self.typing = text;
+                self.term_error = None;
+            }
+            Message::AddTerm => match vocabulary::validate(&self.typing, &self.terms) {
+                Ok(term) => {
+                    self.terms.push(term);
+                    self.typing.clear();
+                    self.term_error = None;
+                    if let Err(err) = vocabulary::save(&self.terms) {
+                        self.term_error = Some(err.to_string());
+                    }
+                }
+                Err(why) => self.term_error = Some(why),
+            },
+            Message::RemoveTerm(index) => {
+                if index < self.terms.len() {
+                    self.terms.remove(index);
+                    if let Err(err) = vocabulary::save(&self.terms) {
+                        self.term_error = Some(err.to_string());
+                    }
+                }
+            }
+            Message::CaptureChord => {
+                self.capturing = true;
+                self.chord_error = None;
+            }
+            Message::CancelCapture => self.capturing = false,
+            Message::Captured(key, modifiers) => {
+                if let Some(chord) = chord_from(&key, modifiers) {
+                    self.capturing = false;
+                    self.settings.hotkey = chord;
+                    self.persist();
+                } else if matches!(
+                    key,
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
+                ) {
+                    self.capturing = false;
+                } else {
+                    // A bare key, or a modifier on its own. Say why and keep
+                    // listening rather than saving something the daemon would
+                    // refuse at startup.
+                    self.chord_error =
+                        Some("Hold at least one modifier, then a letter or number.".into());
+                }
             }
             Message::OpenConfig => {
                 if let Err(err) = system::open(&settings::config_path()) {
@@ -328,6 +479,7 @@ impl Console {
             Section::History => self.history_section(),
             Section::Dictation => self.dictation_section(),
             Section::Audio => self.audio_section(),
+            Section::Vocabulary => self.vocabulary_section(),
             Section::Models => self.models_section(),
             Section::About => self.about_section(),
         };
@@ -427,9 +579,20 @@ impl Console {
                 "Chord",
                 "Held down while you speak. Takes effect when Flow restarts.",
                 row![
-                    text("super shift d").size(12).font(Font::MONOSPACE).color(MUTED),
+                    text(if self.capturing {
+                        "press the chord…".to_string()
+                    } else {
+                        self.settings.hotkey.replace('+', " ")
+                    })
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .color(if self.capturing { ACCENT } else { MUTED }),
                     Space::new().width(12),
-                    action_msg("Change", false, Message::OpenConfig),
+                    if self.capturing {
+                        action_msg("Cancel", false, Message::CancelCapture)
+                    } else {
+                        action_msg("Change", false, Message::CaptureChord)
+                    },
                 ]
                 .align_y(iced::Center)
                 .into(),
@@ -448,12 +611,12 @@ impl Console {
                 "Vocabulary",
                 "Names and jargon the recogniser should get right.",
                 row![
-                    text(format!("{} terms", self.vocabulary_terms))
+                    text(format!("{} terms", self.terms.len()))
                         .size(12)
                         .font(Font::MONOSPACE)
                         .color(MUTED),
                     Space::new().width(12),
-                    action_msg("Edit", false, Message::OpenVocabulary),
+                    action_msg("Edit", false, Message::Select(Section::Vocabulary)),
                 ]
                 .align_y(iced::Center)
                 .into(),
@@ -520,6 +683,86 @@ impl Console {
             rows,
             Some(self.save_note()),
         )
+    }
+
+    /// The vocabulary, edited here rather than in a text editor. The file is
+    /// the daemon's interface; it should not have to be the user's.
+    fn vocabulary_section(&self) -> Element<'_, Message> {
+        let mut list = column![];
+        if self.terms.is_empty() {
+            list = list.push(
+                text("No terms yet. Add the words Flow keeps mishearing.")
+                    .size(13)
+                    .color(FAINT),
+            );
+        } else {
+            for (index, term) in self.terms.iter().enumerate() {
+                list = list.push(
+                    container(
+                        row![
+                            text(term.clone()).size(13).color(FG),
+                            Space::new().width(Fill),
+                            action_msg("Remove", false, Message::RemoveTerm(index)),
+                        ]
+                        .align_y(iced::Center),
+                    )
+                    .padding([6, 0]),
+                );
+                if index + 1 < self.terms.len() {
+                    list = list.push(hairline());
+                }
+            }
+        }
+
+        let entry = row![
+            iced::widget::text_input("Hyprland", &self.typing)
+                .on_input(Message::TypingTerm)
+                .on_submit(Message::AddTerm)
+                .size(13)
+                .padding([8, 10])
+                .style(|_theme, _status| iced::widget::text_input::Style {
+                    background: Background::Color(BG),
+                    border: Border {
+                        color: LINE,
+                        width: 1.0,
+                        radius: 6.0.into(),
+                    },
+                    icon: FAINT,
+                    placeholder: FAINT,
+                    value: FG,
+                    selection: ACCENT,
+                }),
+            Space::new().width(8),
+            action_msg("Add", true, Message::AddTerm),
+        ]
+        .align_y(iced::Center);
+
+        let note: Element<Message> = match &self.term_error {
+            Some(why) => text(why.clone()).size(12).color(ERR).into(),
+            None => text(
+                "Flow only fixes words that sound close to what you said: \
+                 \"hyper land\" becomes Hyprland. It cannot rescue a name it \
+                 heard as something unrelated.",
+            )
+            .size(12)
+            .color(FAINT)
+            .into(),
+        };
+
+        column![
+            text("Vocabulary").size(22).color(FG),
+            Space::new().height(10),
+            text("Names and jargon the recogniser gets wrong. One per line, spelled the way you want it written.")
+                .size(13)
+                .color(MUTED),
+            Space::new().height(22),
+            entry,
+            Space::new().height(10),
+            note,
+            Space::new().height(20),
+            scrollable(container(list).padding(iced::Padding::default().right(16))).height(Fill),
+        ]
+        .into()
     }
 
     fn models_section(&self) -> Element<'_, Message> {
@@ -845,65 +1088,6 @@ fn hairline() -> Element<'static, Message> {
             ..Default::default()
         })
         .into()
-}
-
-/// Rows separated by a hairline, with no box around them - the container was
-/// furniture, the separation is the only part that carried meaning.
-fn recent(entries: &[daemon::Dictation]) -> Element<'_, Message> {
-    let mut list = column![text("Recent").size(12).color(FAINT), Space::new().height(4)];
-
-    if entries.is_empty() {
-        return list
-            .push(
-                container(text("Nothing dictated yet.").size(13).color(FAINT)).padding([8, 0]),
-            )
-            .into();
-    }
-
-    // Three is what the pane has room for without scrolling; the daemon keeps
-    // more than that, and the rest belong in a history view rather than here.
-    for (index, entry) in entries.iter().take(3).enumerate() {
-        list = list.push(
-            container(
-                row![
-                    text(entry.text.clone()).size(13).color(FG),
-                    Space::new().width(Fill),
-                    text(format!("{:.1}s", entry.spoken))
-                        .size(11)
-                        .font(Font::MONOSPACE)
-                        .color(FAINT),
-                ]
-                .align_y(iced::Center),
-            )
-            .padding([8, 0]),
-        );
-        if index + 1 < entries.len().min(3) {
-            list = list.push(hairline());
-        }
-    }
-
-    list.into()
-}
-
-/// Inline key/value pairs. Boxing three numbers in bordered tiles was the
-/// dashboard reflex this design is trying not to have.
-fn facts_row(pairs: &[(&str, &str)]) -> Element<'static, Message> {
-    let mut line = row![].spacing(26);
-    for (key, value) in pairs {
-        line = line.push(
-            row![
-                text(key.to_string()).size(12).font(Font::MONOSPACE).color(FAINT),
-                Space::new().width(6),
-                text(value.to_string()).size(12).font(Font::MONOSPACE).color(MUTED),
-            ]
-            .align_y(iced::Center),
-        );
-    }
-    line.into()
-}
-
-fn action(label: &str, primary: bool) -> Element<'static, Message> {
-    action_msg(label, primary, Message::Noop)
 }
 
 fn action_msg(label: &str, primary: bool, on_press: Message) -> Element<'static, Message> {

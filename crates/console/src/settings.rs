@@ -38,6 +38,9 @@ pub struct Settings {
     /// written as no line at all rather than a value - the daemon's default is
     /// "choose for me", and there is no number that spells that.
     pub gpu: Option<u32>,
+    /// The chord held to dictate, in the daemon's spelling, e.g.
+    /// "super+shift+d".
+    pub hotkey: String,
 }
 
 impl Default for Settings {
@@ -53,6 +56,7 @@ impl Default for Settings {
             duck: 50,
             duck_settle_ms: 150,
             gpu: None,
+            hotkey: "super+shift+d".to_string(),
         }
     }
 }
@@ -86,6 +90,7 @@ impl Settings {
                     }
                 }
                 "gpu" => settings.gpu = value.parse().ok(),
+                "hotkey" => settings.hotkey = value.to_owned(),
                 _ => {}
             }
         }
@@ -107,7 +112,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 7] = [
+        let wanted: [(&str, Option<String>); 8] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.to_string())),
             ("terminal", Some(self.terminal.to_string())),
@@ -115,6 +120,7 @@ impl Settings {
             ("duck", Some(self.duck.to_string())),
             ("duck_settle_ms", Some(self.duck_settle_ms.to_string())),
             ("gpu", self.gpu.map(|index| index.to_string())),
+            ("hotkey", Some(self.hotkey.clone())),
         ];
 
         let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
@@ -230,6 +236,7 @@ mod tests {
             duck: 0,
             duck_settle_ms: 400,
             gpu: Some(0),
+            hotkey: "ctrl+alt+space".to_string(),
         };
         assert_eq!(Settings::parse(&settings.render("")), settings);
     }
