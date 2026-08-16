@@ -122,21 +122,33 @@ impl std::fmt::Display for Input {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Gpu {
     Auto,
-    Discrete,
-    Cpu,
+    Device(u32),
 }
 
 impl Gpu {
-    const ALL: [Gpu; 3] = [Gpu::Auto, Gpu::Discrete, Gpu::Cpu];
+    const ALL: [Gpu; 3] = [Gpu::Auto, Gpu::Device(0), Gpu::Device(1)];
+
+    fn from_config(index: Option<u32>) -> Self {
+        match index {
+            None => Gpu::Auto,
+            Some(index) => Gpu::Device(index),
+        }
+    }
+
+    fn to_config(self) -> Option<u32> {
+        match self {
+            Gpu::Auto => None,
+            Gpu::Device(index) => Some(index),
+        }
+    }
 }
 
 impl std::fmt::Display for Gpu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Gpu::Auto => "Automatic",
-            Gpu::Discrete => "RTX 3060 Ti",
-            Gpu::Cpu => "CPU only",
-        })
+        match self {
+            Gpu::Auto => f.write_str("Automatic"),
+            Gpu::Device(index) => write!(f, "Device {index}"),
+        }
     }
 }
 
@@ -168,7 +180,6 @@ struct Console {
     saved: bool,
     autostart: bool,
     input: Input,
-    gpu: Gpu,
 }
 
 impl Console {
@@ -182,7 +193,6 @@ impl Console {
                 saved: false,
                 autostart: true,
                 input: Input::SystemDefault,
-                gpu: Gpu::Auto,
             },
             Task::none(),
         )
@@ -231,7 +241,10 @@ impl Console {
             // these stay window-local rather than writing something it ignores.
             Message::Autostart(on) => self.autostart = on,
             Message::SetInput(input) => self.input = input,
-            Message::SetGpu(gpu) => self.gpu = gpu,
+            Message::SetGpu(gpu) => {
+                self.settings.gpu = gpu.to_config();
+                self.persist();
+            }
             Message::Daemon(daemon::Event::Line(line)) => self.daemon.apply(&line),
             Message::Daemon(daemon::Event::Disconnected) => {
                 self.daemon = daemon::State::default()
@@ -241,12 +254,13 @@ impl Console {
         Task::none()
     }
 
-    /// The line under a settings screen: a failed write, or the fact that the
-    /// daemon will not notice until it restarts.
+    /// The line under a settings screen. The daemon watches the config file, so
+    /// almost everything here is live and the note says so; the exceptions name
+    /// themselves on their own row rather than making every screen apologise.
     fn save_note(&self) -> Element<'_, Message> {
         match (&self.save_error, self.saved) {
             (Some(err), _) => text(format!("Couldn't save: {err}")).size(12).color(ERR),
-            (None, true) => text("Saved. Restart Flow for changes to take effect.")
+            (None, true) => text("Saved. Applies to your next dictation.")
                 .size(12)
                 .color(FAINT),
             (None, false) => text(settings::config_path().display().to_string())
@@ -395,12 +409,12 @@ impl Console {
         let rows: Vec<Element<Message>> = vec![
             setting(
                 "Push to talk",
-                "Flow watches the chord itself, so no compositor binding is needed.",
+                "Flow watches the chord itself, so no compositor binding is needed. Takes effect when Flow restarts.",
                 toggle(self.settings.push_to_talk, Message::PushToTalk),
             ),
             setting(
                 "Chord",
-                "Held down while you speak.",
+                "Held down while you speak. Takes effect when Flow restarts.",
                 row![
                     text("super shift d").size(12).font(Font::MONOSPACE).color(MUTED),
                     Space::new().width(12),
@@ -411,7 +425,7 @@ impl Console {
             ),
             setting(
                 "Clean up transcript",
-                "Removes filler and fixes punctuation with the local model.",
+                "Removes filler and fixes punctuation with the local model. Turning it back on needs a restart.",
                 toggle(self.settings.cleanup, Message::Cleanup),
             ),
             setting(
@@ -483,8 +497,8 @@ impl Console {
             model_row("Cleanup", "qwen3-1.7b · Q4_K_M", "1.1 GB", true),
             setting(
                 "Run cleanup on",
-                "Speech recognition always runs on the CPU.",
-                picker(&Gpu::ALL[..], self.gpu, Message::SetGpu),
+                "Speech recognition always runs on the CPU. Takes effect when Flow restarts.",
+                picker(&Gpu::ALL[..], Gpu::from_config(self.settings.gpu), Message::SetGpu),
             ),
         ];
 
