@@ -247,6 +247,26 @@ pub fn human_bytes(bytes: u64) -> String {
     format!("{bytes} B")
 }
 
+/// Fetch the models via `flow install`. No BUDGET like `run` uses - a few
+/// hundred megabytes over a home connection is minutes, not milliseconds, and
+/// this is expected to block whatever thread runs it.
+pub fn install_models() -> Result<(), String> {
+    let output = Command::new("flow")
+        .arg("install")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("flow install did not start: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if reason.is_empty() {
+        "flow install failed".to_string()
+    } else {
+        reason
+    })
+}
+
 /// Hand a path to the desktop's own handler. Used by the buttons that used to
 /// do nothing at all.
 pub fn open(path: &std::path::Path) -> Result<(), String> {
