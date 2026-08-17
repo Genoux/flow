@@ -50,7 +50,7 @@ fn main() -> Result<()> {
         let overlay = overlay::Overlay::spawn(capture.monitor());
         // Same order the daemon uses, so this shows the real arming phase
         // rather than a version of the island that only exists in this branch.
-        overlay.arm();
+        overlay.arm(Duration::from_millis(1500));
         eprintln!("arming for 2s - the dot travels while the mic is still shut");
         std::thread::sleep(Duration::from_secs(2));
         capture.begin();
@@ -440,7 +440,9 @@ fn begin(
     // listening: the microphone is not open until the ducking has settled, and
     // an island showing live bars that cannot move reads as a dead mic. It
     // breathes until there is something to hear.
-    overlay.arm();
+    // The bar it draws fills over exactly this long, so it finishes as the
+    // microphone opens rather than guessing.
+    overlay.arm(if duck.is_some() { settle } else { Duration::ZERO });
     reporter.listening();
     eprintln!("recording...");
     *slot = Some(Session { ducker: None });
