@@ -108,13 +108,21 @@ const RIM_WIDTH: f32 = 0.9;
 /// than as another voice.
 const BAR_WORKING_ALPHA: f32 = 0.45;
 
-/// The dimmest the armed island breathes to. Low enough to read as waiting
-/// rather than listening, high enough to be visible on any wallpaper.
-const BAR_ARMED_ALPHA: f32 = 0.12;
+/// Brightness of the travelling dot shown while armed.
+const ARM_DOT_ALPHA: f32 = 0.85;
 
-/// Seconds per breath while armed. Slow: a fast pulse reads as urgency, and
-/// there is nothing urgent about waiting a fraction of a second.
-const ARM_BREATH: f32 = 1.6;
+/// Brightness of the resting bars it travels over, which are there only to
+/// show where the voice will appear.
+const ARM_TRACK_ALPHA: f32 = 0.10;
+
+/// Seconds for the dot to cross and come back. Fast enough to read as working
+/// rather than drifting.
+const ARM_CYCLE: f32 = 0.9;
+
+/// How long the bars take to rise once the microphone opens. This is the cue
+/// that says speaking will now be heard, so it wants to be quick and definite
+/// rather than a gentle fade anyone could miss.
+const BLOOM: f32 = 0.18;
 
 /// Below this the island stays flat. Measured on the webcam mic: an idle room
 /// captures rms 0.000 to 0.004, so this clears the noise without clipping a
@@ -374,6 +382,13 @@ const SWEEP_HEIGHT: f32 = 0.72;
 /// Height of one bar while the transcript is being produced. A single crest
 /// sweeps the island, which reads as busy rather than as listening - the two
 /// states have to be tellable apart at a glance.
+/// Smooth at both ends, so the travelling dot eases into each turn instead of
+/// bouncing off it.
+fn ease_in_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 pub fn sweep(bar: usize, seconds: f32) -> f32 {
     // A pause at each end, so the crest re-enters instead of bouncing.
     let travelled = (seconds * SWEEP_SPEED) % (BAR_COUNT as f32 + 2.0) - 1.0;
@@ -639,6 +654,8 @@ fn render(
     seconds: f32,
     transcribing: bool,
     arming: bool,
+    // 0 at the instant the microphone opened, 1 once the bars have risen.
+    wake: f32,
     scale: f32,
 ) {
     canvas.clear();
@@ -658,28 +675,43 @@ fn render(
     let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
     let first = (width - span) / 2.0 + BAR_WIDTH * scale / 2.0;
 
-    // Armed: a slow breath across the whole row, at the resting height. It has
-    // to be unmistakably not-listening - a bar that twitches would be read as a
-    // reply to the voice - while still saying the island is alive and coming.
-    let breath = if arming {
-        0.5 + 0.5 * (seconds * std::f32::consts::TAU / ARM_BREATH).sin()
-    } else {
-        0.0
-    };
-    let alpha = if arming {
-        BAR_ARMED_ALPHA + (BAR_WORKING_ALPHA - BAR_ARMED_ALPHA) * breath
-    } else if transcribing {
+    // Armed: a dot travelling back and forth over the resting bars. A spinner
+    // rather than a pulse, because waiting and listening have to be impossible
+    // to confuse - anything that moved with the voice's rhythm would be read as
+    // a reply to it. The bars underneath stay at their floor, faint, so the
+    // shape the voice will fill is already visible.
+    if arming {
+        let cycle = (seconds / ARM_CYCLE).fract();
+        // Triangle wave: across, then back, with no jump at the ends.
+        let along = if cycle < 0.5 { cycle * 2.0 } else { 2.0 - cycle * 2.0 };
+        let travel = ease_in_out(along);
+
+        for index in 0..BAR_COUNT {
+            let bar = BAR_MIN * scale;
+            let at = (first + pitch * index as f32, centre.1);
+            let half = (BAR_WIDTH * scale / 2.0, bar / 2.0);
+            canvas.rounded_rect(at, half, half.0, BAR, ARM_TRACK_ALPHA);
+        }
+
+        let span = pitch * (BAR_COUNT - 1) as f32;
+        let dot = (first + span * travel, centre.1);
+        let radius = BAR_WIDTH * scale / 2.0;
+        canvas.rounded_rect(dot, (radius, radius), radius, BAR, ARM_DOT_ALPHA);
+        return;
+    }
+
+    let alpha = if transcribing {
         BAR_WORKING_ALPHA
     } else {
         BAR_ALPHA
     };
     for index in 0..BAR_COUNT {
-        let height = if arming {
-            0.0
-        } else if transcribing {
+        let height = if transcribing {
             sweep(index, seconds)
         } else {
-            heights[index]
+            // Rising from nothing on wake, so the microphone opening is a
+            // visible event rather than a state the user has to infer.
+            heights[index] * wake
         };
         let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
         let at = (first + pitch * index as f32, centre.1);
@@ -800,6 +832,7 @@ impl Buffers {
         seconds: f32,
         transcribing: bool,
         arming: bool,
+        wake: f32,
     ) -> Result<()> {
         render(
             &mut self.canvas,
@@ -807,6 +840,7 @@ impl Buffers {
             seconds,
             transcribing,
             arming,
+            wake,
             self.scale as f32,
         );
 
@@ -887,6 +921,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
     let mut arming = false;
+    let mut woke: Option<std::time::Instant> = None;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
     let mut lifecycle = Lifecycle::default();
@@ -908,6 +943,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 born = Some(monitor.heard());
                 transcribing = false;
                 arming = true;
+                woke = None;
                 settling = false;
                 waiting_to_sweep = None;
                 lifecycle.record();
@@ -926,6 +962,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 // moment the bars come alive and the user can speak.
                 let was_armed = arming;
                 arming = false;
+                woke = Some(std::time::Instant::now());
                 // A sweep that had not started yet belongs to the dictation this
                 // one replaces, and must not appear over the new bars.
                 waiting_to_sweep = None;
@@ -1038,6 +1075,9 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             started.elapsed().as_secs_f32(),
             transcribing && !settling,
             arming,
+            // Full immediately when nothing armed - the unducked path opens the
+            // microphone on the keypress and has nothing to announce.
+            woke.map_or(1.0, |at| (at.elapsed().as_secs_f32() / BLOOM).min(1.0)),
         )?;
         connection.flush()?;
     }
