@@ -108,22 +108,42 @@ const RIM_WIDTH: f32 = 0.9;
 /// than as another voice.
 const BAR_WORKING_ALPHA: f32 = 0.45;
 
-/// The filled part of the boot bar.
-const ARM_FILL_ALPHA: f32 = 0.80;
+/// Brightness at the head of the spinning arc.
+const ARM_FILL_ALPHA: f32 = 0.85;
 
-/// The unfilled part, showing how far there is left to go.
-const ARM_TRACK_ALPHA: f32 = 0.12;
+/// Brightness of the rest of the ring, so the full circle is always faintly
+/// visible and only the moving arc stands out against it.
+const ARM_TRACK_ALPHA: f32 = 0.10;
 
-/// Height of the boot bar. A hairline: it is a progress indicator, not a
-/// feature of the island.
-const ARM_BAR_HEIGHT: f32 = 2.0;
+/// Radius of the ring, as a fraction of the circle's own radius.
+const ARM_RING: f32 = 0.52;
 
-/// How much of the island's width the boot bar spans.
-const ARM_BAR_SPAN: f32 = 0.44;
+/// Thickness of the ring stroke, in unscaled pixels.
+const ARM_STROKE: f32 = 1.8;
+
+/// Seconds for the arc to travel one full turn. Quick: this is a wait, not a
+/// feature, and it should read as "any moment now" rather than draw the eye.
+const ARM_PERIOD: f32 = 0.6;
+
+/// How much of the circle the lit arc covers, as a fraction of a full turn.
+/// Short, so it reads as a moving highlight rather than a second track.
+const ARM_ARC: f32 = 0.32;
+
+// ponytail: shelved, not deleted. The arm window is now the settle wait
+// (src/duck.rs FADE_OUT) plus change, short enough that the spinner reads as
+// a flicker rather than a loading state. Flip back on if arming ever gets
+// slow again.
+const SHOW_ARM_SPINNER: bool = false;
 
 /// How far the voice glow reaches, as a fraction of the island. Large and
 /// faint - it should be felt rather than looked at.
 const GLOW_REACH: f32 = 1.45;
+
+/// How far up the glow sits, as a fraction of the island's half-height. It
+/// crowns the shape rather than filling it: light coming off the top edge
+/// reads as a halo, where light centred behind the bars just looks like the
+/// island got brighter.
+const GLOW_RISE: f32 = 0.55;
 
 /// Peak brightness of the glow at full voice.
 const GLOW_ALPHA: f32 = 0.16;
@@ -132,10 +152,12 @@ const GLOW_ALPHA: f32 = 0.16;
 /// is past the point where another one is visible.
 const GLOW_LAYERS: usize = 5;
 
-/// How long the bars take to rise once the microphone opens. This is the cue
-/// that says speaking will now be heard, so it wants to be quick and definite
-/// rather than a gentle fade anyone could miss.
-const BLOOM: f32 = 0.18;
+/// How long the island takes to grow from its loading circle into the full
+/// pill, with the bars rising as it goes. This is the cue that says speaking
+/// will now be heard, so it wants to be quick and definite rather than a
+/// gentle fade anyone could miss - but slow enough that the shape change
+/// registers as a shape change.
+const BLOOM: f32 = 0.05;
 
 /// Below this the island stays flat. Measured on the webcam mic: an idle room
 /// captures rms 0.000 to 0.004, so this clears the noise without clipping a
@@ -451,9 +473,8 @@ pub fn rounded_rect_distance(
 #[derive(Clone, Copy)]
 enum Command {
     /// Shown, but the microphone is not open yet - other apps are still being
-    /// turned down. Carries how long that will take, so the bar that fills
-    /// during it is measuring something real. See [`Overlay::arm`].
-    Arm(std::time::Duration),
+    /// turned down. See [`Overlay::arm`].
+    Arm,
     Record,
     /// The audio went to the worker. Counted so a finish cannot outrun it, but it
     /// says nothing about whether there is anything to transcribe yet.
@@ -493,8 +514,8 @@ impl Overlay {
     /// the first thing they said is gone. The armed island breathes instead of
     /// listening, and the moment it starts answering the voice is the moment
     /// there is something to answer.
-    pub fn arm(&self, settle: std::time::Duration) {
-        let _ = self.commands.send(Command::Arm(settle));
+    pub fn arm(&self) {
+        let _ = self.commands.send(Command::Arm);
     }
 
     pub fn record(&self) {
@@ -598,7 +619,7 @@ impl Canvas {
         colour: (f32, f32, f32),
         alpha: f32,
     ) {
-        self.fill(centre, half, radius, None, colour, alpha);
+        self.fill(centre, half, radius, None, None, colour, alpha);
     }
 
     /// A hairline ring: the shape minus a smaller copy of itself.
@@ -611,17 +632,87 @@ impl Canvas {
         colour: (f32, f32, f32),
         alpha: f32,
     ) {
-        self.fill(centre, half, radius, Some(thickness), colour, alpha);
+        self.fill(centre, half, radius, Some(thickness), None, colour, alpha);
+    }
+
+    /// A rounded rect that never paints outside another one - the glow's
+    /// layers reach past the island's own edges, and without this they showed
+    /// up as a separate soft shape floating above the pill rather than a
+    /// light contained inside it.
+    #[allow(clippy::too_many_arguments)]
+    fn clipped_rect(
+        &mut self,
+        centre: (f32, f32),
+        half: (f32, f32),
+        radius: f32,
+        clip: ((f32, f32), (f32, f32), f32),
+        colour: (f32, f32, f32),
+        alpha: f32,
+    ) {
+        self.fill(centre, half, radius, None, Some(clip), colour, alpha);
+    }
+
+    /// A ring whose brightness varies around its own circumference, from a
+    /// faint track up to a bright head and back down. This is the arming
+    /// spinner: one continuous stroke, rather than a string of dots pretending
+    /// to be one - forty tiny circles at this size reads as a string of beads,
+    /// not a ring, because there is no shared edge for the eye to follow
+    /// between them.
+    #[allow(clippy::too_many_arguments)]
+    fn spinner_ring(
+        &mut self,
+        centre: (f32, f32),
+        radius: f32,
+        thickness: f32,
+        head: f32,
+        arc: f32,
+        colour: (f32, f32, f32),
+        track_alpha: f32,
+        lit_alpha: f32,
+    ) {
+        let outer = radius + thickness / 2.0 + 1.0;
+        let left = (centre.0 - outer).floor().max(0.0) as usize;
+        let right = ((centre.0 + outer).ceil() as usize).min(self.width);
+        let first_row = (centre.1 - outer).floor().max(0.0) as usize;
+        let last_row = ((centre.1 + outer).ceil() as usize).min(self.height);
+
+        for y in first_row..last_row {
+            for x in left..right {
+                let point = (x as f32 + 0.5, y as f32 + 0.5);
+                let dx = point.0 - centre.0;
+                let dy = point.1 - centre.1;
+                let r = (dx * dx + dy * dy).sqrt();
+                // Coverage across the ring's thickness, same one-pixel feather
+                // as the rest of the canvas.
+                let band = (0.5 - ((r - radius).abs() - thickness / 2.0)).clamp(0.0, 1.0);
+                if band <= 0.0 {
+                    continue;
+                }
+                // Clockwise from twelve o'clock, matching every other angle in
+                // this file.
+                let along = (dy.atan2(dx) / std::f32::consts::TAU + 0.25).rem_euclid(1.0);
+                let behind = (head - along).rem_euclid(1.0);
+                let alpha = if behind < arc {
+                    track_alpha + (lit_alpha - track_alpha) * (1.0 - behind / arc)
+                } else {
+                    track_alpha
+                };
+                self.blend(x, y, colour, band * alpha);
+            }
+        }
     }
 
     /// Shared rasteriser. `hollow` leaves everything further inside than that many
-    /// pixels alone, which is what turns the shape into a ring.
+    /// pixels alone, which is what turns the shape into a ring. `clip` is another
+    /// rounded rect the drawing is masked to, for shapes that must never show
+    /// past the island's own edge.
     fn fill(
         &mut self,
         centre: (f32, f32),
         half: (f32, f32),
         radius: f32,
         hollow: Option<f32>,
+        clip: Option<((f32, f32), (f32, f32), f32)>,
         colour: (f32, f32, f32),
         alpha: f32,
     ) {
@@ -636,6 +727,12 @@ impl Canvas {
                 // Distance to coverage across one pixel is the whole anti-alias.
                 let mut coverage = (0.5 - rounded_rect_distance(point, centre, half, radius))
                     .clamp(0.0, 1.0);
+                if let Some((clip_centre, clip_half, clip_radius)) = clip {
+                    let inside = (0.5
+                        - rounded_rect_distance(point, clip_centre, clip_half, clip_radius))
+                    .clamp(0.0, 1.0);
+                    coverage *= inside;
+                }
                 if let Some(thickness) = hollow {
                     let inner = (0.5
                         - rounded_rect_distance(
@@ -661,8 +758,6 @@ fn render(
     seconds: f32,
     transcribing: bool,
     arming: bool,
-    // How long the arming phase lasts, so its bar fills over exactly that.
-    arm_for: f32,
     // 0 at the instant the microphone opened, 1 once the bars have risen.
     wake: f32,
     scale: f32,
@@ -674,51 +769,47 @@ fn render(
     let centre = (width / 2.0, height / 2.0);
     let corner = height / 2.0;
 
-    // Flat translucent fill over the whole shape, then a hairline around its edge.
-    // The fill is the only thing that fills; nothing is layered underneath it.
-    let half = (width / 2.0, height / 2.0);
+    // While loading the island is a circle; once the microphone opens it grows
+    // into the pill. Drawn from a width that changes rather than a constant
+    // one, so the surface never has to be resized - everything outside the
+    // shape is transparent anyway, and a Wayland resize mid-animation would
+    // cost a reconfigure per frame.
+    //
+    // `wake` runs 0 to 1 across BLOOM, so the growth and the bars rising are
+    // the same movement rather than two that have to be kept in step. `woke`
+    // is set on the keypress now (Arm), not held back for the mic actually
+    // opening (Record), so press, open and extend read as one motion instead
+    // of a paused circle followed by a second growth. Forced back to a circle
+    // only if the spinner is ever turned back on - that shape is what a
+    // spinner needs, this one doesn't.
+    let grown = if arming && SHOW_ARM_SPINNER { 0.0 } else { wake };
+    let half_width = corner + (width / 2.0 - corner) * grown;
+    let half = (half_width, height / 2.0);
     canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA);
     canvas.rounded_ring(centre, half, corner, scale, EDGE, EDGE_ALPHA);
 
     let pitch = (BAR_WIDTH + BAR_GAP) * scale;
     let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
     let first = (width - span) / 2.0 + BAR_WIDTH * scale / 2.0;
+    // Bars spread from the centre as the pill grows, so they arrive with the
+    // shape rather than appearing inside a shape that is already there.
+    let spread = |x: f32| centre.0 + (x - centre.0) * grown;
 
-    // Armed: a dot travelling back and forth over the resting bars. A spinner
-    // rather than a pulse, because waiting and listening have to be impossible
-    // to confuse - anything that moved with the voice's rhythm would be read as
-    // a reply to it. The bars underneath stay at their floor, faint, so the
-    // shape the voice will fill is already visible.
-    // Armed: a hairline that fills over exactly as long as the microphone will
-    // take to open. Determinate on purpose - a bar that fills and completes
-    // says "this is nearly done", where anything looping says only "something
-    // is happening", and the thing the user needs to know is when to speak.
-    //
-    // Nothing here is voice-shaped: no bars, no motion that could be mistaken
-    // for a reply to what they are saying while the microphone is still shut.
-    if arming {
-        let filled = (seconds / arm_for).clamp(0.0, 1.0);
-        let track = width * ARM_BAR_SPAN / 2.0;
-        let thickness = ARM_BAR_HEIGHT * scale / 2.0;
-
-        canvas.rounded_rect(
+    // ponytail: shelved, not deleted (SHOW_ARM_SPINNER). A spinner needs
+    // something to be indeterminate about; there no longer is one - the pill
+    // is already mid-bloom by the time this would draw. Flip the flag back on
+    // if arming ever gets slow enough to need one again.
+    if arming && SHOW_ARM_SPINNER {
+        canvas.spinner_ring(
             centre,
-            (track, thickness),
-            thickness,
+            corner * ARM_RING,
+            ARM_STROKE * scale,
+            (seconds / ARM_PERIOD).fract(),
+            ARM_ARC,
             BAR,
             ARM_TRACK_ALPHA,
+            ARM_FILL_ALPHA,
         );
-
-        if filled > 0.0 {
-            let grown = track * filled;
-            canvas.rounded_rect(
-                (centre.0 - track + grown, centre.1),
-                (grown, thickness),
-                thickness,
-                BAR,
-                ARM_FILL_ALPHA,
-            );
-        }
         return;
     }
 
@@ -734,14 +825,23 @@ fn render(
         let level = heights.iter().sum::<f32>() / BAR_COUNT as f32;
         let level = (level * wake).clamp(0.0, 1.0);
         if level > 0.01 {
+            // Anchored above the middle so the light breaks over the top edge.
+            // Each layer is both larger and higher than the last, so the
+            // falloff runs upward as well as outward - a halo rather than a
+            // blob sitting behind the bars.
+            let crown = centre.1 - half.1 * GLOW_RISE;
             for layer in 0..GLOW_LAYERS {
                 let out = layer as f32 / GLOW_LAYERS as f32;
                 let reach = 0.45 + (GLOW_REACH - 0.45) * out;
                 let size = (half.0 * reach, half.1 * reach);
-                canvas.rounded_rect(
-                    centre,
+                let at = (centre.0, crown - half.1 * GLOW_RISE * out * 0.5);
+                // Clipped to the island's own shape: the light brightens the
+                // pill from within rather than spilling past its edge.
+                canvas.clipped_rect(
+                    at,
                     size,
                     size.1,
+                    (centre, half, corner),
                     BAR,
                     level * GLOW_ALPHA * (1.0 - out) / GLOW_LAYERS as f32,
                 );
@@ -763,7 +863,7 @@ fn render(
             heights[index] * wake
         };
         let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
-        let at = (first + pitch * index as f32, centre.1);
+        let at = (spread(first + pitch * index as f32), centre.1);
         let half = (BAR_WIDTH * scale / 2.0, bar / 2.0);
         let rim = RIM_WIDTH * scale;
 
@@ -881,7 +981,6 @@ impl Buffers {
         seconds: f32,
         transcribing: bool,
         arming: bool,
-        arm_for: f32,
         wake: f32,
     ) -> Result<()> {
         render(
@@ -890,7 +989,6 @@ impl Buffers {
             seconds,
             transcribing,
             arming,
-            arm_for,
             wake,
             self.scale as f32,
         );
@@ -972,7 +1070,11 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
     let mut arming = false;
-    let mut arm_for = 0.25f32;
+    // True only while the mic is actually open. The bars must stop the
+    // instant this goes false - `transcribing` is not that signal, it only
+    // flips on `SWEEP_DELAY` after, which is what let the bars keep answering
+    // real room sound for a couple hundred ms after the key was released.
+    let mut listening = false;
     let mut woke: Option<std::time::Instant> = None;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
@@ -989,14 +1091,16 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // Same mapping as Record, but the bars stay asleep. Kept separate
             // rather than folded into Record so a caller that never arms - the
             // unducked path, where capture starts at once - is unchanged.
-            Ok(Command::Arm(settle)) => {
-                arm_for = settle.as_secs_f32().max(0.05);
+            Ok(Command::Arm) => {
                 heights = [0.0; BAR_COUNT];
                 window.clear();
                 born = Some(monitor.heard());
                 transcribing = false;
                 arming = true;
-                woke = None;
+                // The bloom starts on the keypress rather than waiting for the
+                // mic to actually open - press, open, and extend are meant to
+                // read as one motion, not a hold followed by a second growth.
+                woke = Some(std::time::Instant::now());
                 settling = false;
                 waiting_to_sweep = None;
                 lifecycle.record();
@@ -1015,7 +1119,15 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 // moment the bars come alive and the user can speak.
                 let was_armed = arming;
                 arming = false;
-                woke = Some(std::time::Instant::now());
+                listening = true;
+                // Only start a fresh bloom here for the unducked path, which
+                // never arms - it jumps straight to Record. An armed hold
+                // already started its bloom on the keypress; restarting it
+                // now would snap a finished pill back to a circle and regrow
+                // it right as recording begins.
+                if !was_armed {
+                    woke = Some(std::time::Instant::now());
+                }
                 // A sweep that had not started yet belongs to the dictation this
                 // one replaces, and must not appear over the new bars.
                 waiting_to_sweep = None;
@@ -1035,7 +1147,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // into the sweep rather than blinking out and back.
             // Counted at once so a finish cannot outrun it. Nothing is drawn:
             // recognition has not run, so there may be nothing here at all.
-            Ok(Command::Queued) => lifecycle.transcribe(),
+            Ok(Command::Queued) => {
+                listening = false;
+                lifecycle.transcribe();
+            }
             // Words exist. Still held back by SWEEP_DELAY, because a short
             // dictation can finish cleanup faster than a spinner is worth showing.
             Ok(Command::Working) => waiting_to_sweep = Some(std::time::Instant::now()),
@@ -1055,6 +1170,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             }
             Ok(Command::Cancel) => {
                 waiting_to_sweep = None;
+                listening = false;
                 lifecycle.cancel();
                 island = None;
                 transcribing = false;
@@ -1105,7 +1221,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 // always begins at its start rather than partway through.
                 started = std::time::Instant::now();
             }
-        } else if !transcribing {
+        } else if listening {
             let ready = match born {
                 Some(since) if !fresh_window(monitor.heard(), since) => false,
                 Some(_) => {
@@ -1128,7 +1244,6 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             started.elapsed().as_secs_f32(),
             transcribing && !settling,
             arming,
-            arm_for,
             // Full immediately when nothing armed - the unducked path opens the
             // microphone on the keypress and has nothing to announce.
             woke.map_or(1.0, |at| (at.elapsed().as_secs_f32() / BLOOM).min(1.0)),

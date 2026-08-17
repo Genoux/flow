@@ -17,11 +17,15 @@ pub struct Ducker {
     /// began. Restoring uses this rather than the opening snapshot.
     known: Arc<Mutex<Vec<(u32, u32)>>>,
     active: Arc<AtomicBool>,
+    /// Flips true the instant the opening fade-out actually lands on target.
+    /// This is what recording waits on instead of guessing a sleep: the ramp
+    /// takes exactly `FADE_OUT`, so there is nothing to tune per machine.
+    settled: Arc<AtomicBool>,
 }
 
 /// Down quickly, since recording has already begun; back up more gently, which
 /// is how a returning track is expected to sound.
-const FADE_OUT: Duration = Duration::from_millis(140);
+const FADE_OUT: Duration = Duration::from_millis(200);
 const FADE_IN: Duration = Duration::from_millis(260);
 
 /// A full step costs ~4ms per stream, so this is a target rather than a
@@ -111,7 +115,13 @@ fn apply(streams: &[(u32, u32)], level: u32) {
 
 /// Ramp from wherever the last fade reached to `target`, in a background thread
 /// so neither the start of recording nor transcription waits on it.
-fn fade(streams: Vec<(u32, u32)>, target: u32, duration: Duration, clear_state: bool) {
+fn fade(
+    streams: Vec<(u32, u32)>,
+    target: u32,
+    duration: Duration,
+    clear_state: bool,
+    on_settled: Option<Arc<AtomicBool>>,
+) {
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
     std::thread::spawn(move || {
@@ -137,6 +147,10 @@ fn fade(streams: Vec<(u32, u32)>, target: u32, duration: Duration, clear_state: 
 
         // Land exactly on the target rather than wherever rounding stopped.
         apply(&streams, target);
+
+        if let Some(flag) = on_settled {
+            flag.store(true, Ordering::SeqCst);
+        }
 
         if clear_state {
             let _ = std::fs::remove_file(state_file());
@@ -221,7 +235,8 @@ impl Ducker {
         // rather than leaving the user's music mysteriously quiet.
         let _ = std::fs::write(state_file(), serde_json::to_vec(&found)?);
 
-        fade(found.clone(), percent.min(100), FADE_OUT, false);
+        let settled = Arc::new(AtomicBool::new(false));
+        fade(found.clone(), percent.min(100), FADE_OUT, false, Some(settled.clone()));
 
         let known = Arc::new(Mutex::new(found));
         let active = Arc::new(AtomicBool::new(true));
@@ -231,7 +246,15 @@ impl Ducker {
             restored: false,
             known,
             active,
+            settled,
         })
+    }
+
+    /// True once the opening fade-out has actually landed on target. Recording
+    /// waits on this rather than a fixed sleep - `FADE_OUT` is the only real
+    /// constraint, and it is the same on every machine.
+    pub fn settled(&self) -> bool {
+        self.settled.load(Ordering::SeqCst)
     }
 
     pub fn restore(&mut self) {
@@ -244,7 +267,7 @@ impl Ducker {
         self.active.store(false, Ordering::SeqCst);
 
         let known = self.known.lock().unwrap().clone();
-        fade(known, 100, FADE_IN, true);
+        fade(known, 100, FADE_IN, true, None);
     }
 }
 

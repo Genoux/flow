@@ -28,7 +28,7 @@ fn file_overrides_every_key() {
         parsed,
         Config {
             push_to_talk: false,
-            duck: 20, duck_settle_ms: 150,
+            duck: 20,
             cleanup: false,
             terminal: true,
             chord: Default::default(),
@@ -131,7 +131,7 @@ fn a_line_without_a_value_is_an_error() {
 fn flags_win_over_the_file() {
     let from_file = Config {
         push_to_talk: true,
-        duck: 50, duck_settle_ms: 150,
+        duck: 50,
         cleanup: true,
         terminal: false,
         chord: Default::default(),
@@ -152,7 +152,7 @@ fn flags_win_over_the_file() {
 fn absent_flags_leave_the_file_alone() {
     let from_file = Config {
         push_to_talk: false,
-        duck: 20, duck_settle_ms: 150,
+        duck: 20,
         cleanup: false,
         terminal: true,
         chord: Default::default(),

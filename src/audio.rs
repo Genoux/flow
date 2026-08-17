@@ -86,7 +86,14 @@ impl Monitor {
 ///
 /// Set low in the gap rather than halfway: passing a stray word through costs a
 /// keystroke to delete, and rejecting a real one costs the words themselves.
-const SPEECH_SWING: f32 = 5.0;
+///
+/// Lowered from 5.0 after a real, calm, continuously-spoken dictation (no
+/// pauses between words, explaining something in one steady breath) measured
+/// 3.6x and was silently thrown away - "30x between vowels and gaps" assumed
+/// speech with pauses in it, and not everyone talks that way. 3.2 sits between
+/// that real recording and the documented room-tone ceiling of 2.8x, same
+/// margin-in-the-gap reasoning as the original number.
+const SPEECH_SWING: f32 = 3.2;
 
 /// Windows shorter than this cannot be judged - there is nothing to compare.
 const SWING_MIN_WINDOWS: usize = 8;

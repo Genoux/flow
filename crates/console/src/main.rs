@@ -12,7 +12,7 @@ mod settings;
 mod system;
 mod vocabulary;
 
-use iced::widget::{button, column, container, row, scrollable, slider, text, Space};
+use iced::widget::{button, column, container, row, scrollable, slider, text, text_editor, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 // ---------------------------------------------------------------------------
@@ -35,20 +35,24 @@ const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
 
 const RAIL_WIDTH: f32 = 176.0;
 
-/// How long each motion takes. Short enough to feel like response rather than
-/// choreography: past about 200ms a UI stops feeling quick and starts feeling
-/// like it is performing for you. Only two things move - a toggle's knob and a
-/// rail item warming under the pointer - because those are the two that
-/// acknowledge something the user just did.
-const KNOB: u64 = 150;
-const FADE: u64 = 120;
+/// How far back the Overview activity calendar looks. 26 weeks reads like a
+/// half-year at a glance without the grid outgrowing the pane.
+const CALENDAR_WEEKS: usize = 26;
+const CALENDAR_DAYS: usize = CALENDAR_WEEKS * 7;
 
-/// Cubic ease-out. Everything here moves fastest at the start and settles,
-/// which is what reads as responsive - the opposite curve feels sluggish
-/// however short it is.
+/// How long each motion takes. Only two things move - a toggle's knob and a
+/// rail item warming under the pointer - because those are the two that
+/// acknowledge something the user just did. Long enough that the easing
+/// curve is visible rather than read as a snap.
+const KNOB: u64 = 220;
+const FADE: u64 = 200;
+
+/// Quartic ease-out. Everything here moves fastest at the start and settles
+/// gently into place rather than stopping - a steeper tail than cubic, which
+/// is what turns "arrives" into "settles".
 fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
+    1.0 - (1.0 - t).powi(4)
 }
 
 /// 0.0 at `since`, 1.0 once `ms` has passed.
@@ -117,6 +121,7 @@ fn subscription(state: &Console) -> Subscription<Message> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
+    Overview,
     History,
     Dictation,
     Audio,
@@ -126,7 +131,8 @@ enum Section {
 }
 
 impl Section {
-    const ALL: [Section; 6] = [
+    const ALL: [Section; 7] = [
+        Section::Overview,
         Section::History,
         Section::Dictation,
         Section::Audio,
@@ -137,6 +143,7 @@ impl Section {
 
     fn label(self) -> &'static str {
         match self {
+            Section::Overview => "Overview",
             Section::History => "History",
             Section::Dictation => "Dictation",
             Section::Audio => "Audio",
@@ -156,7 +163,6 @@ enum Message {
     Denoise(bool),
     Autostart(bool),
     Duck(u32),
-    Settle(u32),
     OpenConfig,
     /// systemctl --user <verb> flow.service
     Service(&'static str),
@@ -172,6 +178,8 @@ enum Message {
     /// A frame went by; only delivered while something is moving.
     Tick(std::time::Instant),
     Hover(Option<Section>),
+    /// A selection/copy action on one history entry's transcript.
+    HistoryAction(usize, text_editor::Action),
 }
 
 struct Console {
@@ -190,6 +198,11 @@ struct Console {
     /// The microphone PipeWire is actually handing the daemon.
     input: Option<String>,
     entries: Vec<history::Entry>,
+    /// One read-only editor per entry, purely so its transcript can be mouse-
+    /// selected and copied - iced has no plain selectable text widget.
+    history_editors: Vec<text_editor::Content>,
+    /// Word counts for the Overview activity calendar, oldest day first.
+    daily_words: Vec<u32>,
     models: Vec<system::Model>,
     session: String,
     terms: Vec<String>,
@@ -214,16 +227,20 @@ struct Console {
 
 impl Console {
     fn new() -> (Self, Task<Message>) {
+        let entries = history::recent();
+        let history_editors = history_editors(&entries);
         (
             Self {
-                section: Section::History,
+                section: Section::Overview,
                 daemon: daemon::State::default(),
                 settings: settings::Settings::load(),
                 save_error: None,
                 saved: false,
                 autostart: system::autostart_enabled(),
                 input: system::default_input(),
-                entries: history::recent(),
+                entries,
+                history_editors,
+                daily_words: history::daily_words(CALENDAR_DAYS),
                 models: system::models(),
                 session: system::session(),
                 terms: vocabulary::load(),
@@ -310,10 +327,6 @@ impl Console {
                 self.settings.duck = value;
                 self.persist();
             }
-            Message::Settle(value) => {
-                self.settings.duck_settle_ms = value as u64;
-                self.persist();
-            }
             Message::Autostart(on) => match {
                 self.toggled_at
                     .insert("autostart", std::time::Instant::now());
@@ -335,6 +348,17 @@ impl Console {
                 // outlives the daemon.
                 if self.daemon.words != before {
                     self.entries = history::recent();
+                    self.history_editors = history_editors(&self.entries);
+                    self.daily_words = history::daily_words(CALENDAR_DAYS);
+                }
+            }
+            Message::HistoryAction(index, action) => {
+                // Read-only: every action but editing is let through, so the
+                // mouse can still select and Ctrl+C still copies.
+                if let Some(content) = self.history_editors.get_mut(index) {
+                    if !matches!(action, text_editor::Action::Edit(_)) {
+                        content.perform(action);
+                    }
                 }
             }
             Message::Daemon(daemon::Event::Disconnected) => {
@@ -468,6 +492,7 @@ impl Console {
 
     fn pane(&self) -> Element<'_, Message> {
         let content = match self.section {
+            Section::Overview => self.overview_section(),
             Section::History => self.history_section(),
             Section::Dictation => self.dictation_section(),
             Section::Audio => self.audio_section(),
@@ -484,6 +509,79 @@ impl Console {
             .height(Fill)
             .padding([34, 36])
             .into()
+    }
+
+    /// The landing page: is Flow running, and the handful of numbers that say
+    /// whether it has been doing anything. Everything else in the rail is
+    /// either a log (History) or a setting - this is the one page that is
+    /// just a status report, laid out as a dashboard rather than a plain list
+    /// so the numbers that matter are legible at a glance.
+    fn overview_section(&self) -> Element<'_, Message> {
+        let running = self.daemon.activity != daemon::Activity::Offline;
+        let installed = self.models.iter().filter(|m| m.installed).count();
+        let (label, dot) = activity_label(self.daemon.activity);
+
+        let status_row = row![
+            pip(dot),
+            Space::new().width(8),
+            text(label).size(13).color(FG),
+            Space::new().width(Fill),
+            action_msg(
+                if running { "Restart" } else { "Start" },
+                false,
+                Message::Service(if running { "restart" } else { "start" }),
+            ),
+        ]
+        .align_y(iced::Center);
+
+        let status: Element<Message> = match &self.daemon.problem {
+            Some(problem) => column![
+                status_row,
+                Space::new().height(8),
+                text(problem.clone()).size(12).color(ERR),
+            ]
+            .into(),
+            None => status_row.into(),
+        };
+
+        // However much of the calendar buffer is actually worth showing: a
+        // fresh install has one or two active days, and a fixed half-year
+        // grid would bury them in blank squares. Grows with real usage, up
+        // to the full buffer.
+        let oldest_at = self.entries.last().map_or(history::now(), |entry| entry.at);
+        let history_days = (history::now().saturating_sub(oldest_at) / 86_400 + 1) as usize;
+        let span = history_days.clamp(14, self.daily_words.len());
+        let counts = &self.daily_words[self.daily_words.len() - span..];
+        let total_words: u32 = counts.iter().sum();
+
+        let kpis = column![
+            kpi_row(
+                stat_tile(self.entries.len().to_string(), "Dictations kept"),
+                stat_tile(total_words.to_string(), "Words dictated"),
+                stat_tile(active_days(counts).to_string(), "Active days"),
+            ),
+            Space::new().height(16),
+            kpi_row(
+                stat_tile(plural_days(current_streak(counts)), "Current streak"),
+                stat_tile(plural_days(longest_streak(counts)), "Longest streak"),
+                stat_tile(format!("{installed}/{}", self.models.len()), "Models installed"),
+            ),
+        ];
+
+        let calendar = calendar_card(counts);
+
+        column![
+            text("Overview").size(22).color(FG),
+            Space::new().height(10),
+            text("How Flow is doing right now.").size(13).color(MUTED),
+            Space::new().height(24),
+            status,
+            Space::new().height(20),
+            kpis,
+            Space::new().height(16),
+            calendar,
+        ]
+        .into()
     }
 
     /// What was dictated, newest first.
@@ -508,7 +606,7 @@ impl Console {
                 list = list.push(
                     container(
                         column![
-                            text(entry.text.clone()).size(13).color(FG),
+                            selectable_line(&self.history_editors[index], index),
                             Space::new().height(4),
                             text(if when.is_empty() {
                                 format!("{:.1}s", entry.spoken)
@@ -528,31 +626,6 @@ impl Console {
             }
         }
 
-        let running = self.daemon.activity != daemon::Activity::Offline;
-        let foot = row![
-            pip(if running { ACCENT } else { FAINT }),
-            Space::new().width(8),
-            text(if running {
-                "Flow is running"
-            } else {
-                "Flow isn't running"
-            })
-            .size(12)
-            .color(FAINT),
-            Space::new().width(Fill),
-            text(format!("{} kept", self.entries.len()))
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(FAINT),
-            Space::new().width(14),
-            action_msg(
-                if running { "Restart" } else { "Start" },
-                false,
-                Message::Service(if running { "restart" } else { "start" }),
-            ),
-        ]
-        .align_y(iced::Center);
-
         column![
             text("History").size(22).color(FG),
             Space::new().height(10),
@@ -560,11 +633,7 @@ impl Console {
                 .size(13)
                 .color(MUTED),
             Space::new().height(26),
-            scrollable(container(list).padding(iced::Padding::default().right(16))).height(Fill),
-            Space::new().height(16),
-            hairline(),
-            Space::new().height(16),
-            foot,
+            scroll(container(list).padding(iced::Padding::default().right(16))),
         ]
         .into()
     }
@@ -671,11 +740,6 @@ impl Console {
                 value_slider(0..=100, self.settings.duck, Message::Duck, &format!("{}%", self.settings.duck)),
             ),
             setting(
-                "Settle before recording",
-                "Wait for the volume to actually drop before the mic opens.",
-                value_slider(0..=600, self.settings.duck_settle_ms as u32, Message::Settle, &format!("{} ms", self.settings.duck_settle_ms)),
-            ),
-            setting(
                 "Noise suppression",
                 "Runs RNNoise over the audio. Can blunt consonants on a weak mic.",
                 toggle(self.settings.denoise, self.travel("denoise"), Message::Denoise),
@@ -765,7 +829,7 @@ impl Console {
             Space::new().height(10),
             note,
             Space::new().height(20),
-            scrollable(container(list).padding(iced::Padding::default().right(16))).height(Fill),
+            scroll(container(list).padding(iced::Padding::default().right(16))),
         ]
         .into()
     }
@@ -837,9 +901,70 @@ impl Console {
     }
 }
 
+fn history_editors(entries: &[history::Entry]) -> Vec<text_editor::Content> {
+    entries
+        .iter()
+        .map(|entry| text_editor::Content::with_text(&entry.text))
+        .collect()
+}
+
+/// A selectable, copyable line of text with no visible editor chrome - so it
+/// reads exactly like the plain `text()` it replaces, mouse selection and
+/// Ctrl+C aside.
+fn selectable_line<'a>(
+    content: &'a text_editor::Content,
+    index: usize,
+) -> Element<'a, Message> {
+    text_editor(content)
+        .on_action(move |action| Message::HistoryAction(index, action))
+        .size(13)
+        .padding(0)
+        .style(|_theme, _status| text_editor::Style {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+            placeholder: FG,
+            value: FG,
+            selection: Color { a: 0.35, ..ACCENT },
+        })
+        .into()
+}
+
 // ---------------------------------------------------------------------------
 // Shells
 // ---------------------------------------------------------------------------
+
+/// A scrollable with a thin, browser-style bar: invisible until the pointer
+/// is over it, a faint hairline while hovered. Iced's default is a wide rail
+/// that sits there permanently, which reads as chrome in a window this small.
+fn scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    scrollable(content)
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new()
+                .width(4)
+                .margin(2)
+                .scroller_width(4),
+        ))
+        .style(|theme, status| {
+            let base = scrollable::default(theme, status);
+            let scroller_colour = match status {
+                scrollable::Status::Active { .. } => Color::TRANSPARENT,
+                _ => FAINT,
+            };
+            scrollable::Style {
+                vertical_rail: scrollable::Rail {
+                    background: None,
+                    scroller: scrollable::Scroller {
+                        background: scroller_colour.into(),
+                        ..base.vertical_rail.scroller
+                    },
+                    ..base.vertical_rail
+                },
+                ..base
+            }
+        })
+        .height(Fill)
+        .into()
+}
 
 /// Every settings screen is the same shape: a heading, a sentence, a list of
 /// rows separated by hairlines, and an optional footer pinned to the bottom.
@@ -865,7 +990,7 @@ fn section_shell<'a>(
         Space::new().height(26),
         // Right padding so the scrollbar, which iced overlays on top of the
         // content rather than beside it, cannot sit over the controls.
-        scrollable(container(list).padding(iced::Padding::default().right(16))).height(Fill),
+        scroll(container(list).padding(iced::Padding::default().right(16))),
     ];
 
     if let Some(foot) = foot {
@@ -944,6 +1069,249 @@ fn setting<'a>(
     .into()
 }
 
+/// The line and dot colour for each activity the daemon can report. Offline
+/// and Ready both read as calm (no accent) - the accent is reserved for the
+/// two states where Flow is actually doing something with your voice.
+fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
+    match activity {
+        daemon::Activity::Offline => ("Flow isn't running", FAINT),
+        daemon::Activity::Starting => ("Starting…", MUTED),
+        daemon::Activity::Ready => ("Flow is ready", FAINT),
+        daemon::Activity::Listening => ("Listening", ACCENT),
+        daemon::Activity::Working => ("Cleaning up your words", ACCENT),
+    }
+}
+
+/// A titled tile on a raised surface - the unit the Overview grid is built
+/// from, so a handful of related facts read as one glance rather than more
+/// rows in the same list.
+fn card<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
+    container(
+        column![
+            text(title).size(12.5).color(MUTED),
+            Space::new().height(12),
+            content,
+        ]
+    )
+    .padding(16)
+    .width(Fill)
+    .style(|_theme| container::Style {
+        background: Some(Background::Color(RAISED)),
+        border: Border {
+            // A shade lighter than `LINE`: against the card's own colour a
+            // plain `LINE` edge all but disappears, and the card needs to
+            // read as a distinct surface, not a change of shade in the page.
+            color: mix(LINE, FG, 0.16),
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color { a: 0.35, ..Color::BLACK },
+            offset: iced::Vector::new(0.0, 2.0),
+            blur_radius: 10.0,
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// A number and its label, big and coloured to draw the eye - the KPI row a
+/// dashboard opens with, rather than the same numbers sitting flat in a list.
+fn stat_tile(value: String, label: &'static str) -> Element<'static, Message> {
+    card(label, text(value).size(26).color(ACCENT).into())
+}
+
+/// "1 day" / "3 days" - spelled out rather than "3d", so a streak tile reads
+/// as a sentence fragment and not an abbreviation to decode.
+fn plural_days(count: usize) -> String {
+    if count == 1 {
+        "1 day".to_string()
+    } else {
+        format!("{count} days")
+    }
+}
+
+/// Three tiles evenly spaced - one KPI row of the Overview's stat grid.
+fn kpi_row(
+    a: Element<'static, Message>,
+    b: Element<'static, Message>,
+    c: Element<'static, Message>,
+) -> Element<'static, Message> {
+    row![a, Space::new().width(16), b, Space::new().width(16), c].into()
+}
+
+/// How many of the calendar's days had at least one word dictated.
+fn active_days(counts: &[u32]) -> usize {
+    counts.iter().filter(|&&c| c > 0).count()
+}
+
+/// Consecutive active days ending today, 0 if today is empty. `counts` is
+/// oldest-first, so today is the last entry.
+fn current_streak(counts: &[u32]) -> usize {
+    counts.iter().rev().take_while(|&&c| c > 0).count()
+}
+
+/// The longest run of consecutive active days anywhere in the calendar.
+fn longest_streak(counts: &[u32]) -> usize {
+    let mut longest = 0;
+    let mut run = 0;
+    for &count in counts {
+        if count > 0 {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    longest
+}
+
+/// A cell's colour for its word count, in five clear steps rather than a
+/// continuous fade - continuous blending through a muted gold reads as
+/// murky, and a calendar that is supposed to be scanned at a glance needs
+/// levels a glance can actually tell apart, the way GitHub's own graph does.
+fn heat_color(count: u32, max: u32) -> Color {
+    if count == 0 {
+        // Distinctly lighter than the card, not darker: a level-0 cell still
+        // has to read as "a square in the grid", not as a hole in it.
+        return mix(RAISED, FG, 0.12);
+    }
+    let t = count as f32 / max as f32;
+    let step = if t > 0.75 {
+        1.0
+    } else if t > 0.5 {
+        0.75
+    } else if t > 0.25 {
+        0.5
+    } else {
+        0.3
+    };
+    mix(RAISED, ACCENT, step)
+}
+
+/// A single legend/grid cell, shared so the legend swatches are pixel-for-
+/// pixel the same shape as the grid they are explaining.
+fn heat_cell(colour: Color, size: f32) -> Element<'static, Message> {
+    container(Space::new())
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(colour)),
+            border: Border {
+                radius: (size * 0.22).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The Overview's activity calendar: one cell per day, coloured by how many
+/// words were dictated that day, weeks as columns and weekdays as rows - the
+/// GitHub contribution graph shape, because it is the shape people already
+/// know how to read at a glance. `counts` is oldest-first and sized to
+/// however much history is actually worth showing - a brand new install
+/// should not open onto six blank months.
+fn calendar_card(counts: &[u32]) -> Element<'static, Message> {
+    const CELL: f32 = 13.0;
+
+    let days = counts.len();
+    let today = history::now() / 86_400;
+    let first_day = today.saturating_sub(days as u64 - 1);
+    // 0 = Sunday, matching `history::daily_words`'s UTC day boundaries.
+    let lead = ((first_day + 4) % 7) as usize;
+    let columns = (lead + days).div_ceil(7);
+    let max = counts.iter().copied().max().unwrap_or(0).max(1);
+
+    let mut grid = row![].spacing(4);
+    for week in 0..columns {
+        let mut col = column![].spacing(4);
+        for weekday in 0..7 {
+            let slot = week * 7 + weekday;
+            let cell = if slot < lead || slot - lead >= days {
+                Space::new()
+                    .width(Length::Fixed(CELL))
+                    .height(Length::Fixed(CELL))
+                    .into()
+            } else {
+                heat_cell(heat_color(counts[slot - lead], max), CELL)
+            };
+            col = col.push(cell);
+        }
+        grid = grid.push(col);
+    }
+
+    let legend = row![
+        text("Less").size(11).color(FAINT),
+        Space::new().width(6),
+        heat_cell(heat_color(0, 4), 10.0),
+        heat_cell(heat_color(1, 4), 10.0),
+        heat_cell(heat_color(2, 4), 10.0),
+        heat_cell(heat_color(3, 4), 10.0),
+        heat_cell(heat_color(4, 4), 10.0),
+        Space::new().width(6),
+        text("More").size(11).color(FAINT),
+    ]
+    .spacing(4)
+    .align_y(iced::Center);
+
+    let total: u32 = counts.iter().sum();
+    let active = active_days(counts);
+    let caption = if active == 0 {
+        "Nothing dictated yet. Hold the chord and say something.".to_string()
+    } else {
+        format!("{total} words across {active} of the last {days} days")
+    };
+
+    card(
+        "Dictation activity",
+        column![
+            scroll_x(grid),
+            Space::new().height(12),
+            row![
+                text(caption).size(12).color(FAINT),
+                Space::new().width(Fill),
+                legend,
+            ]
+            .align_y(iced::Center),
+        ]
+        .into(),
+    )
+}
+
+/// A horizontal scrollable with the same thin, hover-only bar as `scroll`,
+/// for the calendar: it should fit most window widths, but must not clip
+/// silently on the narrowest ones.
+fn scroll_x<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    scrollable(content)
+        .direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new()
+                .width(4)
+                .margin(2)
+                .scroller_width(4),
+        ))
+        .style(|theme, status| {
+            let base = scrollable::default(theme, status);
+            let scroller_colour = match status {
+                scrollable::Status::Active { .. } => Color::TRANSPARENT,
+                _ => FAINT,
+            };
+            scrollable::Style {
+                horizontal_rail: scrollable::Rail {
+                    background: None,
+                    scroller: scrollable::Scroller {
+                        background: scroller_colour.into(),
+                        ..base.horizontal_rail.scroller
+                    },
+                    ..base.horizontal_rail
+                },
+                ..base
+            }
+        })
+        .width(Fill)
+        .into()
+}
+
 /// A read-only pair, for About. Same rhythm as `setting` without a control.
 fn fact_row(label: &'static str, value: impl Into<String>) -> Element<'static, Message> {
     container(
@@ -973,17 +1341,20 @@ fn model_row(
             ]
             .width(Length::FillPortion(3)),
             Space::new().width(20),
-            row![
-                text(size.into()).size(12).font(Font::MONOSPACE).color(FAINT),
-                Space::new().width(14),
-                pip(if installed { FAINT } else { ACCENT }),
-                Space::new().width(7),
-                text(if installed { "Installed" } else { "Missing" })
-                    .size(12)
-                    .color(MUTED),
-            ]
-            .align_y(iced::Center)
-            .width(Length::FillPortion(2)),
+            container(
+                row![
+                    text(size.into()).size(12).font(Font::MONOSPACE).color(FAINT),
+                    Space::new().width(14),
+                    pip(if installed { FAINT } else { ACCENT }),
+                    Space::new().width(7),
+                    text(if installed { "Installed" } else { "Missing" })
+                        .size(12)
+                        .color(MUTED),
+                ]
+                .align_y(iced::Center),
+            )
+            .width(Length::FillPortion(2))
+            .align_x(iced::alignment::Horizontal::Right),
         ]
         .align_y(iced::Center),
     )
