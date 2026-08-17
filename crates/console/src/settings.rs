@@ -33,7 +33,6 @@ pub struct Settings {
     pub terminal: bool,
     pub denoise: bool,
     pub duck: u32,
-    pub duck_settle_ms: u64,
     /// Which GPU runs the cleanup model. `None` means the daemon picks, and is
     /// written as no line at all rather than a value - the daemon's default is
     /// "choose for me", and there is no number that spells that.
@@ -54,7 +53,6 @@ impl Default for Settings {
             terminal: false,
             denoise: false,
             duck: 50,
-            duck_settle_ms: 150,
             gpu: None,
             hotkey: "super+shift+d".to_string(),
         }
@@ -84,11 +82,6 @@ impl Settings {
                         settings.duck = parsed;
                     }
                 }
-                "duck_settle_ms" => {
-                    if let Ok(parsed) = value.parse() {
-                        settings.duck_settle_ms = parsed;
-                    }
-                }
                 "gpu" => settings.gpu = value.parse().ok(),
                 "hotkey" => settings.hotkey = value.to_owned(),
                 _ => {}
@@ -112,13 +105,12 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 8] = [
+        let wanted: [(&str, Option<String>); 7] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.to_string())),
             ("terminal", Some(self.terminal.to_string())),
             ("denoise", Some(self.denoise.to_string())),
             ("duck", Some(self.duck.to_string())),
-            ("duck_settle_ms", Some(self.duck_settle_ms.to_string())),
             ("gpu", self.gpu.map(|index| index.to_string())),
             ("hotkey", Some(self.hotkey.clone())),
         ];
@@ -234,7 +226,6 @@ mod tests {
             terminal: true,
             denoise: true,
             duck: 0,
-            duck_settle_ms: 400,
             gpu: Some(0),
             hotkey: "ctrl+alt+space".to_string(),
         };

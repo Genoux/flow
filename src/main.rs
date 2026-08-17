@@ -50,8 +50,8 @@ fn main() -> Result<()> {
         let overlay = overlay::Overlay::spawn(capture.monitor());
         // Same order the daemon uses, so this shows the real arming phase
         // rather than a version of the island that only exists in this branch.
-        overlay.arm(Duration::from_millis(1500));
-        eprintln!("arming for 2s - the dot travels while the mic is still shut");
+        overlay.arm();
+        eprintln!("arming for 2s - the spinner turns while the mic is still shut");
         std::thread::sleep(Duration::from_secs(2));
         capture.begin();
         overlay.record();
@@ -280,7 +280,18 @@ fn daemon(
         let mut session: Option<Session> = None;
         let mut chord_watch: Option<hotkey::ChordWatch> = None;
         let mut hold_started: Option<Instant> = None;
-        while let Ok(event) = incoming.recv() {
+        // An event peeked while debouncing a release (see `RELEASE_DEBOUNCE`
+        // below) that turned out not to be chatter, and so still needs
+        // handling on the next iteration instead of being dropped.
+        let mut pending: Option<hotkey::Event> = None;
+        loop {
+            let event = match pending.take() {
+                Some(event) => event,
+                None => match incoming.recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                },
+            };
             let was_recording = session.is_some();
             // Ending a session drops its ducker, so other apps come back to volume
             // as soon as recording stops rather than after transcription.
@@ -299,7 +310,11 @@ fn daemon(
                     // then measure under MIN_HOLD and be discarded as a tap.
                     if session.is_none() {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, live, &overlay, &reporter, early);
+                        if begin(&capture, &mut session, live, &overlay, &reporter, early, &incoming)
+                            .is_some()
+                        {
+                            hold_started = None;
+                        }
                     }
                     None
                 }
@@ -311,11 +326,16 @@ fn daemon(
                         None
                     } else {
                         hold_started = Some(Instant::now());
-                        begin(&capture, &mut session, live, &overlay, &reporter, early);
-                        chord_watch = Some(hotkey::ChordWatch::arm(
-                            events.clone(),
-                            chord.lock().expect("chord").clone(),
-                        ));
+                        if begin(&capture, &mut session, live, &overlay, &reporter, early, &incoming)
+                            .is_none()
+                        {
+                            chord_watch = Some(hotkey::ChordWatch::arm(
+                                events.clone(),
+                                chord.lock().expect("chord").clone(),
+                            ));
+                        } else {
+                            hold_started = None;
+                        }
                         None
                     }
                 }
@@ -346,12 +366,34 @@ fn daemon(
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
                     }
-                    hold_started = None;
+                    // A release this close to a re-press is chatter, not a
+                    // deliberate let-go: keyd (or the keyboard itself) has
+                    // been observed to emit a spurious up/down pair for the
+                    // trigger key while it is still physically held, which
+                    // used to tear a long, continuous dictation into a burst
+                    // of fragments every one of which was short enough to be
+                    // thrown away as an accidental tap. Peeking one event
+                    // ahead and swallowing the pair keeps the same session -
+                    // and the audio already in it - running straight through
+                    // the blip instead.
+                    if session.is_some()
+                        && let Ok(next) = incoming.recv_timeout(RELEASE_DEBOUNCE)
+                    {
+                        if matches!(next, hotkey::Event::Pressed | hotkey::Event::Start) {
+                            continue;
+                        }
+                        pending = Some(next);
+                    }
+                    // The true length of the hold, timed from the original
+                    // press - not `held`, which only covers time since the
+                    // last spurious re-press if any chatter was absorbed
+                    // above, and would otherwise read as a tap every time.
+                    let total = hold_started.take().map_or(held, |at| at.elapsed());
                     match session.take().map(|s| s.finish(&capture)) {
-                        Some(samples) if hotkey::was_long_enough(held) => Some(samples),
+                        Some(samples) if hotkey::was_long_enough(total) => Some(samples),
                         Some(_) => {
                             early.lock().expect("early transcripts").clear();
-                            eprintln!("discarded: {held:?} is too short to be a deliberate hold");
+                            eprintln!("discarded: {total:?} is too short to be a deliberate hold");
                             None
                         }
                         None => None,
@@ -413,6 +455,31 @@ impl Session {
     }
 }
 
+/// How often to check whether the duck has settled while waiting to open the
+/// mic. Cheap - just an atomic load - so this can be short without cost.
+const ARM_POLL: Duration = Duration::from_millis(5);
+
+/// How long a release is given to prove itself deliberate before the session
+/// is actually torn down. Keyd - or the keyboard itself - has been observed
+/// emitting a spurious release/re-press of the trigger key while it is still
+/// physically held, in bursts 45-215ms apart; a real, considered re-press
+/// (a new dictation right after the last one) does not happen anywhere near
+/// that fast. Above the observed range with room to spare, still far under
+/// the pause someone would actually leave between two separate holds.
+const RELEASE_DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// Arms a recording, or - if the hold ends before the duck has actually
+/// settled - aborts before the microphone ever opens. Returns the elapsed
+/// hold when it aborted, so the caller logs a normal (if very short) release
+/// rather than treating it as a completed dictation.
+///
+/// Waiting used to be a blind `sleep(duck_settle_ms)`, a value with no
+/// principled setting: the ramp itself (`FADE_OUT` in duck.rs) always takes
+/// the same fixed time, so guessing a number to sleep for was pure noise, and
+/// a release that landed inside that sleep queued silently - the mic opened
+/// anyway, capturing whatever the room sounded like after the user had
+/// already let go. Polling `Ducker::settled` waits for the one real
+/// condition, and reacts to a release on the spot instead of after the fact.
 fn begin(
     capture: &audio::Capture,
     slot: &mut Option<Session>,
@@ -420,16 +487,10 @@ fn begin(
     overlay: &overlay::Overlay,
     reporter: &status::Reporter,
     early: &std::sync::Mutex<Vec<String>>,
-) {
-    // Read once, here, so the whole of this recording uses one consistent set
-    // of values even if the file changes while it runs.
-    let (duck, settle) = {
-        let config = live.lock().expect("config");
-        (
-            config.ducking(),
-            Duration::from_millis(config.duck_settle_ms),
-        )
-    };
+    incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
+) -> Option<Duration> {
+    let duck = live.lock().expect("config").ducking();
+
     // A new recording abandons whatever came before it, including anything already
     // transcribed early - otherwise those words would prepend to this dictation.
     // Reachable with both trigger paths live: a signal starts a session and the
@@ -439,34 +500,53 @@ fn begin(
     // Up immediately so the key press is acknowledged, but armed rather than
     // listening: the microphone is not open until the ducking has settled, and
     // an island showing live bars that cannot move reads as a dead mic. It
-    // breathes until there is something to hear.
-    // The bar it draws fills over exactly this long, so it finishes as the
-    // microphone opens rather than guessing.
-    overlay.arm(if duck.is_some() { settle } else { Duration::ZERO });
+    // spins until there is something to hear.
+    overlay.arm();
     reporter.listening();
     eprintln!("recording...");
     *slot = Some(Session { ducker: None });
 
-    let mut ducked = false;
+    let started = Instant::now();
+    let mut ducker = None;
     if let Some(percent) = duck {
         match duck::Ducker::duck(percent) {
-            Ok(ducker) => {
-                ducked = true;
-                if let Some(session) = slot.as_mut() {
-                    session.ducker = Some(ducker);
-                }
-            }
+            Ok(d) => ducker = Some(d),
             Err(err) => eprintln!("could not duck other apps: {err}"),
         }
+    }
+
+    while ducker.as_ref().is_some_and(|d| !d.settled()) {
+        match incoming.recv_timeout(ARM_POLL) {
+            Ok(hotkey::Event::Released { held }) => {
+                *slot = None;
+                overlay.cancel();
+                reporter.ready();
+                eprintln!("released before the mic opened ({held:?}) - nothing recorded");
+                return Some(held);
+            }
+            Ok(hotkey::Event::Cancelled | hotkey::Event::Stop) => {
+                *slot = None;
+                overlay.cancel();
+                reporter.ready();
+                eprintln!("discarded: the hold ended before the mic opened");
+                return Some(started.elapsed());
+            }
+            // Key-repeat or a duplicate start while already arming - the same
+            // thing the top-level loop already ignores once a session exists.
+            Ok(hotkey::Event::Pressed | hotkey::Event::Start) | Err(_) => {}
+        }
+    }
+
+    if let Some(session) = slot.as_mut() {
+        session.ducker = ducker;
     }
 
     // Ducking used to happen *after* capture started, so the opening moments of
     // every recording held whatever was playing at full volume - and the
     // pre-roll ring, being the 200ms before the key went down, could never be
-    // anything else. Both are dropped here: turn the room down, let the volume
-    // ramp land, then start listening.
-    if ducked {
-        std::thread::sleep(settle);
+    // anything else. Both are dropped here: turn the room down, wait for the
+    // ramp to land, then start listening.
+    if duck.is_some() {
         capture.begin_without_pre_roll();
     } else {
         // Nothing was turned down, so there is nothing to wait for and the
@@ -479,6 +559,7 @@ fn begin(
     // heard - and it lands here rather than on the keypress precisely because
     // that is when it became true.
     overlay.record();
+    None
 }
 
 fn handle(

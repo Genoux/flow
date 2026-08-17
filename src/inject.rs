@@ -2,6 +2,7 @@ use crate::hotkey;
 use anyhow::{Context, Result};
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wl_clipboard_rs::copy::{self, MimeSource, MimeType as CopyMime, Options, Source};
 use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
@@ -16,11 +17,32 @@ const DEVICE_SETTLE: Duration = Duration::from_millis(300);
 /// clients coalesce the press and release and miss the combo entirely.
 const KEY_DELAY: Duration = Duration::from_millis(12);
 
-/// Wait cap for physical modifiers to release before firing the paste chord on
-/// the uinput fallback path. The Wayland vk path does not need this - the
-/// virtual-keyboard protocol declares its modifier mask atomically, so the
-/// compositor no longer conflates our Ctrl with a still-held physical Super.
-const MODIFIER_WAIT: Duration = Duration::from_millis(500);
+/// Wait cap for physical modifiers to release before firing the paste chord.
+///
+/// Applies to **both** backends. It used to be skipped on the Wayland vk path,
+/// on the theory that declaring the modifier mask atomically through the
+/// virtual-keyboard protocol stops the compositor conflating our Ctrl with a
+/// still-held physical Super. Measured on Hyprland, that is not true: the
+/// chord and the physical modifiers still meet somewhere before the focused
+/// client sees them.
+///
+/// This is the whole of "it only works when I release every key at once".
+/// Releasing just the trigger of a super+shift+d hold ends the recording
+/// correctly - the transcript is right, the paste fires, the log says success -
+/// but the client receives super+shift+ctrl+v, which is not a paste, so
+/// nothing lands. Two dictations seconds apart, one released fully and one
+/// released by the trigger alone, differed in nothing else.
+///
+/// Long enough to cover a hand coming off a chord at its own pace, since
+/// nothing is lost by waiting: the recording is already over, the island is
+/// already showing its sweep, and a paste that fires into held modifiers is a
+/// dictation thrown away. 3s was not enough - a deliberate "release only the
+/// trigger" hold sat on super+shift well past it, timed out, fired, and was
+/// eaten exactly as the warning predicted.
+///
+/// If even this runs out the transcript is left on the clipboard rather than
+/// restored over, so the dictation survives as a Ctrl+V - see [`Injector::inject`].
+const MODIFIER_WAIT: Duration = Duration::from_secs(15);
 
 /// How long the clipboard has to answer before its contents are written off.
 /// A responsive owner answers in single-digit milliseconds; this is generous
@@ -32,6 +54,35 @@ const CLIPBOARD_BUDGET: Duration = Duration::from_millis(500);
 /// which paste chord to send, so falling back to the configured default costs
 /// far less than waiting.
 const FOCUS_BUDGET: Duration = Duration::from_millis(200);
+
+/// How long to leave the transcript on the clipboard before putting back
+/// whatever was there before, once the paste chord has been sent.
+///
+/// `wl_clipboard_rs::copy` hands the data over on request, in the background,
+/// with no signal back here when that request actually happens - the target
+/// app has to receive the keystroke, decide to paste, and ask the compositor
+/// for the data, all of which takes real time and gets slower under load.
+/// Restoring too soon wins that race: the old clipboard content replaces the
+/// transcript before the app ever reads it, so the paste keystroke fires,
+/// nothing appears, and this code reports success because sending the
+/// keystroke is all it actually checked.
+///
+/// Measured on this machine, from the journal: a dictation whose clipboard
+/// snapshot was empty (no restore at all) pasted fine, while the very next one
+/// with a restore did not - and a clipboard watch caught the transcript being
+/// overwritten 424ms after it landed, with nothing pasted. So 48ms
+/// (`KEY_DELAY * 4`, the original) and 400ms both lose this race. Seconds,
+/// not milliseconds, is the right order of magnitude for "an app got round to
+/// reading the clipboard", and since the wait no longer blocks anything (see
+/// below) there is nothing to trade off against.
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_secs(3);
+
+/// Which injection currently owns the clipboard. A restore only fires if its
+/// own dictation is still the newest: without this, dictating again inside
+/// [`CLIPBOARD_RESTORE_DELAY`] would let the previous restore wake up and
+/// clobber the *new* transcript - the same race this delay exists to avoid,
+/// just with a different loser.
+static CLIPBOARD_GENERATION: AtomicUsize = AtomicUsize::new(0);
 
 /// Two ways to deliver the paste chord to the focused window.
 ///
@@ -88,11 +139,10 @@ impl Injector {
     /// Put `text` in the focused window by staging it on the clipboard and
     /// sending one paste chord from Flow's own keyboard.
     ///
-    /// On the Wayland vk path the modifier mask is declared atomically at
-    /// paste time, so no wait for physical modifiers is needed. On the uinput
-    /// fallback the compositor aggregates our Ctrl with any still-held
-    /// physical Super/Shift, so the wait is kept there.
+    /// Both backends wait for the user's own modifiers to come up first - see
+    /// [`MODIFIER_WAIT`] for why the Wayland path is no exception.
     pub fn inject(&mut self, text: &str, terminal_hint: bool) -> Result<()> {
+        let generation = CLIPBOARD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         let saved = snapshot_clipboard();
 
         copy::copy(
@@ -102,15 +152,15 @@ impl Injector {
         )
         .context("staging text on the clipboard")?;
 
-        if matches!(self.backend, Backend::Uinput(_))
-            && !hotkey::wait_for_modifiers_released(MODIFIER_WAIT)
-        {
+        let modifiers_clear = hotkey::wait_for_modifiers_released(MODIFIER_WAIT);
+        if !modifiers_clear {
             let stuck: Vec<String> = hotkey::currently_held_modifiers()
                 .iter()
                 .map(|key| format!("{key:?}"))
                 .collect();
             eprintln!(
-                "paste: firing after {MODIFIER_WAIT:?} with {} still held - compositor may eat the chord",
+                "paste: firing after {MODIFIER_WAIT:?} with {} still held - the chord will \
+                 probably be eaten, so the text is staying on the clipboard for a manual Ctrl+V",
                 if stuck.is_empty() {
                     "no observed modifier".into()
                 } else {
@@ -122,9 +172,24 @@ impl Injector {
         let terminal = detect_terminal_focus().unwrap_or(terminal_hint);
         self.paste(terminal)?;
 
-        if !saved.is_empty() {
-            std::thread::sleep(KEY_DELAY * 4);
-            let _ = copy::copy_multi(Options::new(), saved);
+        // On its own thread, so the dictation is finished the moment the chord
+        // is sent. Waiting here would put the whole delay on the critical path
+        // - it is why a paste that takes 50ms of real work was reported as
+        // 454ms - and would hold up the island and the next dictation for no
+        // reason: nothing after this point depends on the old clipboard coming
+        // back.
+        //
+        // Skipped entirely when the modifiers never came up: that paste is the
+        // one most likely to have been eaten, and putting the old clipboard
+        // back over it would turn a dictation the user can still rescue with
+        // Ctrl+V into one that is simply gone.
+        if !saved.is_empty() && modifiers_clear {
+            std::thread::spawn(move || {
+                std::thread::sleep(CLIPBOARD_RESTORE_DELAY);
+                if CLIPBOARD_GENERATION.load(Ordering::SeqCst) == generation {
+                    let _ = copy::copy_multi(Options::new(), saved);
+                }
+            });
         }
         Ok(())
     }

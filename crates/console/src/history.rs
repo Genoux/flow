@@ -61,6 +61,45 @@ pub fn ago(at: u64, now: u64) -> String {
     }
 }
 
+/// Words dictated per calendar day (UTC) for the last `days` days, oldest
+/// first - the source for the Overview activity calendar. Reads the whole
+/// file rather than the `SHOWN`-capped `recent()` list: the calendar looks
+/// back further than the window's visible history ever does.
+///
+/// ponytail: UTC day boundaries, not the user's local midnight - correct
+/// enough for "was this day active", not worth a timezone dependency for.
+pub fn daily_words(days: usize) -> Vec<u32> {
+    let mut buckets = vec![0u32; days];
+    let today = now() / 86_400;
+
+    let Ok(text) = std::fs::read_to_string(path()) else {
+        return buckets;
+    };
+
+    for line in text.lines() {
+        let Some(value) = serde_json::from_str::<serde_json::Value>(line).ok() else {
+            continue;
+        };
+        let Some(at) = value.get("at").and_then(|a| a.as_u64()) else {
+            continue;
+        };
+        let Some(entry_text) = value.get("text").and_then(|t| t.as_str()) else {
+            continue;
+        };
+
+        let day = at / 86_400;
+        if day > today {
+            continue;
+        }
+        let ago = (today - day) as usize;
+        if ago < days {
+            buckets[days - 1 - ago] += entry_text.split_whitespace().count() as u32;
+        }
+    }
+
+    buckets
+}
+
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
