@@ -26,6 +26,9 @@ const FG: Color = Color { r: 0.925, g: 0.929, b: 0.937, a: 1.0 }; // #ECEDEF
 const MUTED: Color = Color { r: 0.486, g: 0.510, b: 0.549, a: 1.0 }; // #7C828C
 const FAINT: Color = Color { r: 0.306, g: 0.329, b: 0.361, a: 1.0 }; // #4E545C
 const LINE: Color = Color { r: 0.106, g: 0.118, b: 0.137, a: 1.0 }; // #1B1E23
+/// The lifted surface a rail item sits on when selected or hovered. One step
+/// off the ground, no more: the rail is chrome and should stay quiet.
+const RAISED: Color = Color { r: 0.102, g: 0.110, b: 0.125, a: 1.0 }; // #1A1C20
 const ACCENT: Color = Color { r: 0.847, g: 0.651, b: 0.341, a: 1.0 }; // #D8A657
 const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
 const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
@@ -431,7 +434,11 @@ impl Console {
     // -- rail ---------------------------------------------------------------
 
     fn rail(&self) -> Element<'_, Message> {
-        let mut items = column![text("Flow").size(14).color(FG), Space::new().height(16)].spacing(11);
+        let mut items = column![
+            container(text("Flow").size(14).color(FG)).padding([0, 9]),
+            Space::new().height(14)
+        ]
+        .spacing(2);
 
         for section in Section::ALL {
             let selected = section == self.section;
@@ -453,7 +460,7 @@ impl Console {
         )
         .width(Length::Fixed(RAIL_WIDTH))
         .height(Fill)
-        .padding([26, 20])
+        .padding([26, 11])
         .into()
     }
 
@@ -875,19 +882,36 @@ fn section_shell<'a>(
 // Pieces
 // ---------------------------------------------------------------------------
 
-/// `warmth` is how far into the hover this item is, 0 to 1. The selected item
-/// is already at full contrast and has nowhere to go, which is correct: hover
-/// should say "this is reachable", not repeat what selection already said.
+/// A rail item behaves like a button, because it is one: the whole row lights,
+/// not just its label. Selection holds a permanent muted background so the
+/// current section is legible at a glance, and hover raises any row toward the
+/// same treatment - so the thing under the pointer looks like the thing that
+/// would happen if you clicked.
+///
+/// `warmth` is how far into the hover this row is, 0 to 1.
 fn nav(section: Section, selected: bool, warmth: f32) -> Element<'static, Message> {
-    let colour = if selected {
-        FG
-    } else {
-        mix(FAINT, MUTED, warmth)
-    };
+    let colour = if selected { FG } else { mix(MUTED, FG, warmth) };
+    // Selected sits at full weight; hover approaches it without arriving, so
+    // the two never read as the same state.
+    let fill = if selected { 1.0 } else { warmth * 0.55 };
+
     iced::widget::mouse_area(
         button(text(section.label()).size(13).color(colour))
-            .padding(0)
-            .style(ghost)
+            .width(Fill)
+            .padding([6, 9])
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(mix(
+                    Color::TRANSPARENT,
+                    RAISED,
+                    fill,
+                ))),
+                text_color: colour,
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .on_press(Message::Select(section)),
     )
     .on_enter(Message::Hover(Some(section)))

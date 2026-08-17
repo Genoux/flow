@@ -108,16 +108,29 @@ const RIM_WIDTH: f32 = 0.9;
 /// than as another voice.
 const BAR_WORKING_ALPHA: f32 = 0.45;
 
-/// Brightness of the travelling dot shown while armed.
-const ARM_DOT_ALPHA: f32 = 0.85;
+/// The filled part of the boot bar.
+const ARM_FILL_ALPHA: f32 = 0.80;
 
-/// Brightness of the resting bars it travels over, which are there only to
-/// show where the voice will appear.
-const ARM_TRACK_ALPHA: f32 = 0.10;
+/// The unfilled part, showing how far there is left to go.
+const ARM_TRACK_ALPHA: f32 = 0.12;
 
-/// Seconds for the dot to cross and come back. Fast enough to read as working
-/// rather than drifting.
-const ARM_CYCLE: f32 = 0.9;
+/// Height of the boot bar. A hairline: it is a progress indicator, not a
+/// feature of the island.
+const ARM_BAR_HEIGHT: f32 = 2.0;
+
+/// How much of the island's width the boot bar spans.
+const ARM_BAR_SPAN: f32 = 0.44;
+
+/// How far the voice glow reaches, as a fraction of the island. Large and
+/// faint - it should be felt rather than looked at.
+const GLOW_REACH: f32 = 1.45;
+
+/// Peak brightness of the glow at full voice.
+const GLOW_ALPHA: f32 = 0.16;
+
+/// Soft layers the glow is built from. More is smoother and costs more; five
+/// is past the point where another one is visible.
+const GLOW_LAYERS: usize = 5;
 
 /// How long the bars take to rise once the microphone opens. This is the cue
 /// that says speaking will now be heard, so it wants to be quick and definite
@@ -382,13 +395,6 @@ const SWEEP_HEIGHT: f32 = 0.72;
 /// Height of one bar while the transcript is being produced. A single crest
 /// sweeps the island, which reads as busy rather than as listening - the two
 /// states have to be tellable apart at a glance.
-/// Smooth at both ends, so the travelling dot eases into each turn instead of
-/// bouncing off it.
-fn ease_in_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
 pub fn sweep(bar: usize, seconds: f32) -> f32 {
     // A pause at each end, so the crest re-enters instead of bouncing.
     let travelled = (seconds * SWEEP_SPEED) % (BAR_COUNT as f32 + 2.0) - 1.0;
@@ -445,8 +451,9 @@ pub fn rounded_rect_distance(
 #[derive(Clone, Copy)]
 enum Command {
     /// Shown, but the microphone is not open yet - other apps are still being
-    /// turned down. See [`Overlay::arm`].
-    Arm,
+    /// turned down. Carries how long that will take, so the bar that fills
+    /// during it is measuring something real. See [`Overlay::arm`].
+    Arm(std::time::Duration),
     Record,
     /// The audio went to the worker. Counted so a finish cannot outrun it, but it
     /// says nothing about whether there is anything to transcribe yet.
@@ -486,8 +493,8 @@ impl Overlay {
     /// the first thing they said is gone. The armed island breathes instead of
     /// listening, and the moment it starts answering the voice is the moment
     /// there is something to answer.
-    pub fn arm(&self) {
-        let _ = self.commands.send(Command::Arm);
+    pub fn arm(&self, settle: std::time::Duration) {
+        let _ = self.commands.send(Command::Arm(settle));
     }
 
     pub fn record(&self) {
@@ -654,6 +661,8 @@ fn render(
     seconds: f32,
     transcribing: bool,
     arming: bool,
+    // How long the arming phase lasts, so its bar fills over exactly that.
+    arm_for: f32,
     // 0 at the instant the microphone opened, 1 once the bars have risen.
     wake: f32,
     scale: f32,
@@ -680,24 +689,64 @@ fn render(
     // to confuse - anything that moved with the voice's rhythm would be read as
     // a reply to it. The bars underneath stay at their floor, faint, so the
     // shape the voice will fill is already visible.
+    // Armed: a hairline that fills over exactly as long as the microphone will
+    // take to open. Determinate on purpose - a bar that fills and completes
+    // says "this is nearly done", where anything looping says only "something
+    // is happening", and the thing the user needs to know is when to speak.
+    //
+    // Nothing here is voice-shaped: no bars, no motion that could be mistaken
+    // for a reply to what they are saying while the microphone is still shut.
     if arming {
-        let cycle = (seconds / ARM_CYCLE).fract();
-        // Triangle wave: across, then back, with no jump at the ends.
-        let along = if cycle < 0.5 { cycle * 2.0 } else { 2.0 - cycle * 2.0 };
-        let travel = ease_in_out(along);
+        let filled = (seconds / arm_for).clamp(0.0, 1.0);
+        let track = width * ARM_BAR_SPAN / 2.0;
+        let thickness = ARM_BAR_HEIGHT * scale / 2.0;
 
-        for index in 0..BAR_COUNT {
-            let bar = BAR_MIN * scale;
-            let at = (first + pitch * index as f32, centre.1);
-            let half = (BAR_WIDTH * scale / 2.0, bar / 2.0);
-            canvas.rounded_rect(at, half, half.0, BAR, ARM_TRACK_ALPHA);
+        canvas.rounded_rect(
+            centre,
+            (track, thickness),
+            thickness,
+            BAR,
+            ARM_TRACK_ALPHA,
+        );
+
+        if filled > 0.0 {
+            let grown = track * filled;
+            canvas.rounded_rect(
+                (centre.0 - track + grown, centre.1),
+                (grown, thickness),
+                thickness,
+                BAR,
+                ARM_FILL_ALPHA,
+            );
         }
-
-        let span = pitch * (BAR_COUNT - 1) as f32;
-        let dot = (first + span * travel, centre.1);
-        let radius = BAR_WIDTH * scale / 2.0;
-        canvas.rounded_rect(dot, (radius, radius), radius, BAR, ARM_DOT_ALPHA);
         return;
+    }
+
+    // A soft light behind the bars that rises with the voice. Built from a few
+    // nested rounded rects rather than a real gradient - the canvas has no
+    // gradient primitive, and overlapping translucent layers accumulate toward
+    // the middle, which is a radial falloff by another name.
+    //
+    // Deliberately below the bars in both senses: it is drawn first, and it
+    // never gets bright enough to compete with them. It should register as the
+    // island warming to your voice, not as a second indicator.
+    if !transcribing {
+        let level = heights.iter().sum::<f32>() / BAR_COUNT as f32;
+        let level = (level * wake).clamp(0.0, 1.0);
+        if level > 0.01 {
+            for layer in 0..GLOW_LAYERS {
+                let out = layer as f32 / GLOW_LAYERS as f32;
+                let reach = 0.45 + (GLOW_REACH - 0.45) * out;
+                let size = (half.0 * reach, half.1 * reach);
+                canvas.rounded_rect(
+                    centre,
+                    size,
+                    size.1,
+                    BAR,
+                    level * GLOW_ALPHA * (1.0 - out) / GLOW_LAYERS as f32,
+                );
+            }
+        }
     }
 
     let alpha = if transcribing {
@@ -832,6 +881,7 @@ impl Buffers {
         seconds: f32,
         transcribing: bool,
         arming: bool,
+        arm_for: f32,
         wake: f32,
     ) -> Result<()> {
         render(
@@ -840,6 +890,7 @@ impl Buffers {
             seconds,
             transcribing,
             arming,
+            arm_for,
             wake,
             self.scale as f32,
         );
@@ -921,6 +972,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
     let mut arming = false;
+    let mut arm_for = 0.25f32;
     let mut woke: Option<std::time::Instant> = None;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
@@ -937,7 +989,8 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // Same mapping as Record, but the bars stay asleep. Kept separate
             // rather than folded into Record so a caller that never arms - the
             // unducked path, where capture starts at once - is unchanged.
-            Ok(Command::Arm) => {
+            Ok(Command::Arm(settle)) => {
+                arm_for = settle.as_secs_f32().max(0.05);
                 heights = [0.0; BAR_COUNT];
                 window.clear();
                 born = Some(monitor.heard());
@@ -1075,6 +1128,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             started.elapsed().as_secs_f32(),
             transcribing && !settling,
             arming,
+            arm_for,
             // Full immediately when nothing armed - the unducked path opens the
             // microphone on the keypress and has nothing to announce.
             woke.map_or(1.0, |at| (at.elapsed().as_secs_f32() / BLOOM).min(1.0)),
