@@ -34,8 +34,9 @@ const RAIL_WIDTH: f32 = 176.0;
 
 /// How long each motion takes. Short enough to feel like response rather than
 /// choreography: past about 200ms a UI stops feeling quick and starts feeling
-/// like it is performing for you.
-const SLIDE: u64 = 170;
+/// like it is performing for you. Only two things move - a toggle's knob and a
+/// rail item warming under the pointer - because those are the two that
+/// acknowledge something the user just did.
 const KNOB: u64 = 150;
 const FADE: u64 = 120;
 
@@ -154,7 +155,6 @@ enum Message {
     Duck(u32),
     Settle(u32),
     OpenConfig,
-    OpenVocabulary,
     /// systemctl --user <verb> flow.service
     Service(&'static str),
     /// Start listening for the next chord the user presses.
@@ -169,7 +169,6 @@ enum Message {
     /// A frame went by; only delivered while something is moving.
     Tick(std::time::Instant),
     Hover(Option<Section>),
-    Noop,
 }
 
 struct Console {
@@ -204,8 +203,6 @@ struct Console {
     // Motion. Times rather than tweens: what a frame needs to know is how long
     // ago something changed, and everything here derives from that.
     now: std::time::Instant,
-    /// When the visible section last changed, for the slide-in.
-    section_at: std::time::Instant,
     hovered: Option<Section>,
     hover_at: std::time::Instant,
     /// When each toggle last flipped, so its knob can travel rather than jump.
@@ -234,7 +231,6 @@ impl Console {
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
                 now: std::time::Instant::now(),
-                section_at: std::time::Instant::now(),
                 hovered: None,
                 hover_at: std::time::Instant::now(),
                 toggled_at: std::collections::HashMap::new(),
@@ -258,8 +254,7 @@ impl Console {
         let running = |since: std::time::Instant, ms: u64| {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
-        running(self.section_at, SLIDE)
-            || running(self.hover_at, FADE)
+        running(self.hover_at, FADE)
             || self
                 .toggled_at
                 .values()
@@ -280,12 +275,7 @@ impl Console {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Select(section) => {
-                if self.section != section {
-                    self.section = section;
-                    self.section_at = std::time::Instant::now();
-                }
-            }
+            Message::Select(section) => self.section = section,
             Message::Tick(now) => self.now = now,
             Message::Hover(section) => {
                 if self.hovered != section {
@@ -411,16 +401,6 @@ impl Console {
                     self.save_error = Some(err);
                 }
             }
-            Message::OpenVocabulary => {
-                let path = settings::config_path()
-                    .parent()
-                    .map(|dir| dir.join("vocabulary.txt"))
-                    .unwrap_or_default();
-                if let Err(err) = system::open(&path) {
-                    self.save_error = Some(err);
-                }
-            }
-            Message::Noop => {}
         }
         Task::none()
     }
@@ -489,11 +469,10 @@ impl Console {
             Section::About => self.about_section(),
         };
 
-        // A short rise as the section arrives. Not a fade: without an opacity
-        // primitive a fade means mixing every colour toward the background,
-        // and a few pixels of travel says "this is new" just as clearly.
-        let lift = (1.0 - progress(self.section_at, self.now, SLIDE)) * 10.0;
-        container(column![Space::new().height(Length::Fixed(lift)), content])
+        // Switching sections is deliberately instant. Motion here read as the
+        // page arriving late rather than as polish - navigation should feel
+        // like the content was already there.
+        container(content)
             .width(Fill)
             .height(Fill)
             .padding([34, 36])
@@ -661,7 +640,7 @@ impl Console {
     }
 
     fn audio_section(&self) -> Element<'_, Message> {
-        let mut rows: Vec<Element<Message>> = vec![
+        let rows: Vec<Element<Message>> = vec![
             // Read-only, and deliberately so: the daemon records from the
             // system default source, which means changing your microphone in
             // your desktop's own settings already works. A picker here could
@@ -792,7 +771,7 @@ impl Console {
             .map(|model| system::human_bytes(model.bytes))
             .collect();
 
-        let mut rows: Vec<Element<Message>> = self
+        let rows: Vec<Element<Message>> = self
             .models
             .iter()
             .zip(&sizes)

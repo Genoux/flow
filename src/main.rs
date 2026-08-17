@@ -48,6 +48,11 @@ fn main() -> Result<()> {
         let seconds = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
         let capture = audio::Capture::open(&audio::open_device()?)?;
         let overlay = overlay::Overlay::spawn(capture.monitor());
+        // Same order the daemon uses, so this shows the real arming phase
+        // rather than a version of the island that only exists in this branch.
+        overlay.arm();
+        eprintln!("arming for 2s - the dot travels while the mic is still shut");
+        std::thread::sleep(Duration::from_secs(2));
         capture.begin();
         overlay.record();
         eprintln!("island shown for {seconds}s - speak to move the bars");
