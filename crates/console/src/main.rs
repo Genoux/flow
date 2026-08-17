@@ -180,6 +180,8 @@ enum Message {
     Hover(Option<Section>),
     /// A selection/copy action on one history entry's transcript.
     HistoryAction(usize, text_editor::Action),
+    InstallModels,
+    ModelsInstalled(Result<(), String>),
 }
 
 struct Console {
@@ -204,6 +206,8 @@ struct Console {
     /// Word counts for the Overview activity calendar, oldest day first.
     daily_words: Vec<u32>,
     models: Vec<system::Model>,
+    /// True while `flow install` is running in the background.
+    installing_models: bool,
     session: String,
     terms: Vec<String>,
     typing: String,
@@ -242,6 +246,7 @@ impl Console {
                 history_editors,
                 daily_words: history::daily_words(CALENDAR_DAYS),
                 models: system::models(),
+                installing_models: false,
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
@@ -426,6 +431,23 @@ impl Console {
             Message::OpenConfig => {
                 if let Err(err) = system::open(&settings::config_path()) {
                     self.save_error = Some(err);
+                }
+            }
+            Message::InstallModels => {
+                if !self.installing_models {
+                    self.installing_models = true;
+                    self.save_error = None;
+                    return Task::perform(
+                        async { system::install_models() },
+                        Message::ModelsInstalled,
+                    );
+                }
+            }
+            Message::ModelsInstalled(result) => {
+                self.installing_models = false;
+                match result {
+                    Ok(()) => self.models = system::models(),
+                    Err(err) => self.save_error = Some(err),
                 }
             }
         }
@@ -857,20 +879,28 @@ impl Console {
             system::human_bytes(self.models.iter().map(|m| m.bytes).sum()),
             system::data_home().join("flow/models").display()
         );
+        let all_installed = self.models.iter().all(|model| model.installed);
 
         section_shell(
             "Models",
             "Both models run on this machine. Nothing you say leaves it.",
             rows,
-            Some(
-                row![
+            Some({
+                let mut footer = row![
                     text(total).size(12)
-                    .font(Font::MONOSPACE)
-                    .color(FAINT),
-                ]
-                .align_y(iced::Center)
-                .into(),
-            ),
+                        .font(Font::MONOSPACE)
+                        .color(FAINT),
+                    Space::new().width(Fill),
+                ];
+                if !all_installed {
+                    footer = footer.push(action_msg(
+                        if self.installing_models { "Installing…" } else { "Install models" },
+                        true,
+                        Message::InstallModels,
+                    ));
+                }
+                footer.align_y(iced::Center).into()
+            }),
         )
     }
 
