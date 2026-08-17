@@ -12,7 +12,7 @@ mod settings;
 mod system;
 mod vocabulary;
 
-use iced::widget::{button, column, container, row, scrollable, slider, text, toggler, Space};
+use iced::widget::{button, column, container, row, scrollable, slider, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 // ---------------------------------------------------------------------------
@@ -31,6 +31,37 @@ const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
 const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
 
 const RAIL_WIDTH: f32 = 176.0;
+
+/// How long each motion takes. Short enough to feel like response rather than
+/// choreography: past about 200ms a UI stops feeling quick and starts feeling
+/// like it is performing for you.
+const SLIDE: u64 = 170;
+const KNOB: u64 = 150;
+const FADE: u64 = 120;
+
+/// Cubic ease-out. Everything here moves fastest at the start and settles,
+/// which is what reads as responsive - the opposite curve feels sluggish
+/// however short it is.
+fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// 0.0 at `since`, 1.0 once `ms` has passed.
+fn progress(since: std::time::Instant, now: std::time::Instant, ms: u64) -> f32 {
+    ease_out(now.saturating_duration_since(since).as_millis() as f32 / ms as f32)
+}
+
+/// Blend two colours, for hover states and the settling of a fade.
+fn mix(from: Color, to: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color::from_rgba(
+        from.r + (to.r - from.r) * t,
+        from.g + (to.g - from.g) * t,
+        from.b + (to.b - from.b) * t,
+        from.a + (to.a - from.a) * t,
+    )
+}
 
 fn main() -> iced::Result {
     iced::application(Console::new, Console::update, Console::view)
@@ -65,8 +96,15 @@ fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
     }
 }
 
-fn subscription(_state: &Console) -> Subscription<Message> {
-    Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon))
+fn subscription(state: &Console) -> Subscription<Message> {
+    let daemon =
+        Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon));
+    if !state.moving() {
+        // Redrawing every frame forever to animate nothing would be a way to
+        // make a settings window cost battery.
+        return daemon;
+    }
+    Subscription::batch([daemon, iced::window::frames().map(Message::Tick)])
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +166,9 @@ enum Message {
     AddTerm,
     RemoveTerm(usize),
     Daemon(daemon::Event),
+    /// A frame went by; only delivered while something is moving.
+    Tick(std::time::Instant),
+    Hover(Option<Section>),
     Noop,
 }
 
@@ -159,6 +200,16 @@ struct Console {
     cancel_capture: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Why the last attempted chord was rejected, shown in place of the hint.
     chord_error: Option<String>,
+
+    // Motion. Times rather than tweens: what a frame needs to know is how long
+    // ago something changed, and everything here derives from that.
+    now: std::time::Instant,
+    /// When the visible section last changed, for the slide-in.
+    section_at: std::time::Instant,
+    hovered: Option<Section>,
+    hover_at: std::time::Instant,
+    /// When each toggle last flipped, so its knob can travel rather than jump.
+    toggled_at: std::collections::HashMap<&'static str, std::time::Instant>,
 }
 
 impl Console {
@@ -182,9 +233,37 @@ impl Console {
                 can_capture: chord::available(),
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
+                now: std::time::Instant::now(),
+                section_at: std::time::Instant::now(),
+                hovered: None,
+                hover_at: std::time::Instant::now(),
+                toggled_at: std::collections::HashMap::new(),
             },
             Task::none(),
         )
+    }
+
+    /// How far this toggle is through its travel, 0 to 1. A toggle that has
+    /// never moved is already home.
+    fn travel(&self, key: &str) -> f32 {
+        self.toggled_at
+            .get(key)
+            .map(|at| progress(*at, self.now, KNOB))
+            .unwrap_or(1.0)
+    }
+
+    /// True while any motion is still running, which is what decides whether
+    /// to ask for frames at all.
+    fn moving(&self) -> bool {
+        let running = |since: std::time::Instant, ms: u64| {
+            self.now.saturating_duration_since(since).as_millis() < ms as u128
+        };
+        running(self.section_at, SLIDE)
+            || running(self.hover_at, FADE)
+            || self
+                .toggled_at
+                .values()
+                .any(|at| running(*at, KNOB))
     }
 
     /// Write after every change. There is no Save button on purpose: a settings
@@ -201,21 +280,37 @@ impl Console {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Select(section) => self.section = section,
+            Message::Select(section) => {
+                if self.section != section {
+                    self.section = section;
+                    self.section_at = std::time::Instant::now();
+                }
+            }
+            Message::Tick(now) => self.now = now,
+            Message::Hover(section) => {
+                if self.hovered != section {
+                    self.hovered = section;
+                    self.hover_at = std::time::Instant::now();
+                }
+            }
             Message::PushToTalk(on) => {
                 self.settings.push_to_talk = on;
+                self.toggled_at.insert("push_to_talk", std::time::Instant::now());
                 self.persist();
             }
             Message::Cleanup(on) => {
                 self.settings.cleanup = on;
+                self.toggled_at.insert("cleanup", std::time::Instant::now());
                 self.persist();
             }
             Message::Terminal(on) => {
                 self.settings.terminal = on;
+                self.toggled_at.insert("terminal", std::time::Instant::now());
                 self.persist();
             }
             Message::Denoise(on) => {
                 self.settings.denoise = on;
+                self.toggled_at.insert("denoise", std::time::Instant::now());
                 self.persist();
             }
             Message::Duck(value) => {
@@ -226,7 +321,11 @@ impl Console {
                 self.settings.duck_settle_ms = value as u64;
                 self.persist();
             }
-            Message::Autostart(on) => match system::set_autostart(on) {
+            Message::Autostart(on) => match {
+                self.toggled_at
+                    .insert("autostart", std::time::Instant::now());
+                system::set_autostart(on)
+            } {
                 // Re-read rather than assume: systemd is the authority on
                 // whether that worked, not our optimism.
                 Ok(()) => {
@@ -355,7 +454,13 @@ impl Console {
         let mut items = column![text("Flow").size(14).color(FG), Space::new().height(16)].spacing(11);
 
         for section in Section::ALL {
-            items = items.push(nav(section, section == self.section));
+            let selected = section == self.section;
+            let warmth = if self.hovered == Some(section) {
+                progress(self.hover_at, self.now, FADE)
+            } else {
+                0.0
+            };
+            items = items.push(nav(section, selected, warmth));
         }
 
         container(
@@ -384,7 +489,11 @@ impl Console {
             Section::About => self.about_section(),
         };
 
-        container(content)
+        // A short rise as the section arrives. Not a fade: without an opacity
+        // primitive a fade means mixing every colour toward the background,
+        // and a few pixels of travel says "this is new" just as clearly.
+        let lift = (1.0 - progress(self.section_at, self.now, SLIDE)) * 10.0;
+        container(column![Space::new().height(Length::Fixed(lift)), content])
             .width(Fill)
             .height(Fill)
             .padding([34, 36])
@@ -479,7 +588,7 @@ impl Console {
             setting(
                 "Push to talk",
                 "Flow watches the chord itself, so no compositor binding is needed. Turning it on needs a restart.",
-                toggle(self.settings.push_to_talk, Message::PushToTalk),
+                toggle(self.settings.push_to_talk, self.travel("push_to_talk"), Message::PushToTalk),
             ),
             setting(
                 "Chord",
@@ -510,12 +619,12 @@ impl Console {
             setting(
                 "Clean up transcript",
                 "Removes filler and fixes punctuation with the local model. Turning it back on needs a restart.",
-                toggle(self.settings.cleanup, Message::Cleanup),
+                toggle(self.settings.cleanup, self.travel("cleanup"), Message::Cleanup),
             ),
             setting(
                 "Terminal paste chord",
                 "Send Ctrl+Shift+V when a terminal has focus.",
-                toggle(self.settings.terminal, Message::Terminal),
+                toggle(self.settings.terminal, self.travel("terminal"), Message::Terminal),
             ),
             setting(
                 "Vocabulary",
@@ -539,7 +648,7 @@ impl Console {
             rows.push(setting(
                 "Start with session",
                 "Enables the flow.service user unit so the daemon launches when you log in.",
-                toggle(enabled, Message::Autostart),
+                toggle(enabled, self.travel("autostart"), Message::Autostart),
             ));
         }
 
@@ -583,7 +692,7 @@ impl Console {
             setting(
                 "Noise suppression",
                 "Runs RNNoise over the audio. Can blunt consonants on a weak mic.",
-                toggle(self.settings.denoise, Message::Denoise),
+                toggle(self.settings.denoise, self.travel("denoise"), Message::Denoise),
             ),
         ];
 
@@ -692,13 +801,6 @@ impl Console {
             })
             .collect();
 
-        rows.push(fact_row(
-            "Cleanup runs on",
-            match self.settings.gpu {
-                None => "the best available GPU".to_string(),
-                Some(index) => format!("GPU {index}, pinned in the config"),
-            },
-        ));
 
         let total = format!(
             "{} in {}",
@@ -794,15 +896,23 @@ fn section_shell<'a>(
 // Pieces
 // ---------------------------------------------------------------------------
 
-fn nav(section: Section, selected: bool) -> Element<'static, Message> {
-    button(
-        text(section.label())
-            .size(13)
-            .color(if selected { FG } else { FAINT }),
+/// `warmth` is how far into the hover this item is, 0 to 1. The selected item
+/// is already at full contrast and has nowhere to go, which is correct: hover
+/// should say "this is reachable", not repeat what selection already said.
+fn nav(section: Section, selected: bool, warmth: f32) -> Element<'static, Message> {
+    let colour = if selected {
+        FG
+    } else {
+        mix(FAINT, MUTED, warmth)
+    };
+    iced::widget::mouse_area(
+        button(text(section.label()).size(13).color(colour))
+            .padding(0)
+            .style(ghost)
+            .on_press(Message::Select(section)),
     )
-    .padding(0)
-    .style(ghost)
-    .on_press(Message::Select(section))
+    .on_enter(Message::Hover(Some(section)))
+    .on_exit(Message::Hover(None))
     .into()
 }
 
@@ -878,28 +988,56 @@ fn model_row(
     .into()
 }
 
-fn toggle(value: bool, on_change: fn(bool) -> Message) -> Element<'static, Message> {
-    toggler(value)
-        .on_toggle(on_change)
-        .size(18)
-        .style(|_theme, status| {
-            let on = matches!(
-                status,
-                toggler::Status::Active { is_toggled: true }
-                    | toggler::Status::Hovered { is_toggled: true }
-            );
-            toggler::Style {
-                background: Background::Color(if on { ACCENT } else { LINE }),
-                background_border_width: 0.0,
-                background_border_color: Color::TRANSPARENT,
-                foreground: Background::Color(if on { ON_ACCENT } else { MUTED }),
-                foreground_border_width: 0.0,
-                foreground_border_color: Color::TRANSPARENT,
-                text_color: None,
-                border_radius: None,
-                padding_ratio: 0.2,
-            }
-        })
+/// A toggle whose knob travels rather than teleports.
+///
+/// Built by hand because iced's toggler redraws instantly from its boolean and
+/// has nowhere to put a position. The knob is placed by two flexible spaces
+/// either side of it, so its travel is just the ratio between them, and the
+/// track colour crosses over on the same curve.
+///
+/// `travel` is 0 at the moment of the click and 1 when it has arrived; the
+/// knob moves toward `value` over that, so a toggle flipped back mid-flight
+/// simply reverses.
+fn toggle(value: bool, travel: f32, on_change: fn(bool) -> Message) -> Element<'static, Message> {
+    let at = if value { travel } else { 1.0 - travel };
+    let left = (at * 1000.0) as u16;
+
+    let knob = container(Space::new())
+        .width(Length::Fixed(12.0))
+        .height(Length::Fixed(12.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(mix(MUTED, ON_ACCENT, at))),
+            border: Border {
+                radius: 6.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    let track = container(
+        row![
+            Space::new().width(Length::FillPortion(left.max(1))),
+            knob,
+            Space::new().width(Length::FillPortion((1000 - left).max(1))),
+        ]
+        .align_y(iced::Center),
+    )
+    .width(Length::Fixed(34.0))
+    .height(Length::Fixed(18.0))
+    .padding([3, 3])
+    .style(move |_| container::Style {
+        background: Some(Background::Color(mix(LINE, ACCENT, at))),
+        border: Border {
+            radius: 9.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    button(track)
+        .padding(0)
+        .style(ghost)
+        .on_press(on_change(!value))
         .into()
 }
 

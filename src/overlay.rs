@@ -108,6 +108,14 @@ const RIM_WIDTH: f32 = 0.9;
 /// than as another voice.
 const BAR_WORKING_ALPHA: f32 = 0.45;
 
+/// The dimmest the armed island breathes to. Low enough to read as waiting
+/// rather than listening, high enough to be visible on any wallpaper.
+const BAR_ARMED_ALPHA: f32 = 0.12;
+
+/// Seconds per breath while armed. Slow: a fast pulse reads as urgency, and
+/// there is nothing urgent about waiting a fraction of a second.
+const ARM_BREATH: f32 = 1.6;
+
 /// Below this the island stays flat. Measured on the webcam mic: an idle room
 /// captures rms 0.000 to 0.004, so this clears the noise without clipping a
 /// voice from across the desk.
@@ -421,6 +429,9 @@ pub fn rounded_rect_distance(
 /// What the island is showing. Also the message the daemon sends to change it.
 #[derive(Clone, Copy)]
 enum Command {
+    /// Shown, but the microphone is not open yet - other apps are still being
+    /// turned down. See [`Overlay::arm`].
+    Arm,
     Record,
     /// The audio went to the worker. Counted so a finish cannot outrun it, but it
     /// says nothing about whether there is anything to transcribe yet.
@@ -450,6 +461,18 @@ impl Overlay {
             }
         });
         Self { commands }
+    }
+
+    /// Show the island before the microphone is open.
+    ///
+    /// Ducking takes a moment, and capture deliberately waits for it. Without
+    /// this the island appeared at full strength with bars that could not move,
+    /// which reads as a dead microphone - the user talks, nothing responds, and
+    /// the first thing they said is gone. The armed island breathes instead of
+    /// listening, and the moment it starts answering the voice is the moment
+    /// there is something to answer.
+    pub fn arm(&self) {
+        let _ = self.commands.send(Command::Arm);
     }
 
     pub fn record(&self) {
@@ -610,7 +633,14 @@ impl Canvas {
     }
 }
 
-fn render(canvas: &mut Canvas, heights: &[f32; BAR_COUNT], seconds: f32, transcribing: bool, scale: f32) {
+fn render(
+    canvas: &mut Canvas,
+    heights: &[f32; BAR_COUNT],
+    seconds: f32,
+    transcribing: bool,
+    arming: bool,
+    scale: f32,
+) {
     canvas.clear();
 
     let width = WIDTH as f32 * scale;
@@ -628,14 +658,28 @@ fn render(canvas: &mut Canvas, heights: &[f32; BAR_COUNT], seconds: f32, transcr
     let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
     let first = (width - span) / 2.0 + BAR_WIDTH * scale / 2.0;
 
-    let alpha = match transcribing {
-        true => BAR_WORKING_ALPHA,
-        false => BAR_ALPHA,
+    // Armed: a slow breath across the whole row, at the resting height. It has
+    // to be unmistakably not-listening - a bar that twitches would be read as a
+    // reply to the voice - while still saying the island is alive and coming.
+    let breath = if arming {
+        0.5 + 0.5 * (seconds * std::f32::consts::TAU / ARM_BREATH).sin()
+    } else {
+        0.0
+    };
+    let alpha = if arming {
+        BAR_ARMED_ALPHA + (BAR_WORKING_ALPHA - BAR_ARMED_ALPHA) * breath
+    } else if transcribing {
+        BAR_WORKING_ALPHA
+    } else {
+        BAR_ALPHA
     };
     for index in 0..BAR_COUNT {
-        let height = match transcribing {
-            true => sweep(index, seconds),
-            false => heights[index],
+        let height = if arming {
+            0.0
+        } else if transcribing {
+            sweep(index, seconds)
+        } else {
+            heights[index]
         };
         let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
         let at = (first + pitch * index as f32, centre.1);
@@ -755,12 +799,14 @@ impl Buffers {
         heights: &[f32; BAR_COUNT],
         seconds: f32,
         transcribing: bool,
+        arming: bool,
     ) -> Result<()> {
         render(
             &mut self.canvas,
             heights,
             seconds,
             transcribing,
+            arming,
             self.scale as f32,
         );
 
@@ -840,6 +886,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut born: Option<u64> = None;
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
+    let mut arming = false;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
     let mut lifecycle = Lifecycle::default();
@@ -852,22 +899,47 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         };
 
         match waiting {
+            // Same mapping as Record, but the bars stay asleep. Kept separate
+            // rather than folded into Record so a caller that never arms - the
+            // unducked path, where capture starts at once - is unchanged.
+            Ok(Command::Arm) => {
+                heights = [0.0; BAR_COUNT];
+                window.clear();
+                born = Some(monitor.heard());
+                transcribing = false;
+                arming = true;
+                settling = false;
+                waiting_to_sweep = None;
+                lifecycle.record();
+                started = std::time::Instant::now();
+                state.configured = false;
+                state.closed = false;
+                island = Some(Island::map(&compositor, &shell, &handle));
+            }
             Ok(Command::Record) => {
                 heights = [0.0; BAR_COUNT];
                 window.clear();
                 born = Some(monitor.heard());
                 transcribing = false;
                 settling = false;
+                // Waking from armed: the island is already up, so this is the
+                // moment the bars come alive and the user can speak.
+                let was_armed = arming;
+                arming = false;
                 // A sweep that had not started yet belongs to the dictation this
                 // one replaces, and must not appear over the new bars.
                 waiting_to_sweep = None;
-                lifecycle.record();
-                started = std::time::Instant::now();
-                // Mapped at once. The duck happens on the same keypress, so any
-                // delay here reads as the island lagging the rest of the response.
-                state.configured = false;
-                state.closed = false;
-                island = Some(Island::map(&compositor, &shell, &handle));
+                if !was_armed {
+                    lifecycle.record();
+                }
+                if island.is_none() {
+                    started = std::time::Instant::now();
+                    // Mapped at once. The duck happens on the same keypress, so
+                    // any delay here reads as the island lagging the response.
+                    state.configured = false;
+                    state.closed = false;
+                    island = Some(Island::map(&compositor, &shell, &handle));
+                }
             }
             // The island stays mapped through the handover, so the bars turn
             // into the sweep rather than blinking out and back.
@@ -965,6 +1037,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             &heights,
             started.elapsed().as_secs_f32(),
             transcribing && !settling,
+            arming,
         )?;
         connection.flush()?;
     }

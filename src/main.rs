@@ -431,10 +431,11 @@ fn begin(
     // physical chord then starts another.
     early.lock().expect("early transcripts").clear();
 
-    // The island goes up first so the key press is acknowledged immediately,
-    // even though capture may be a moment behind it while other apps are
-    // turned down.
-    overlay.record();
+    // Up immediately so the key press is acknowledged, but armed rather than
+    // listening: the microphone is not open until the ducking has settled, and
+    // an island showing live bars that cannot move reads as a dead mic. It
+    // breathes until there is something to hear.
+    overlay.arm();
     reporter.listening();
     eprintln!("recording...");
     *slot = Some(Session { ducker: None });
@@ -465,6 +466,12 @@ fn begin(
         // pre-roll is pure gain: it catches a first word spoken on the press.
         capture.begin();
     }
+
+    // The microphone is open. This is the moment the bars stop breathing and
+    // start answering, which is the only honest signal that speaking will be
+    // heard - and it lands here rather than on the keypress precisely because
+    // that is when it became true.
+    overlay.record();
 }
 
 fn handle(
