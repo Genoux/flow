@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use flow::{
     audio, cleanup, config, denoise, duck, history, hotkey, inject, install, ipc, notify, overlay,
     status, stt, wav,
@@ -17,15 +17,17 @@ const PREFIX_POLL: Duration = Duration::from_millis(400);
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // All three run before the config is read. start/stop must survive a broken
-    // config file so a daemon that is already recording can still be stopped, and
-    // `install` is what writes that file in the first place.
+    // All of these run before the config is read. start/stop must survive a
+    // broken config file so a daemon that is already recording can still be
+    // stopped, `install` is what writes that file in the first place, and
+    // `logs` is how you find out what a daemon that will not start is saying.
     match args.first().map(String::as_str) {
         Some("start") => return ipc::send(ipc::START),
         Some("stop") => return ipc::send(ipc::STOP),
         Some("install") => {
             return install::run(args.iter().any(|a| a == "--speech-only"))
         }
+        Some("logs") => return logs(&args[1..]),
         _ => {}
     }
 
@@ -81,6 +83,10 @@ fn main() -> Result<()> {
 
     match args.first().map(String::as_str) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
+        Some("retry") => {
+            let back = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            retry(&mut engine, back, settings.cleanup, settings.gpu)
+        }
         Some("daemon") => {
             // Cleanup is the point of the tool, so it stays on unless the config
             // or --raw turns it off, or the model is missing.
@@ -129,6 +135,116 @@ fn main() -> Result<()> {
             record_once(&mut engine, seconds)
         }
     }
+}
+
+/// `flow retry [n]` - put a saved dictation back through the pipeline.
+///
+/// `record_debug` writes an A/B pair per dictation, raw and denoised, and until
+/// now nothing read them back: answering "why did I get that text" meant
+/// finding the file by hand and running `flow <path>.wav`, which reports the
+/// raw transcript only. The interesting comparisons are exactly the ones that
+/// needed the most typing.
+///
+/// `n` counts back from the newest, so `flow retry` is the last thing you said
+/// and `flow retry 3` is three before it.
+///
+/// Unlike `benchmark` this runs the real pipeline rather than timing the
+/// recogniser three times: the transcript people actually receive has been
+/// through cleanup, so a retry that stopped at the raw text would answer a
+/// question nobody asked.
+fn retry(engine: &mut stt::Stt, back: usize, cleanup_wanted: bool, gpu: Option<usize>) -> Result<()> {
+    let takes = recorded_takes()?;
+    let Some(raw_path) = takes.iter().rev().nth(back) else {
+        bail!(
+            "only {} saved dictation(s) - is record_debug on in {}?",
+            takes.len(),
+            config::path().display()
+        );
+    };
+
+    eprintln!("{}\n", raw_path.display());
+    let raw_text = engine.transcribe(wav::read_16k_mono(raw_path)?)?;
+    println!("raw       {raw_text}");
+
+    // The denoised half of the pair, when there is one. This is the whole
+    // reason both files are kept: the only way to tell whether the denoiser
+    // helped this dictation is to hear the model's answer to both.
+    let denoised_path = raw_path.with_file_name(
+        raw_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .replace("_raw.wav", "_denoised.wav"),
+    );
+    if denoised_path.is_file() {
+        let denoised_text = engine.transcribe(wav::read_16k_mono(&denoised_path)?)?;
+        println!("denoised  {denoised_text}");
+    }
+
+    if !cleanup_wanted {
+        return Ok(());
+    }
+    match cleanup::Cleaner::load(&cleanup::model_path(), cleanup::vocabulary(), gpu) {
+        Ok(cleaner) => match cleaner.clean(&raw_text) {
+            Ok(cleaned) => println!("cleaned   {cleaned}"),
+            Err(err) => eprintln!("cleanup failed: {err}"),
+        },
+        Err(err) => eprintln!("cleanup unavailable: {err}"),
+    }
+    Ok(())
+}
+
+/// Every `*_raw.wav` under the recordings root, oldest first.
+///
+/// Sorted by path, which orders correctly because both halves of the name are
+/// zero-padded or fixed-width: the directory is a unix timestamp and the file
+/// is a four-digit counter. Walking every session rather than only the newest
+/// means `flow retry 20` still reaches back past a daemon restart.
+fn recorded_takes() -> Result<Vec<std::path::PathBuf>> {
+    let root = flow_paths::recordings_dir();
+    let mut takes: Vec<std::path::PathBuf> = std::fs::read_dir(&root)
+        .with_context(|| format!("no recordings at {}", root.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .flat_map(|session| std::fs::read_dir(session.path()).into_iter().flatten())
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().ends_with("_raw.wav"))
+        .collect();
+    takes.sort();
+    Ok(takes)
+}
+
+/// `flow logs` - what the daemon has been saying.
+///
+/// Everything Flow prints goes to the journal, because it runs as a user unit
+/// with no terminal attached. That is only useful if there is an obvious way to
+/// read it, and `journalctl --user -u flow.service` is not something anyone
+/// should have to remember.
+///
+/// Arguments are handed to journalctl untouched rather than parsed, so
+/// `flow logs -f`, `flow logs --since today` and `flow logs -p err` all work
+/// without this knowing they exist.
+///
+/// `-n 50` goes in front of them rather than only when none were given.
+/// journalctl lets the last `-n` win, so an explicit `-n 200` still overrides
+/// it, while `flow logs --no-pager` gets a useful tail instead of every line
+/// the daemon has ever written - which is what the first version did, because
+/// `--no-pager` counted as "the user asked for a range" when it is nothing of
+/// the sort.
+///
+/// Replaces this process rather than spawning a child: journalctl then owns
+/// the terminal outright, so its pager behaves, `-f` streams, and Ctrl+C stops
+/// it rather than being caught halfway up a process tree.
+fn logs(args: &[String]) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    // exec only returns when it failed to happen at all.
+    Err(std::process::Command::new("journalctl")
+        .args(["--user", "-u", "flow.service", "-n", "50"])
+        .args(args)
+        .exec())
+    .context("running journalctl - is this a systemd machine?")
 }
 
 /// Two ways in, and the second is deliberately not compositor-specific.
