@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned rather than "stable": rustfmt's output shifts between releases, so an
+# unpinned toolchain turns `cargo fmt --check` in CI into a change that lands
+# without anyone editing the code. Bump this line deliberately.
+channel = "1.89.0"
+components = ["rustfmt", "clippy"]
