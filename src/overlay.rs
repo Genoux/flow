@@ -706,6 +706,13 @@ impl Canvas {
     /// pixels alone, which is what turns the shape into a ring. `clip` is another
     /// rounded rect the drawing is masked to, for shapes that must never show
     /// past the island's own edge.
+    // Eight parameters and a nested tuple, kept as they are on purpose. Folding
+    // centre/half/radius into a RoundedRect would read better and satisfy both
+    // lints, but nothing tests this function - tests/overlay.rs covers the bar
+    // maths and the corner distance, never the rasteriser - so the refactor
+    // would be an unverifiable change to the only code that decides what the
+    // island actually looks like. Worth doing the day a pixel test exists.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn fill(
         &mut self,
         centre: (f32, f32),
@@ -854,13 +861,13 @@ fn render(
     } else {
         BAR_ALPHA
     };
-    for index in 0..BAR_COUNT {
+    for (index, band) in heights.iter().enumerate() {
         let height = if transcribing {
             sweep(index, seconds)
         } else {
             // Rising from nothing on wake, so the microphone opening is a
             // visible event rather than a state the user has to infer.
-            heights[index] * wake
+            band * wake
         };
         let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
         let at = (spread(first + pitch * index as f32), centre.1);

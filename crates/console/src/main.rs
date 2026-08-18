@@ -332,19 +332,19 @@ impl Console {
                 self.settings.duck = value;
                 self.persist();
             }
-            Message::Autostart(on) => match {
+            Message::Autostart(on) => {
                 self.toggled_at
                     .insert("autostart", std::time::Instant::now());
-                system::set_autostart(on)
-            } {
-                // Re-read rather than assume: systemd is the authority on
-                // whether that worked, not our optimism.
-                Ok(()) => {
-                    self.autostart = system::autostart_enabled();
-                    self.save_error = None;
+                match system::set_autostart(on) {
+                    // Re-read rather than assume: systemd is the authority on
+                    // whether that worked, not our optimism.
+                    Ok(()) => {
+                        self.autostart = system::autostart_enabled();
+                        self.save_error = None;
+                    }
+                    Err(err) => self.save_error = Some(err),
                 }
-                Err(err) => self.save_error = Some(err),
-            },
+            }
             Message::Daemon(daemon::Event::Line(line)) => {
                 let before = self.daemon.words;
                 self.daemon.apply(&line);
@@ -413,14 +413,11 @@ impl Console {
             }
             Message::Captured(captured) => {
                 self.capturing = false;
-                match captured {
-                    Some(chord) => {
-                        self.settings.hotkey = chord;
-                        self.persist();
-                    }
-                    // Cancelled, or no readable keyboard. The control is hidden
-                    // in the second case, so this is nearly always the first.
-                    None => {}
+                // A None is a cancel, or no readable keyboard. The control is
+                // hidden in the second case, so it is nearly always the first.
+                if let Some(chord) = captured {
+                    self.settings.hotkey = chord;
+                    self.persist();
                 }
             }
             Message::Service(verb) => {
@@ -877,7 +874,7 @@ impl Console {
         let total = format!(
             "{} in {}",
             system::human_bytes(self.models.iter().map(|m| m.bytes).sum()),
-            system::data_home().join("flow/models").display()
+            flow_paths::models_dir().display()
         );
         let all_installed = self.models.iter().all(|model| model.installed);
 
@@ -1533,7 +1530,7 @@ fn action_msg(label: &str, primary: bool, on_press: Message) -> Element<'static,
     .style(move |_theme, status| {
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
-            background: primary.then(|| Background::Color(ACCENT)),
+            background: primary.then_some(Background::Color(ACCENT)),
             text_color: if primary { ON_ACCENT } else { FG },
             border: Border {
                 color: if primary {

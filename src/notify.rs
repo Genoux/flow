@@ -13,10 +13,14 @@
 
 use std::process::{Command, Stdio};
 
-/// Urgency is always `critical` for these: they are, without exception, states
-/// where dictation is broken or a dictation was lost. A normal-urgency
-/// notification is dismissed by most bars after a few seconds, which is exactly
-/// the wrong behaviour for "your text is on the clipboard".
+/// Always `critical`: without exception these are states where dictation is
+/// broken or a dictation was lost.
+///
+/// Whether that actually pins the notification until it is dismissed is the
+/// bar's decision, not ours - a server only honours it if it advertises the
+/// `persistence` capability, and quickshell (the one on this machine) does
+/// not. So urgency is a hint here, not a guarantee, and the body text has to
+/// carry the whole message on its own.
 const URGENCY: &str = "critical";
 
 /// Tell the user something went wrong, and always say the same thing to the
