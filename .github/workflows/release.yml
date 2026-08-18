@@ -1,0 +1,77 @@
+# Not cargo-dist, deliberately. It packages one workspace, and the console is
+# its own workspace root on purpose - a dist release would ship the daemon and
+# silently leave the window behind. This does both, and the tarball is laid out
+# so packaging/install.sh installs it without a compiler.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same set as CI: llama-cpp-2 builds llama.cpp with the vulkan feature on,
+      # cpal wants ALSA, wayland-client wants libwayland. The resulting binary
+      # links these at runtime too, so the machine installing it needs the
+      # runtime halves - which any Wayland desktop already has.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libvulkan-dev \
+            glslang-tools \
+            libwayland-dev \
+            libclang-dev \
+            cmake \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/console
+
+      - name: Build
+        run: |
+          cargo build --release
+          cargo build --release --manifest-path crates/console/Cargo.toml
+
+      # Laid out so that packaging/install.sh, unpacked here as-is, finds the
+      # binaries in bin/ and skips the build. One install path for a tarball and
+      # a git checkout rather than two that can drift.
+      - name: Package
+        run: |
+          name="flow-${GITHUB_REF_NAME}-x86_64-linux"
+          mkdir -p "$name/bin"
+          cp target/release/flow "$name/bin/"
+          cp crates/console/target/release/flow-console "$name/bin/"
+          cp -r packaging "$name/"
+          cp README.md TROUBLESHOOTING.md LICENSE "$name/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      # Ships as a draft: the binary is built from the tag, but nobody has run
+      # it yet. Publishing is a decision, and it belongs to whoever checked.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            flow-*.tar.gz flow-*.tar.gz.sha256
