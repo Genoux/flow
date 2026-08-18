@@ -47,10 +47,7 @@ static LEVEL: AtomicU32 = AtomicU32::new(100);
 static GENERATION: AtomicUsize = AtomicUsize::new(0);
 
 fn state_file() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("flow-duck.json")
+    flow_paths::duck_state_file()
 }
 
 /// Every playback stream whose channels share one volume, as (index, percent).

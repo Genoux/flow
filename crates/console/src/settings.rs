@@ -16,12 +16,7 @@
 use std::path::PathBuf;
 
 pub fn config_path() -> PathBuf {
-    let home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".config")
-        });
-    home.join("flow/config.toml")
+    flow_paths::config_file()
 }
 
 /// The subset of Flow's config the window can change. Anything else in the

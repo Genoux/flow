@@ -1,0 +1,9 @@
+[package]
+name = "flow-paths"
+version = "0.1.0"
+edition = "2024"
+
+# No dependencies, and it must stay that way: this is depended on by both the
+# daemon and the console, and the console is a separate workspace precisely so
+# that iced's tree and llama.cpp's tree never meet.
+[dependencies]

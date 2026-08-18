@@ -8,10 +8,7 @@ pub const START: libc::c_int = signal_hook::consts::SIGUSR1;
 pub const STOP: libc::c_int = signal_hook::consts::SIGUSR2;
 
 pub fn pid_file() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    runtime.join("flow.pid")
+    flow_paths::pid_file()
 }
 
 pub fn write_pid() -> Result<()> {

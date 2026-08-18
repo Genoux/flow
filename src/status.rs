@@ -29,10 +29,7 @@ use std::sync::{Arc, Mutex};
 const RECENT: usize = 8;
 
 pub fn socket_path() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    runtime.join("flow.sock")
+    flow_paths::socket()
 }
 
 /// What the daemon is doing right now.
