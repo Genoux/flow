@@ -139,8 +139,8 @@ impl Keyboard {
             keys.insert(KeyCode::new(code));
         }
 
-        let device = evdev::uinput::VirtualDeviceBuilder::new()
-            .context("failed to create VirtualDeviceBuilder")?
+        let device = evdev::uinput::VirtualDevice::builder()
+            .context("failed to create the uinput device builder")?
             .name("whisrs virtual keyboard")
             .with_keys(&keys)
             .context("failed to register key events")?
