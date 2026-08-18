@@ -39,3 +39,15 @@
 # the most free memory, and falls back to the CPU if none can hold the model.
 # Set an index only to override that; `flow daemon` logs the one it chose.
 # gpu = 0
+
+# Run the microphone through noise suppression before the recogniser sees it.
+# Off because it is not free: it removes room noise, and it has also been caught
+# removing a word. Turn it on with record_debug below and compare with
+# `flow retry` before trusting it on your own hardware.
+# denoise = false
+
+# Keep every dictation's audio under ~/.local/share/flow/recordings, one raw
+# file and, with denoise on, its denoised twin. This is what `flow retry` reads;
+# without it there is nothing to replay and no way to answer "why did I get that
+# text". Off by default because long sessions add up on disk fast.
+# record_debug = false
