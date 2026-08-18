@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # llama-cpp-2 compiles llama.cpp from source and needs the Vulkan headers
+      # and glslc even though nothing here runs a shader: the feature is on in
+      # Cargo.toml, so the build wants them whether or not a GPU exists. cpal
+      # wants ALSA, wayland-client wants libwayland.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libvulkan-dev \
+            glslang-tools \
+            libwayland-dev \
+            libclang-dev \
+            cmake \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # rust-toolchain.toml pins the version; this action installs the
+          # components it asks for.
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The console is a separate workspace root (iced pulls wgpu, which the
+          # daemon must not link), so its target dir needs caching on its own.
+          workspaces: |
+            .
+            crates/console
+
+      # --all-targets is the point of this job. tests/chord_live.rs stopped
+      # compiling at 6dfbdba and went unnoticed for six commits, because one
+      # broken test target fails the whole `cargo test` run and nobody ran it.
+      - name: Build tests (daemon)
+        run: cargo test --workspace --all-targets --no-run
+
+      - name: Test (daemon)
+        run: cargo test --workspace
+
+      - name: Clippy (daemon)
+        run: cargo clippy --workspace --all-targets
+
+      - name: Test (console)
+        working-directory: crates/console
+        run: cargo test
+
+      - name: Clippy (console)
+        working-directory: crates/console
+        run: cargo clippy --all-targets
