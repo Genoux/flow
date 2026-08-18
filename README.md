@@ -47,6 +47,7 @@ Updating is the same script: `git pull && ./packaging/install.sh`.
 | `flow logs` | What the daemon has been saying |
 | `flow retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
 | `flow start` / `flow stop` | Trigger dictation without the chord, for a compositor bind |
+| `flow help` | Every command and flag |
 
 ## Configuration
 

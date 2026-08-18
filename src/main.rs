@@ -14,8 +14,52 @@ const PREFIX_MIN: usize = 8 * audio::SAMPLE_RATE as usize;
 /// so there is nothing to race.
 const PREFIX_POLL: Duration = Duration::from_millis(400);
 
+/// How long a bare `flow` records. Long enough to say a sentence into, short
+/// enough that running it by accident is not a wait.
+const DEFAULT_RECORD_SECONDS: u64 = 5;
+
+const USAGE: &str = "\
+flow - hold a key, talk, and the text appears where your cursor is
+
+USAGE
+    flow [FLAGS] [COMMAND]
+
+COMMANDS
+    daemon           Watch the hotkey and dictate. What flow.service runs.
+    start | stop     Begin or end a dictation without holding the chord
+    install          Download the speech and cleanup models
+    logs [ARGS..]    The daemon's journal. Arguments go straight to journalctl,
+                     so `flow logs -f` and `flow logs --since today` both work.
+    retry [N]        Replay a saved dictation, counting back from the newest.
+                     Needs record_debug in the config.
+    inject [TEXT]    Type text after 3s, to test injection on its own
+    overlay [SECS]   Show the island on its own
+    SECONDS          Record, transcribe and print. Default 5.
+    FILE.wav         Transcribe a file and time the recogniser
+    help             This text
+
+FLAGS
+    --raw            Skip the cleanup model for this run
+    --terminal       Type the text out instead of pasting it
+    --no-ptt         Do not watch the hotkey
+    --denoise | --no-denoise
+    --record-debug   Keep this run's audio for `flow retry`
+    --duck PERCENT   Volume of other apps while recording. 0 turns it off.
+
+Configuration    ~/.config/flow/config.toml
+Word fixes       ~/.config/flow/vocabulary.txt
+Verbose output   FLOW_DEBUG=1
+";
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Before the config, and before the 640 MB speech model: asking what the
+    // commands are should not depend on the tool being installed correctly.
+    if wants_usage(&args) {
+        print!("{USAGE}");
+        return Ok(());
+    }
 
     // All of these run before the config is read. start/stop must survive a
     // broken config file so a daemon that is already recording can still be
@@ -81,7 +125,7 @@ fn main() -> Result<()> {
     }
     let mut engine = stt::Stt::load(&dir)?;
 
-    match args.first().map(String::as_str) {
+    match command(&args) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
         Some("retry") => {
             let back = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -130,11 +174,33 @@ fn main() -> Result<()> {
                 live,
             )
         }
-        other => {
-            let seconds = other.and_then(|s| s.parse().ok()).unwrap_or(5);
-            record_once(&mut engine, seconds)
-        }
+        None => record_once(&mut engine, DEFAULT_RECORD_SECONDS),
+        // A number is a duration; anything else is a mistake and is refused.
+        // This used to fall through to `record_once`, so `flow dameon` opened
+        // the microphone for five seconds instead of saying it had no idea
+        // what that was - the one failure mode a dictation tool must not have.
+        Some(other) => match other.parse() {
+            Ok(seconds) => record_once(&mut engine, seconds),
+            Err(_) => bail!("unknown command {other:?} - try `flow help`"),
+        },
     }
+}
+
+/// The first argument that is not a flag.
+///
+/// So `flow --terminal 5` and `flow 5 --terminal` mean the same thing. Flags
+/// are read separately by `Config::overridden_by`, which scans the whole list
+/// and does not care where they sit.
+fn command(args: &[String]) -> Option<&str> {
+    args.iter()
+        .map(String::as_str)
+        .find(|arg| !arg.starts_with('-'))
+}
+
+/// Whether the user is asking what the commands are rather than running one.
+fn wants_usage(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "help" || arg == "--help" || arg == "-h")
 }
 
 /// `flow retry [n]` - put a saved dictation back through the pipeline.
@@ -950,4 +1016,41 @@ fn next_recording_index() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command, wants_usage};
+
+    fn args(line: &str) -> Vec<String> {
+        line.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn flags_do_not_hide_the_command() {
+        assert_eq!(command(&args("daemon")), Some("daemon"));
+        assert_eq!(command(&args("--terminal 5")), Some("5"));
+        assert_eq!(command(&args("5 --terminal")), Some("5"));
+        assert_eq!(command(&args("--raw daemon")), Some("daemon"));
+        assert_eq!(command(&args("")), None);
+        assert_eq!(command(&args("--raw")), None);
+    }
+
+    // The regression this exists for: every unknown argument used to fall
+    // through to a five-second recording, so a typo opened the microphone.
+    #[test]
+    fn a_typo_is_not_a_duration() {
+        assert!(command(&args("dameon")).is_some_and(|c| c.parse::<u64>().is_err()));
+        assert!(command(&args("5")).is_some_and(|c| c.parse::<u64>().is_ok()));
+    }
+
+    #[test]
+    fn usage_is_asked_for_in_the_three_usual_ways() {
+        for line in ["help", "--help", "-h", "daemon --help"] {
+            assert!(wants_usage(&args(line)), "{line}");
+        }
+        for line in ["daemon", "retry 3", ""] {
+            assert!(!wants_usage(&args(line)), "{line}");
+        }
+    }
 }
