@@ -6,9 +6,15 @@ Comment=History and settings for Flow push-to-talk dictation
 # Resolved from PATH so the same file works for a system install and a
 # ~/.local/bin one.
 Exec=flow-console
-Icon=audio-input-microphone
+# Installed as hicolor/scalable/apps/flow-console.svg. Named for the desktop
+# entry rather than the product so the compositor can match a running window to
+# both this file and the icon without a second rule.
+Icon=flow-console
 Terminal=false
-Categories=Utility;Settings;AudioVideo;
+# One main category on purpose: Utility, Settings and AudioVideo are all
+# main categories, and listing three put Flow in three menus at once.
+# Recorder is an additional category, which is what AudioVideo wants.
+Categories=AudioVideo;Recorder;
 Keywords=dictation;speech;voice;transcription;
 # Matches the app_id the window sets, so the compositor ties the running
 # window to this entry.
