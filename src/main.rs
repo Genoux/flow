@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use flow::{
-    audio, cleanup, config, denoise, duck, history, hotkey, inject, install, ipc, overlay, status,
-    stt, wav,
+    audio, cleanup, config, denoise, duck, history, hotkey, inject, install, ipc, notify, overlay,
+    status, stt, wav,
 };
 use std::time::{Duration, Instant};
 
@@ -68,6 +68,13 @@ fn main() -> Result<()> {
 
     let dir = stt::model_dir();
     if !dir.is_dir() {
+        // Under systemd this is the difference between a daemon that failed
+        // for a reason and one that simply never came up: nothing else on the
+        // desktop reports a unit that exited before it did any work.
+        notify::failure(
+            "Flow can't start",
+            "The speech model is missing. Run `flow install` to fetch it.",
+        );
         bail!("model not found at {} - run `flow install`", dir.display());
     }
     let mut engine = stt::Stt::load(&dir)?;
@@ -88,7 +95,15 @@ fn main() -> Result<()> {
                         Some(cleaner)
                     }
                     Err(err) => {
-                        eprintln!("cleanup disabled: {err}");
+                        // Dictation still works, so this is not fatal - but the
+                        // output silently becomes raw transcript, and without a
+                        // word here that reads as the tool getting worse.
+                        notify::failure(
+                            "Flow: cleanup disabled",
+                            "Dictation works, but text will be unpunctuated. \
+                             Run `flow install` if the cleanup model is missing.",
+                        );
+                        eprintln!("cleanup model: {err}");
                         None
                     }
                 }
@@ -175,6 +190,14 @@ fn daemon(
     }
     let mut ptt = ptt;
     if ptt && let Err(err) = hotkey::spawn(events.clone(), std::sync::Arc::clone(&chord)) {
+        // The chord is the only way most people ever start a dictation, so
+        // losing it looks exactly like Flow not running at all. Name the usual
+        // cause: reading /dev/input needs membership of the input group.
+        notify::failure(
+            "Flow: push-to-talk disabled",
+            "The chord is not being watched. Add yourself to the `input` group \
+             and log back in, or start dictation with `flow start`.",
+        );
         eprintln!("push-to-talk disabled: {err}");
         ptt = false;
     }
@@ -242,8 +265,17 @@ fn daemon(
                 ) {
                     // The console shows this until the next dictation lands, so
                     // a failure the user would otherwise only find in the
-                    // journal has somewhere to appear.
+                    // journal has somewhere to appear. The notification is for
+                    // when the console isn't open, which is nearly always.
+                    //
+                    // The clipboard line is not a guess: inject() stages the
+                    // text before it touches the keyboard, so anything that
+                    // fails from there on leaves it recoverable with Ctrl+V.
                     status.problem(err.to_string());
+                    notify::failure(
+                        "Dictation failed",
+                        "If any text was recognised it is on your clipboard - press Ctrl+V.",
+                    );
                     eprintln!("{err}");
                 }
                 drop(engine);
@@ -611,6 +643,14 @@ fn handle(
     // have ended in the pause that let its earlier half be transcribed already.
     let tail = if rms < audio::SILENCE_RMS {
         if early.is_empty() {
+            // Not "you were quiet" - the samples are flat, so nothing reached
+            // the mic at all. The user deliberately held the chord past
+            // MIN_HOLD expecting text, and a muted source is the usual cause.
+            notify::failure(
+                "Flow heard nothing",
+                "The microphone delivered silence. Check it isn't muted, and \
+                 that the system default input is the one you're speaking into.",
+            );
             eprintln!("({spoken:.1}s, {level}, no signal - skipped)");
             return Ok(());
         }

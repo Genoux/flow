@@ -158,6 +158,14 @@ impl Injector {
                 .iter()
                 .map(|key| format!("{key:?}"))
                 .collect();
+            // Nothing has failed and nothing will return an error: the chord
+            // fires, the compositor eats it, and the user watches an empty text
+            // field. The text is already staged, so say where it went.
+            crate::notify::failure(
+                "Flow couldn't paste",
+                "A held key swallowed the paste. Your text is on the clipboard \
+                 - press Ctrl+V.",
+            );
             eprintln!(
                 "paste: firing after {MODIFIER_WAIT:?} with {} still held - the chord will \
                  probably be eaten, so the text is staying on the clipboard for a manual Ctrl+V",

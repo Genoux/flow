@@ -8,6 +8,7 @@ pub mod hotkey;
 pub mod inject;
 pub mod install;
 pub mod ipc;
+pub mod notify;
 pub mod overlay;
 pub mod status;
 pub mod stt;

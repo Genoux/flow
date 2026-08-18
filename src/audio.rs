@@ -289,7 +289,15 @@ impl Capture {
                 true
             }
             Err(err) => {
-                eprintln!("could not reopen the microphone: {err}");
+                // Every dictation from here on returns the stale pre-roll and
+                // is skipped as silence, so without this the tool looks like it
+                // stopped responding rather than like the mic went away.
+                crate::notify::failure(
+                    "Flow lost the microphone",
+                    "The input device went away and could not be reopened. \
+                     Check your sound settings, then restart flow.service.",
+                );
+                eprintln!("reopen failed: {err}");
                 false
             }
         }
