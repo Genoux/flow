@@ -111,7 +111,6 @@ fn repeated_splitting_makes_progress() {
 /// A plosive is a brief silence INSIDE a word - the closure in "stop" or "back"
 /// runs 50-120ms. Splitting there would cut a word in half, which is exactly what
 /// the whole scheme is supposed to avoid, so a gap has to be sustained to count.
-/// whisrs uses 400ms of silence for the same decision.
 #[test]
 fn a_plosive_closure_is_not_a_pause() {
     for closure_ms in [50, 90, 120] {

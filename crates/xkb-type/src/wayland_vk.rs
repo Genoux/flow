@@ -563,7 +563,7 @@ pub(crate) fn build_keymap_string(chars: &[char]) -> (String, HashMap<char, Char
     keymap.push_str("xkb_keymap {\n");
 
     // --- keycodes ---
-    keymap.push_str("xkb_keycodes \"whisrs\" {\n");
+    keymap.push_str("xkb_keycodes \"flow\" {\n");
     keymap.push_str("minimum = 8;\n");
     keymap.push_str(&format!("maximum = {max_keycode};\n"));
     for b in &base {
@@ -576,11 +576,11 @@ pub(crate) fn build_keymap_string(chars: &[char]) -> (String, HashMap<char, Char
 
     // --- types / compatibility: pull in the standard definitions (provides
     // FOUR_LEVEL and the Shift/LevelThree modifier interpretations) ---
-    keymap.push_str("xkb_types \"whisrs\" { include \"complete\" };\n");
-    keymap.push_str("xkb_compatibility \"whisrs\" { include \"complete\" };\n");
+    keymap.push_str("xkb_types \"flow\" { include \"complete\" };\n");
+    keymap.push_str("xkb_compatibility \"flow\" { include \"complete\" };\n");
 
     // --- symbols ---
-    keymap.push_str("xkb_symbols \"whisrs\" {\n");
+    keymap.push_str("xkb_symbols \"flow\" {\n");
     // Base/modifier keys.
     for b in &base {
         keymap.push_str(&format!(
@@ -1180,7 +1180,7 @@ impl Drop for WaylandVkKeyboard {
 fn create_keymap_fd(bytes: &[u8]) -> anyhow::Result<std::os::fd::OwnedFd> {
     use rustix::fs::{memfd_create, MemfdFlags};
 
-    let fd = memfd_create("whisrs-keymap", MemfdFlags::CLOEXEC)
+    let fd = memfd_create("flow-keymap", MemfdFlags::CLOEXEC)
         .context("memfd_create for keymap failed")?;
 
     // Write through a File wrapper so we get buffered std::io semantics; the

@@ -126,8 +126,7 @@ const MIN_TAIL: usize = SAMPLE_RATE as usize / 2;
 /// Shortest run of quiet that is a pause between words rather than a silence
 /// inside one. A stop consonant's closure - the gap in the middle of "stop" or
 /// "back" - runs 50 to 120ms, so a single quiet window is no evidence of a word
-/// boundary at all, and cutting on one would slice a word in half. whisrs draws
-/// the same line at 400ms for its phrase segmentation.
+/// boundary at all, and cutting on one would slice a word in half.
 const MIN_GAP: usize = SAMPLE_RATE as usize / 4;
 
 /// Where a recording can be cut in two while it is still being spoken, so the

@@ -38,8 +38,8 @@ const TEXT_MIME_TYPES: &[&str] = &[
 /// empty, the clipboard genuinely has no selection — a legitimate empty
 /// string. If it's non-empty but contains no text type, the selection holds
 /// non-text content and this errors, so a caller restoring a saved clipboard
-/// value (see `whisrs`'s paste-injection path) doesn't mistake "can't read
-/// this" for "empty" and overwrite it with `""`.
+/// value doesn't mistake "can't read this" for "empty" and overwrite it with
+/// `""`.
 fn run_wl_paste(extra_args: &[&str], command_desc: &str) -> anyhow::Result<String> {
     let list_output = Command::new("wl-paste")
         .arg("--list-types")
