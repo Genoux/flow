@@ -6,10 +6,13 @@ Comment=History and settings for Flow push-to-talk dictation
 # Resolved from PATH so the same file works for a system install and a
 # ~/.local/bin one.
 Exec=flow-console
-# Installed as hicolor/scalable/apps/flow-console.svg. Named for the desktop
-# entry rather than the product so the compositor can match a running window to
-# both this file and the icon without a second rule.
-Icon=flow-console
+# ponytail: a stock theme name, so the icon comes from whatever theme the user
+# already runs and is a full app icon rather than a device glyph. Flow's own is
+# shipped and installed as hicolor/scalable/apps/flow-console.svg, but
+# ~/.local/share/icons/hicolor has no index.theme on a normal desktop, so strict
+# loaders skip that directory and the entry renders as a missing texture. Point
+# this at flow-console once install.sh seeds that index.theme.
+Icon=preferences-desktop-text-to-speech
 Terminal=false
 # One main category on purpose: Utility, Settings and AudioVideo are all
 # main categories, and listing three put Flow in three menus at once.

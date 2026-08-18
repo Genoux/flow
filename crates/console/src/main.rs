@@ -12,6 +12,7 @@ mod daemon;
 mod history;
 mod settings;
 mod system;
+mod update;
 mod vocabulary;
 
 use iced::widget::{button, column, container, row, scrollable, slider, text, text_editor, Space};
@@ -184,6 +185,8 @@ enum Message {
     HistoryAction(usize, text_editor::Action),
     InstallModels,
     ModelsInstalled(Result<(), String>),
+    CheckUpdate,
+    UpdateChecked(update::Status),
 }
 
 struct Console {
@@ -207,6 +210,9 @@ struct Console {
     history_editors: Vec<text_editor::Content>,
     /// Word counts for the Overview activity calendar, oldest day first.
     daily_words: Vec<u32>,
+    /// Result of the last update check. Starts Unknown: opening a settings
+    /// window should not put a network call in the path of flipping a switch.
+    update: update::Status,
     models: Vec<system::Model>,
     /// True while `flow install` is running in the background.
     installing_models: bool,
@@ -247,6 +253,7 @@ impl Console {
                 entries,
                 history_editors,
                 daily_words: history::daily_words(CALENDAR_DAYS),
+                update: update::Status::default(),
                 models: system::models(),
                 installing_models: false,
                 session: system::session(),
@@ -442,6 +449,13 @@ impl Console {
                     );
                 }
             }
+            Message::CheckUpdate => {
+                if self.update != update::Status::Checking {
+                    self.update = update::Status::Checking;
+                    return Task::perform(async { update::latest() }, Message::UpdateChecked);
+                }
+            }
+            Message::UpdateChecked(status) => self.update = status,
             Message::ModelsInstalled(result) => {
                 self.installing_models = false;
                 match result {
@@ -908,7 +922,8 @@ impl Console {
         let config = settings::config_path().display().to_string();
         let history_file = history::path().display().to_string();
         let rows: Vec<Element<Message>> = vec![
-            fact_row("Version", env!("CARGO_PKG_VERSION")),
+            fact_row("Version", update::running()),
+            fact_row("Updates", update_summary(&self.update)),
             fact_row("Session", self.session.clone()),
             fact_row("Config", config),
             fact_row("History", history_file),
@@ -922,6 +937,16 @@ impl Console {
                 row![
                     Space::new().width(Fill),
                     action_msg("Open config", false, Message::OpenConfig),
+                    Space::new().width(8),
+                    action_msg(
+                        if self.update == update::Status::Checking {
+                            "Checking..."
+                        } else {
+                            "Check for updates"
+                        },
+                        false,
+                        Message::CheckUpdate,
+                    ),
                 ]
                 .align_y(iced::Center)
                 .into(),
@@ -1339,6 +1364,19 @@ fn scroll_x<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message
         })
         .width(Fill)
         .into()
+}
+
+/// One line saying where this build stands. Deliberately a fact row rather
+/// than a banner: an update is worth knowing about, not worth interrupting a
+/// window someone opened to change the ducking percentage.
+fn update_summary(status: &update::Status) -> String {
+    match status {
+        update::Status::Unknown => "not checked".into(),
+        update::Status::Checking => "checking...".into(),
+        update::Status::Current => format!("{} is the latest", update::running()),
+        update::Status::Available(tag) => format!("{tag} available - run packaging/install.sh"),
+        update::Status::Failed(why) => format!("could not check: {why}"),
+    }
 }
 
 /// A read-only pair, for About. Same rhythm as `setting` without a control.
