@@ -48,6 +48,10 @@ jobs:
       # --all-targets is the point of this job. tests/chord_live.rs stopped
       # compiling at 6dfbdba and went unnoticed for six commits, because one
       # broken test target fails the whole `cargo test` run and nobody ran it.
+      #
+      # --workspace only means anything because the root Cargo.toml now lists
+      # its members: path dependencies are not members by default, so this
+      # used to build xkb-type and run none of its 61 tests.
       - name: Build tests (daemon)
         run: cargo test --workspace --all-targets --no-run
 
@@ -55,7 +59,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Clippy (daemon)
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test (console)
         working-directory: crates/console
@@ -63,4 +67,4 @@ jobs:
 
       - name: Clippy (console)
         working-directory: crates/console
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings

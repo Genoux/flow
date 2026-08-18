@@ -315,8 +315,6 @@ fn focused_node(value: &serde_json::Value) -> Option<&serde_json::Value> {
 /// Match by exact class or reverse-DNS suffix so both `kitty` and
 /// `com.mitchellh.ghostty` are recognised. Substring matches would misfire
 /// (a `.footnote` app would look like `foot`).
-
-
 pub fn is_terminal_class(class: &str) -> bool {
     const TERMINALS: &[&str] = &[
         "kitty",
