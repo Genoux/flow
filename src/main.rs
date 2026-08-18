@@ -416,7 +416,7 @@ fn daemon(
                     // Pushed while still holding the engine, so the release path
                     // cannot read a partial set of pieces.
                     Ok(text) if !text.trim().is_empty() => {
-                        eprintln!("transcribed {spoken:.1}s early in {:?}", started.elapsed());
+                        flow::verbose!("transcribed {spoken:.1}s early in {:?}", started.elapsed());
                         early.lock().expect("early transcripts").push(text);
                     }
                     Ok(_) => {}

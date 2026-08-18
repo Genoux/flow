@@ -408,7 +408,7 @@ pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord
     eprintln!("push-to-talk: {}", chord.lock().expect("chord"));
 
     for (path, device) in &devices {
-        eprintln!("watching {} ({})", path.display(), device.name().unwrap_or("?"));
+        crate::verbose!("watching {} ({})", path.display(), device.name().unwrap_or("?"));
     }
 
     let (raw_tx, raw_rx) = channel();
@@ -522,7 +522,7 @@ pub fn warmup_devices() {
         eprintln!("chord watch: no keyboard with KEY_D");
     } else {
         for path in paths {
-            eprintln!("chord watch: {}", path.display());
+            crate::verbose!("chord watch: {}", path.display());
         }
     }
     let _ = modifier_devices();
@@ -687,7 +687,7 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Ch
         if chord_released(&held, &now) {
             gone_polls += 1;
             if gone_polls >= 2 {
-                eprintln!("chord watch: released (state)");
+                crate::verbose!("chord watch: released (state)");
                 let _ = events.send(Event::Stop);
                 return;
             }
@@ -699,7 +699,7 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Ch
             Ok(key) => {
                 let now = chord_snapshot(&state_devices, &chord);
                 if chord_released(&held, &now) {
-                    eprintln!("chord watch: released (event {key:?} + state)");
+                    crate::verbose!("chord watch: released (event {key:?} + state)");
                     let _ = events.send(Event::Stop);
                     return;
                 }

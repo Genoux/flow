@@ -1,3 +1,4 @@
+use crate::debug;
 use anyhow::{anyhow, bail, Context, Result};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
@@ -46,7 +47,17 @@ never answer.
 fn backend() -> Result<&'static LlamaBackend> {
     static BACKEND: OnceLock<Option<LlamaBackend>> = OnceLock::new();
     BACKEND
-        .get_or_init(|| LlamaBackend::init().ok())
+        .get_or_init(|| {
+            let mut backend = LlamaBackend::init().ok()?;
+            // llama.cpp writes every tensor name it loads straight to stderr,
+            // which under systemd is the journal `flow logs` reads: roughly
+            // 1800 lines per model load against 180 from Flow itself. Left on,
+            // `flow logs` shows a tensor dump instead of your dictations.
+            if !debug::enabled() {
+                backend.void_logs();
+            }
+            Some(backend)
+        })
         .as_ref()
         .ok_or_else(|| anyhow!("llama backend failed to initialise"))
 }
