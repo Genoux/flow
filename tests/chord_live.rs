@@ -11,6 +11,7 @@
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};
 use flow::hotkey::{self, Chord, Event};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn keyboard() -> VirtualDevice {
@@ -48,7 +49,7 @@ fn the_real_keyboard_path_sees_the_chord() {
     std::thread::sleep(Duration::from_millis(400));
 
     let (events, incoming) = std::sync::mpsc::channel();
-    hotkey::spawn(events, Chord::default()).expect("spawn");
+    hotkey::spawn(events, Arc::new(Mutex::new(Chord::default()))).expect("spawn");
     std::thread::sleep(Duration::from_millis(200));
 
     press(&mut device, KeyCode::KEY_LEFTMETA, true);
@@ -93,7 +94,7 @@ fn a_stray_key_mid_hold_does_not_lose_the_recording() {
     std::thread::sleep(Duration::from_millis(400));
 
     let (events, incoming) = std::sync::mpsc::channel();
-    hotkey::spawn(events, Chord::default()).expect("spawn");
+    hotkey::spawn(events, Arc::new(Mutex::new(Chord::default()))).expect("spawn");
     std::thread::sleep(Duration::from_millis(200));
 
     press(&mut device, KeyCode::KEY_LEFTMETA, true);
