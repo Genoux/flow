@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod cleanup;
 pub mod config;
+pub mod debug;
 pub mod denoise;
 pub mod duck;
 pub mod history;
