@@ -107,3 +107,10 @@ the daemon has no business carrying those to record audio.
 
 Build dependencies: `libasound2-dev`, `libvulkan-dev`, `glslang-tools`,
 `libwayland-dev`, `libclang-dev`, `cmake`, `pkg-config`.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+`crates/xkb-type` is vendored from [whisrs](https://github.com/y0sif/whisrs)
+and keeps its own MIT notice, as that licence requires.

@@ -2,6 +2,7 @@
 name = "flow-console"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Status and settings window for the Flow dictation daemon"
 
 # Its own workspace root on purpose: iced pulls in wgpu, and the daemon must
