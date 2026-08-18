@@ -37,6 +37,7 @@ COMMANDS
     SECONDS          Record, transcribe and print. Default 5.
     FILE.wav         Transcribe a file and time the recogniser
     help             This text
+    version          Print the version
 
 FLAGS
     --raw            Skip the cleanup model for this run
@@ -58,6 +59,13 @@ fn main() -> Result<()> {
     // commands are should not depend on the tool being installed correctly.
     if wants_usage(&args) {
         print!("{USAGE}");
+        return Ok(());
+    }
+
+    // Same reason as help, and the same trap: `--version` is all flags, so it
+    // reached the catch-all and recorded for five seconds.
+    if args.iter().any(|arg| arg == "version" || arg == "--version" || arg == "-V") {
+        println!("flow {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -1042,6 +1050,14 @@ mod tests {
     fn a_typo_is_not_a_duration() {
         assert!(command(&args("dameon")).is_some_and(|c| c.parse::<u64>().is_err()));
         assert!(command(&args("5")).is_some_and(|c| c.parse::<u64>().is_ok()));
+    }
+
+    // A list of nothing but flags yields no command, so it fell through to the
+    // default five-second recording. `flow --version` used to open the mic.
+    #[test]
+    fn flags_only_is_not_a_command() {
+        assert_eq!(command(&args("--version")), None);
+        assert_eq!(command(&args("-V")), None);
     }
 
     #[test]
