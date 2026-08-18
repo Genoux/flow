@@ -37,16 +37,22 @@ The first build takes 10–15 minutes: llama.cpp is compiled from source.
 systemctl --user start flow.service
 ```
 
-Then hold **Super+Shift+D** and talk.
+Then hold **Super+Shift+D** and talk. The settings window is **Flow** in your
+application launcher, or `flow-console` from a terminal.
 
-Updating is the same script: `git pull && ./packaging/install.sh`.
+Updating is the same script — `git pull && ./packaging/install.sh` — which
+restarts the daemon onto the new build if it was already running.
+
+Removing it is `./packaging/uninstall.sh`. That leaves your config, history and
+the models alone, and prints how to delete those if you want them gone.
 
 ## Daily use
 
 | | |
 |---|---|
 | `Super+Shift+D` (hold) | Dictate. Release to paste. |
-| `flow-console` | Settings, history and vocabulary in a window |
+| **Flow** in your launcher | Settings, history and vocabulary in a window |
+| `flow-console` | The same window, from a terminal |
 | `flow logs` | What the daemon has been saying |
 | `flow retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
 | `flow start` / `flow stop` | Trigger dictation without the chord, for a compositor bind |
