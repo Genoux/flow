@@ -6,7 +6,7 @@
 
 ## Learned Workspace Facts
 - Flow is a Rust local dictation daemon. Hyprland Super+Shift+D binds `flow start` on press; Flow watches the physical chord and stops on release because Hyprland release binds drop modifier chords.
-- Dictation bind is Super+Shift+D, not Shift+W (wallpaper picker) or Ctrl+Super+W (collides with whisrs via keyd mapping alt to meta).
+- Dictation bind is Super+Shift+D, not Shift+W (wallpaper picker) or Ctrl+Super+W (collides with another dictation tool on this machine, via keyd mapping alt to meta).
 - Remote is the private GitHub repo Genoux/flow.
 - Inference is on-device: Parakeet TDT 0.6B v3 int8 ONNX for STT (CPU, ~23x realtime) and Qwen3 4B Instruct Q4_K_M via llama.cpp (Vulkan) for cleanup, under `~/.local/share/flow/models/`. `flow install` fetches both, pinned to commit + sha256 in `src/install.rs`.
 - Language preservation is enforced, not requested. `cleanup::language` (whatlang, reliable detections only) names the detected language in the system prompt for that input, and `changed_language` treats a translated cleanup as a failure so the raw transcript survives. The prompt alone failed twice (03085c6 and again after) — code-switched speech is what tips the model. Do not "simplify" this back to a prompt rule.

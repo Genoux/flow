@@ -141,7 +141,7 @@ impl Keyboard {
 
         let device = evdev::uinput::VirtualDevice::builder()
             .context("failed to create the uinput device builder")?
-            .name("whisrs virtual keyboard")
+            .name("flow virtual keyboard")
             .with_keys(&keys)
             .context("failed to register key events")?
             .build()

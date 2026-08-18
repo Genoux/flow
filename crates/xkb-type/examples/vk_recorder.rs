@@ -77,7 +77,7 @@ fn create_shm_buffer(
 
     let stride = 4i32; // 1px * 4 bytes (ARGB8888)
     let size = stride; // 1 row
-    let fd = memfd_create("whisrs-vk-recorder-shm", MemfdFlags::CLOEXEC)?;
+    let fd = memfd_create("flow-vk-recorder-shm", MemfdFlags::CLOEXEC)?;
     let mut file = std::fs::File::from(fd);
     file.write_all(&[0u8; 4])?;
     file.flush().ok();
@@ -137,8 +137,8 @@ fn main() -> anyhow::Result<()> {
     let surface: WlSurface = compositor.create_surface(&qh, ());
     let xdg_surface: XdgSurface = wm_base.get_xdg_surface(&surface, &qh, ());
     let toplevel: XdgToplevel = xdg_surface.get_toplevel(&qh, ());
-    toplevel.set_title("whisrs-vk-recorder".to_string());
-    toplevel.set_app_id("whisrs-vk-recorder".to_string());
+    toplevel.set_title("flow-vk-recorder".to_string());
+    toplevel.set_app_id("flow-vk-recorder".to_string());
     // Initial commit (no buffer) triggers the compositor's first configure.
     surface.commit();
 
