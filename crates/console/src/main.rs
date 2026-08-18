@@ -1,9 +1,11 @@
 //! Flow's status and settings window.
 //!
 //! A separate binary from the daemon on purpose: iced brings wgpu with it, and
-//! the daemon has no business carrying that to record audio. The two will talk
-//! over the existing ipc socket - every value here is still mock, so the whole
-//! window can be navigated and judged before any of it is wired up.
+//! the daemon has no business carrying that to record audio. The two talk over
+//! the status socket the daemon already publishes, and everything else on
+//! screen is read from the same files the daemon uses: `settings` edits
+//! `config.toml`, `history` reads the transcript log, `vocabulary` edits
+//! `vocabulary.txt`.
 
 mod chord;
 mod daemon;
