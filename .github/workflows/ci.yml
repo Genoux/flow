@@ -68,3 +68,13 @@ jobs:
       - name: Clippy (console)
         working-directory: crates/console
         run: cargo clippy --all-targets -- -D warnings
+
+      # The desktop entry is product surface and nothing else compiles it. It
+      # already shipped with three main categories, which put Flow in three
+      # menus at once - a validator catches that and a reviewer does not.
+      - name: Packaging
+        run: |
+          sudo apt-get install -y --no-install-recommends desktop-file-utils
+          desktop-file-validate packaging/flow-console.desktop
+          bash -n packaging/install.sh
+          bash -n packaging/uninstall.sh
