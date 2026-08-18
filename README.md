@@ -23,6 +23,9 @@ interface is a key you hold and a small island that appears while you speak.
 git clone https://github.com/Genoux/flow && cd flow && ./packaging/install.sh
 ```
 
+Or download a release tarball, unpack it, and run the same `packaging/install.sh`
+from inside — it uses the binaries it finds there instead of building them.
+
 That builds both binaries into `~/.local/bin`, installs the systemd user unit
 and the desktop entry, and downloads the models. Nothing is written outside
 your home directory, and nothing runs as root — except one udev rule, which the

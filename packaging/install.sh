@@ -14,14 +14,24 @@ apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-say "Building (this takes a few minutes the first time)"
-cargo build --release --manifest-path "$repo/Cargo.toml"
-cargo build --release --manifest-path "$repo/crates/console/Cargo.toml"
+# A release tarball ships the binaries already built, under bin/. A git
+# checkout does not. Same script for both rather than a second install path
+# that drifts from this one.
+if [ -x "$repo/bin/flow" ]; then
+  daemon="$repo/bin/flow"
+  console="$repo/bin/flow-console"
+else
+  say "Building (this takes a few minutes the first time)"
+  cargo build --release --manifest-path "$repo/Cargo.toml"
+  cargo build --release --manifest-path "$repo/crates/console/Cargo.toml"
+  daemon="$repo/target/release/flow"
+  console="$repo/crates/console/target/release/flow-console"
+fi
 
 say "Installing binaries into $bin_dir"
 mkdir -p "$bin_dir"
-install -m755 "$repo/target/release/flow" "$bin_dir/flow"
-install -m755 "$repo/crates/console/target/release/flow-console" "$bin_dir/flow-console"
+install -m755 "$daemon" "$bin_dir/flow"
+install -m755 "$console" "$bin_dir/flow-console"
 
 say "Installing the service and desktop entry"
 mkdir -p "$units" "$apps"
