@@ -11,7 +11,7 @@ use std::path::PathBuf;
 const SHOWN: usize = 50;
 
 pub fn path() -> PathBuf {
-    super::system::data_home().join("flow/history.jsonl")
+    flow_paths::history_file()
 }
 
 #[derive(Debug, Clone)]

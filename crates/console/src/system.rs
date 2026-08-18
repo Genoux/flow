@@ -150,14 +150,6 @@ pub fn session() -> String {
     }
 }
 
-pub fn data_home() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".local/share")
-        })
-}
-
 /// A model directory as the window reports it: present or not, and how big.
 pub struct Model {
     pub label: &'static str,
@@ -170,7 +162,7 @@ pub struct Model {
 /// source, so they stayed the same however much was really there - including
 /// when nothing was.
 pub fn models() -> Vec<Model> {
-    let root = data_home().join("flow/models");
+    let root = flow_paths::models_dir();
 
     // The speech model is a directory of onnx files; the cleanup model is a
     // single gguf beside it. Found by extension rather than by name so that

@@ -59,7 +59,7 @@ fn speech_and_cleanup_are_separate() {
 
 #[test]
 fn the_pins_match_the_speech_model_on_disk() {
-    let root = flow::stt::data_home().join("flow/models");
+    let root = flow_paths::models_dir();
     for asset in install::SPEECH {
         let path = root.join(asset.dest);
         if !path.is_file() {
@@ -86,7 +86,7 @@ fn the_pins_match_the_speech_model_on_disk() {
 #[test]
 #[ignore]
 fn the_pins_match_the_cleanup_model_on_disk() {
-    let root = flow::stt::data_home().join("flow/models");
+    let root = flow_paths::models_dir();
     for asset in install::CLEANUP {
         let path = root.join(asset.dest);
         if !path.is_file() {

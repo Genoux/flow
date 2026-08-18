@@ -15,10 +15,7 @@ use std::time::Duration;
 const RETRY: Duration = Duration::from_secs(2);
 
 pub fn socket_path() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    runtime.join("flow.sock")
+    flow_paths::socket()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

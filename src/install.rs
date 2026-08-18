@@ -206,7 +206,7 @@ pub fn seed(path: &Path, contents: &str) -> Result<bool> {
 }
 
 pub fn models_root() -> PathBuf {
-    super::stt::data_home().join("flow/models")
+    flow_paths::models_dir()
 }
 
 /// Speech first and always: cleanup is skippable, and a machine that only
@@ -238,7 +238,7 @@ pub fn run(speech_only: bool) -> Result<()> {
         eprintln!("\nkept your {}", config.display());
     }
 
-    let vocabulary = super::config::config_home().join("flow/vocabulary.txt");
+    let vocabulary = flow_paths::vocabulary_file();
     if seed(&vocabulary, include_str!("../packaging/vocabulary.template.txt"))? {
         eprintln!("wrote {}", vocabulary.display());
     } else {

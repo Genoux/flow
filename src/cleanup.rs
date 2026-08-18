@@ -230,7 +230,7 @@ fn candidates() -> Vec<Candidate> {
 }
 
 pub fn model_path() -> PathBuf {
-    super::stt::data_home().join("flow/models/qwen3-4b-instruct-q4km.gguf")
+    flow_paths::cleanup_model_file()
 }
 
 /// Terms the recogniser mangles, one per line, from
@@ -243,7 +243,7 @@ pub fn model_path() -> PathBuf {
 /// close to what was said - "hyper land" to Hyprland, "pipe wire" to PipeWire -
 /// and cannot recover one that sounds nothing like it.
 pub fn vocabulary() -> Vec<String> {
-    let path = super::config::config_home().join("flow/vocabulary.txt");
+    let path = flow_paths::vocabulary_file();
 
     std::fs::read_to_string(path)
         .unwrap_or_default()

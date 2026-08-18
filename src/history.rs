@@ -20,7 +20,7 @@ const KEEP: usize = 500;
 const LIMIT: usize = 1_000;
 
 pub fn path() -> PathBuf {
-    super::stt::data_home().join("flow/history.jsonl")
+    flow_paths::history_file()
 }
 
 /// Append one dictation. Best effort in every direction: a full disk or a

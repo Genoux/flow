@@ -1,3 +1,14 @@
+[workspace]
+# Declared explicitly because path dependencies are NOT members by default:
+# without this, `cargo test --workspace` built xkb-type and flow-paths but ran
+# none of their tests. xkb-type had 61 of them, and had never run one.
+#
+# The console stays out on purpose - it is its own workspace root so that
+# iced's tree and llama.cpp's tree are never resolved together. CI runs it as
+# a separate step.
+members = [".", "crates/flow-paths", "crates/xkb-type"]
+exclude = ["crates/console"]
+
 [package]
 name = "flow"
 version = "0.1.0"
@@ -8,6 +19,7 @@ anyhow = "1.0.104"
 cpal = "0.18.1"
 encoding_rs = "0.8.35"
 evdev = "0.13.2"
+flow-paths = { path = "crates/flow-paths" }
 hound = "3.5.1"
 libc = "0.2.189"
 llama-cpp-2 = { version = "0.1.154", features = ["vulkan"] }

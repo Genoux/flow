@@ -594,6 +594,10 @@ fn begin(
     None
 }
 
+// One dictation needs all of this, and every parameter is a distinct
+// collaborator rather than a field of some shared thing. Bundling them into a
+// context struct would move the list rather than shorten it.
+#[allow(clippy::too_many_arguments)]
 fn handle(
     engine: &mut stt::Stt,
     injector: &mut inject::Injector,
@@ -668,13 +672,12 @@ fn handle(
             if let Err(err) = wav::write_16k_mono(dir.join(format!("{n:04}_raw.wav")), &samples) {
                 eprintln!("record_debug: raw wav write failed: {err:#}");
             }
-            if let Some(denoised) = denoised.as_ref() {
-                if let Err(err) =
+            if let Some(denoised) = denoised.as_ref()
+                && let Err(err) =
                     wav::write_16k_mono(dir.join(format!("{n:04}_denoised.wav")), denoised)
                 {
                     eprintln!("record_debug: denoised wav write failed: {err:#}");
                 }
-            }
         }
         engine.transcribe(denoised.unwrap_or(samples))?
     };
@@ -820,7 +823,7 @@ fn debug_recording_dir() -> std::path::PathBuf {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        stt::data_home().join(format!("flow/recordings/{ts}"))
+        flow_paths::recordings_dir().join(ts.to_string())
     })
     .clone()
 }

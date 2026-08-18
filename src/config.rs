@@ -156,7 +156,7 @@ fn boolean(at: &str, key: &str, value: &str) -> Result<bool> {
 }
 
 pub fn path() -> PathBuf {
-    config_home().join("flow/config.toml")
+    flow_paths::config_file()
 }
 
 /// How often the config file is checked for changes. Fast enough that moving a
@@ -223,10 +223,4 @@ pub fn watch(shared: std::sync::Arc<std::sync::Mutex<Config>>) {
 fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
-}
-
-pub fn config_home() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()).join(".config"))
 }

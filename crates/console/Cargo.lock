@@ -799,9 +799,14 @@ name = "flow-console"
 version = "0.1.0"
 dependencies = [
  "evdev",
+ "flow-paths",
  "iced",
  "serde_json",
 ]
+
+[[package]]
+name = "flow-paths"
+version = "0.1.0"
 
 [[package]]
 name = "foldhash"

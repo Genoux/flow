@@ -4,13 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub fn model_dir() -> PathBuf {
-    data_home().join("flow/models/tdt")
-}
-
-pub fn data_home() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()).join(".local/share"))
+    flow_paths::speech_model_dir()
 }
 
 pub struct Stt {
