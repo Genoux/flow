@@ -107,6 +107,9 @@ fn score(
     }
     Some((means, motion / BAND_COUNT as f32))
 }
+/// Bands, floor, ceiling, the resulting heights, and the score.
+type Candidate = ([f32; BAND_COUNT], f32, f32, Vec<f32>, f32);
+
 
 #[test]
 #[ignore]
@@ -114,7 +117,7 @@ fn search() {
     let frames = frames();
     eprintln!("{} voiced frames\n", frames.len());
 
-    let mut best: Option<([f32; BAND_COUNT], f32, f32, Vec<f32>, f32)> = None;
+    let mut best: Option<Candidate> = None;
     for floor in [-96.0, -90.0, -84.0, -78.0, -72.0] {
         for ceiling in [-30.0, -24.0, -18.0, -12.0, -6.0] {
             if ceiling - floor < 40.0 {
