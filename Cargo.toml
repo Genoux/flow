@@ -13,6 +13,7 @@ exclude = ["crates/console"]
 name = "flow"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
