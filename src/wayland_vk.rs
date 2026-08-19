@@ -204,11 +204,22 @@ fn split_chord(keys: &[KeyCode]) -> Result<(u32, KeyCode)> {
 /// The file is unlinked as soon as it is open. The descriptor keeps it alive
 /// for as long as either side needs it, and nothing is left in the runtime
 /// directory if Flow is killed between here and exit.
+///
+/// It is opened readable as well as writable because the compositor mmaps the
+/// descriptor with `PROT_READ`; on a write-only fd that call fails and the
+/// compositor answers `wl_display.error` "no memory" instead of anything that
+/// names the real problem.
 fn upload_keymap(keyboard: &ZwpVirtualKeyboardV1) -> Result<()> {
     let directory = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     let path = format!("{directory}/flow-keymap-{}", std::process::id());
 
-    let mut file = File::create(&path).with_context(|| format!("creating {path}"))?;
+    let mut file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .with_context(|| format!("creating {path}"))?;
     std::fs::remove_file(&path).with_context(|| format!("unlinking {path}"))?;
 
     file.write_all(KEYMAP.as_bytes())
