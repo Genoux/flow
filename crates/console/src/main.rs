@@ -26,6 +26,7 @@ mod chord {
 }
 
 mod daemon;
+mod demo;
 mod history;
 mod settings;
 mod system;
@@ -312,6 +313,11 @@ struct Console {
     terms: Vec<String>,
     typing: String,
     term_error: Option<String>,
+    /// Set only by `FLOW_CONSOLE_DEMO`, and then the window shows a daemon that
+    /// is not there so the live states can be looked at. Also the reason the
+    /// real socket's events are ignored: it would report Offline within
+    /// seconds and undo the whole point.
+    demo: bool,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
     /// False when /dev/input cannot be read, so the chord cannot be captured.
@@ -333,26 +339,34 @@ impl Console {
     fn new() -> (Self, Task<Message>) {
         let entries = history::recent();
         let history_editors = history_editors(&entries);
+        let pretend = demo::requested();
         (
             Self {
                 section: Section::initial(),
-                daemon: daemon::State::default(),
+                daemon: pretend.map_or_else(daemon::State::default, demo::daemon_state),
                 settings: settings::Settings::load(),
                 save_error: None,
                 saved: false,
                 autostart: system::autostart_enabled(),
-                input: system::default_input(),
+                input: match pretend {
+                    Some(_) => demo::input(),
+                    None => system::default_input(),
+                },
                 entries,
                 history_editors,
                 days: history::daily(CALENDAR_DAYS),
                 update: update::Status::default(),
                 updating: false,
-                models: system::models(),
+                models: match pretend {
+                    Some(_) => demo::models(),
+                    None => system::models(),
+                },
                 installing_models: false,
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
                 term_error: None,
+                demo: pretend.is_some(),
                 capturing: false,
                 can_capture: chord::available(),
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -401,6 +415,13 @@ impl Console {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // The socket is the one thing the demo cannot talk over: it is either
+        // absent or belongs to a real daemon, and either way its first event
+        // would replace the state being looked at.
+        if self.demo && matches!(message, Message::Daemon(_)) {
+            return Task::none();
+        }
+
         match message {
             Message::Select(section) => self.section = section,
             Message::Tick(now) => self.now = now,
