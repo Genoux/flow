@@ -546,15 +546,22 @@ mod tests {
     /// would leave a Flow that cannot dictate at all.
     #[test]
     fn only_the_refining_model_is_skippable() {
-        let mut state = State::default();
-        state.phase = Phase::Fetching("tdt/encoder-model.int8.onnx".into());
-        assert!(!state.skippable());
+        let speech = State {
+            phase: Phase::Fetching("tdt/encoder-model.int8.onnx".into()),
+            ..State::default()
+        };
+        assert!(!speech.skippable());
 
-        state.phase = Phase::Fetching("qwen3-4b-instruct-q4km.gguf".into());
-        assert!(state.skippable());
+        let mut refining = State {
+            phase: Phase::Fetching("qwen3-4b-instruct-q4km.gguf".into()),
+            ..State::default()
+        };
+        assert!(refining.skippable());
 
-        state.skipped = true;
-        assert!(!state.skippable());
+        // Pressed once, so the control goes away rather than offering a second
+        // kill of a child that is already dying.
+        refining.skipped = true;
+        assert!(!refining.skippable());
     }
 
     /// A kill the user asked for finishes setup; one they did not is a failure
