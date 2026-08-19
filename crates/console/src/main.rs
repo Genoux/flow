@@ -72,6 +72,11 @@ const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
 /// to the accent it just read as a second, dirtier green. One green in the
 /// product, one meaning per colour: green is fine, red is not.
 const OK: Color = ACCENT;
+/// A week that went down. Not `ERR` - dictating less is not a fault, and a red
+/// number invites you to read it as one. A dimmed version of the gold the
+/// accent used to be, which is the one hue in this palette that already sits
+/// between "good" and "bad" without claiming either.
+const DIP: Color = Color { r: 0.757, g: 0.616, b: 0.393, a: 1.0 }; // #C19D64
 const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
 
 const RAIL_WIDTH: f32 = 176.0;
@@ -101,10 +106,10 @@ const RECENT_SHOWN: usize = 2;
 /// reads as a page of cards that were placed one at a time.
 const GAP: f32 = 12.0;
 
-/// Where a recent line is cut. Sized to the default window rather than
-/// measured: `Wrapping::None` already stops a long line becoming two, and this
-/// is what puts the ellipsis somewhere deliberate.
-const RECENT_CHARS: usize = 96;
+/// How much room a scrolling list keeps at each end, inside the viewport so
+/// that it scrolls with the content rather than being clipped away with it.
+const SCROLL_PAD: f32 = 22.0;
+
 
 /// How long each motion takes. Only two things move - a toggle's knob and a
 /// rail item warming under the pointer - because those are the two that
@@ -746,18 +751,18 @@ impl Console {
             stat_tile(
                 "Dictations",
                 dictations.to_string(),
-                (format!("{active} of 7 days active"), FAINT),
+                (format!("{active} of 7 days active"), MUTED),
             ),
             Space::new().width(GAP),
             stat_tile(
                 "Speaking time",
                 history::duration(spoken),
                 if dictations == 0 {
-                    ("nothing this week".to_string(), FAINT)
+                    ("nothing this week".to_string(), MUTED)
                 } else {
                     (
                         format!("{} average", history::duration(spoken / dictations as f32)),
-                        FAINT,
+                        MUTED,
                     )
                 },
             ),
@@ -767,7 +772,7 @@ impl Console {
                 plural(streak as u32, "day"),
                 (
                     format!("longest {}", plural(longest_streak(&self.days) as u32, "day")),
-                    FAINT,
+                    MUTED,
                 ),
             ),
         ];
@@ -788,9 +793,7 @@ impl Console {
         // at all. Scrolled rather than compressed when it does not fit: a user
         // who drags the window down to the minimum height should have to reach
         // the last card rather than have every card shrink to meet them.
-        scroll(container(body).padding(
-            iced::Padding::default().top(28.0).bottom(28.0).right(14.0),
-        ))
+        scroll(body)
     }
 
     /// The three settings that decide whether Flow can work at all, and
@@ -866,8 +869,13 @@ impl Console {
     }
 
     /// The last few transcripts, because the fastest way to tell whether Flow
-    /// is doing a good job is to read what it wrote. Not selectable here on
-    /// purpose - this is a glance, and History is one click away for the copy.
+    /// is doing a good job is to read what it wrote.
+    ///
+    /// Same rows as History, and selectable through the same editors: a
+    /// transcript you can read but not copy is a transcript you have to retype,
+    /// and the answer to "which page was I on" should not be what decides it.
+    /// The full text rather than a truncated line for the same reason - copying
+    /// a sentence that ends in an ellipsis is worse than not copying it.
     fn recent_card(&self) -> Element<'_, Message> {
         let now = history::now();
 
@@ -881,23 +889,13 @@ impl Console {
         } else {
             for (index, entry) in self.entries.iter().take(RECENT_SHOWN).enumerate() {
                 if index > 0 {
-                    list = list.push(hairline());
+                    list = list.push(card_rule());
                 }
-                list = list.push(
-                    container(
-                        row![
-                            text(one_line(&entry.text))
-                                .size(13)
-                                .color(FG)
-                                .wrapping(text::Wrapping::None)
-                                .width(Fill),
-                            Space::new().width(12),
-                            text(history::ago(entry.at, now)).size(11).color(FAINT),
-                        ]
-                        .align_y(iced::Center),
-                    )
-                    .padding([9, 0]),
-                );
+                list = list.push(entry_row(
+                    selectable_line(&self.history_editors[index], index),
+                    entry,
+                    now,
+                ));
             }
         }
 
@@ -912,19 +910,13 @@ impl Console {
                         .on_press(Message::Select(Section::History)),
                 ]
                 .align_y(iced::Center),
-                Space::new().height(6),
+                Space::new().height(8),
                 list,
             ]
             .into(),
         )
     }
 
-    /// What was dictated, newest first.
-    ///
-    /// No live activity here on purpose. You dictate with the keybinding, not
-    /// by looking at this window - so a "listening" indicator on a screen you
-    /// are not looking at says nothing. What is worth opening the window for
-    /// is what it actually wrote.
     fn history_section(&self) -> Element<'_, Message> {
         let now = history::now();
 
@@ -937,24 +929,11 @@ impl Console {
             );
         } else {
             for (index, entry) in self.entries.iter().enumerate() {
-                let when = history::ago(entry.at, now);
-                list = list.push(
-                    container(
-                        column![
-                            selectable_line(&self.history_editors[index], index),
-                            Space::new().height(4),
-                            text(if when.is_empty() {
-                                format!("{:.1}s", entry.spoken)
-                            } else {
-                                format!("{:.1}s  ·  {when}", entry.spoken)
-                            })
-                            .size(11)
-                            .font(Font::MONOSPACE)
-                            .color(FAINT),
-                        ]
-                    )
-                    .padding([10, 0]),
-                );
+                list = list.push(entry_row(
+                    selectable_line(&self.history_editors[index], index),
+                    entry,
+                    now,
+                ));
                 if index + 1 < self.entries.len() {
                     list = list.push(hairline());
                 }
@@ -967,8 +946,8 @@ impl Console {
             text("Everything Flow has typed for you, most recent first.")
                 .size(13)
                 .color(MUTED),
-            Space::new().height(26),
-            scroll(container(list).padding(iced::Padding::default().right(16))),
+            Space::new().height(6),
+            scroll(list),
         ]
         .into()
     }
@@ -1164,7 +1143,7 @@ impl Console {
             Space::new().height(10),
             note,
             Space::new().height(20),
-            scroll(container(list).padding(iced::Padding::default().right(16))),
+            scroll(list),
         ]
         .into()
     }
@@ -1300,6 +1279,33 @@ fn history_editors(entries: &[history::Entry]) -> Vec<text_editor::Content> {
 /// A selectable, copyable line of text with no visible editor chrome - so it
 /// reads exactly like the plain `text()` it replaces, mouse selection and
 /// Ctrl+C aside.
+/// One transcript and what it cost: the line itself, then how long it took to
+/// say and how long ago that was. Shared so the Overview's excerpt and the
+/// History log are the same row rather than two rows that look alike.
+fn entry_row<'a>(
+    line: Element<'a, Message>,
+    entry: &history::Entry,
+    now: u64,
+) -> Element<'a, Message> {
+    let when = history::ago(entry.at, now);
+    container(
+        column![
+            line,
+            Space::new().height(4),
+            text(if when.is_empty() {
+                format!("{:.1}s", entry.spoken)
+            } else {
+                format!("{:.1}s  ·  {when}", entry.spoken)
+            })
+            .size(11)
+            .font(Font::MONOSPACE)
+            .color(FAINT),
+        ],
+    )
+    .padding([10, 0])
+    .into()
+}
+
 fn selectable_line<'a>(
     content: &'a text_editor::Content,
     index: usize,
@@ -1325,8 +1331,24 @@ fn selectable_line<'a>(
 /// A scrollable with a thin, browser-style bar: invisible until the pointer
 /// is over it, a faint hairline while hovered. Iced's default is a wide rail
 /// that sits there permanently, which reads as chrome in a window this small.
+///
+/// The breathing room is *inside* the scroll area, and that is the whole point
+/// of this function owning it. A viewport clips at its own frame, so padding
+/// applied outside one buys nothing: the content still runs to the very edge
+/// and the first and last rows are sliced off mid-glyph. Padding inside
+/// scrolls with the content, so both ends of the list look like ends.
+///
+/// The right pad is for the bar itself, which iced overlays on top of the
+/// content rather than beside it.
 fn scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    scrollable(content)
+    scrollable(
+        container(content).padding(
+            iced::Padding::default()
+                .top(SCROLL_PAD)
+                .bottom(SCROLL_PAD)
+                .right(16.0),
+        ),
+    )
         .direction(scrollable::Direction::Vertical(
             scrollable::Scrollbar::new()
                 .width(4)
@@ -1376,14 +1398,14 @@ fn section_shell<'a>(
         text(title).size(22).color(FG),
         Space::new().height(10),
         text(subtitle).size(13).color(MUTED),
-        Space::new().height(26),
-        // Right padding so the scrollbar, which iced overlays on top of the
-        // content rather than beside it, cannot sit over the controls.
-        scroll(container(list).padding(iced::Padding::default().right(16))),
+        // Small, because `scroll` keeps its own room at the top now and the
+        // two would otherwise add up to a hole under the heading.
+        Space::new().height(6),
+        scroll(list),
     ];
 
     if let Some(foot) = foot {
-        body = body.push(Space::new().height(20));
+        body = body.push(Space::new().height(4));
         body = body.push(hairline());
         body = body.push(Space::new().height(16));
         body = body.push(foot);
@@ -1540,16 +1562,16 @@ fn stat_tile(
 fn trend(now: u32, before: u32) -> (String, Color) {
     if before == 0 {
         return if now == 0 {
-            ("nothing yet".to_string(), FAINT)
+            ("nothing yet".to_string(), MUTED)
         } else {
             ("first week with words".to_string(), ACCENT)
         };
     }
     let change = (now as i64 - before as i64) * 100 / before as i64;
     match change {
-        0 => ("level with last week".to_string(), FAINT),
+        0 => ("level with last week".to_string(), MUTED),
         up if up > 0 => (format!("+{up}% vs last week"), ACCENT),
-        down => (format!("{down}% vs last week"), FAINT),
+        down => (format!("{down}% vs last week"), DIP),
     }
 }
 
@@ -1563,7 +1585,9 @@ fn fact(label: &'static str, value: String) -> Element<'static, Message> {
         text(value)
             .size(12.5)
             .font(Font::MONOSPACE)
-            .color(MUTED)
+            // Brighter than MUTED: the label above it is the quiet half of the
+            // pair, and at the same weight neither reads as the answer.
+            .color(mix(MUTED, FG, 0.4))
             .wrapping(text::Wrapping::None),
     ]
     .into()
@@ -1592,11 +1616,6 @@ fn clip(text: &str, chars: usize) -> String {
     }
     let cut: String = text.chars().take(chars).collect();
     format!("{}…", cut.trim_end())
-}
-
-/// One line of a transcript, for the Overview's recent list.
-fn one_line(text: &str) -> String {
-    clip(text.trim().replace('\n', " ").as_str(), RECENT_CHARS)
 }
 
 /// How many of these days had at least one word dictated.
@@ -1840,7 +1859,7 @@ fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
             grid,
             Space::new().height(14),
             row![
-                text(caption).size(12).color(FAINT),
+                text(caption).size(12).color(MUTED),
                 Space::new().width(Fill),
                 legend(),
             ]
@@ -2175,7 +2194,7 @@ fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) 
 
 #[cfg(test)]
 mod tests {
-    use super::{commas, current_streak, heat_ceiling, one_line, trend, Section, ACCENT, FAINT};
+    use super::{commas, current_streak, heat_ceiling, trend, Section, ACCENT, DIP, MUTED};
 
     fn days(words: &[u32]) -> Vec<crate::history::Day> {
         words
@@ -2214,19 +2233,19 @@ mod tests {
     fn a_week_is_reported_against_the_one_before_it() {
         assert_eq!(trend(120, 100).0, "+20% vs last week");
         assert_eq!(trend(80, 100).0, "-20% vs last week");
-        assert_eq!(trend(100, 100), ("level with last week".to_string(), FAINT));
+        assert_eq!(trend(100, 100), ("level with last week".to_string(), MUTED));
+        // A week that went down gets its own colour, and it is not ERR.
+        assert_eq!(trend(80, 100).1, DIP);
         assert_eq!(trend(50, 0).1, ACCENT);
-        assert_eq!(trend(0, 0), ("nothing yet".to_string(), FAINT));
+        assert_eq!(trend(0, 0), ("nothing yet".to_string(), MUTED));
     }
 
     #[test]
-    fn long_numbers_and_long_lines_stay_readable() {
+    fn long_numbers_stay_readable() {
         assert_eq!(commas(7), "7");
         assert_eq!(commas(999), "999");
         assert_eq!(commas(1_000), "1,000");
         assert_eq!(commas(18_402), "18,402");
-        assert_eq!(one_line("  two\nlines  "), "two lines");
-        assert!(one_line(&"x".repeat(200)).ends_with('…'));
     }
 
     /// The lookup reads the nav labels, so renaming a section would otherwise
