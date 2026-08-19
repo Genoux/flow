@@ -145,9 +145,8 @@ pub fn civil(day: u64) -> (i64, u32, u32) {
 /// `"12 Aug"` - short enough for a calendar tooltip, unambiguous in a way
 /// that a numeric month never is across locales.
 pub fn short_date(day: u64) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
+    const MONTHS: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     let (_, month, date) = civil(day);
     format!("{date} {}", MONTHS[(month - 1) as usize])
 }
