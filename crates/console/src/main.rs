@@ -52,7 +52,7 @@ use crate::layout::{
 };
 use crate::theme::{
     mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE, FAINT,
-    FG, GAP, KNOB, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD, SCROLL_PAD,
+    FG, GAP, KNOB, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD, SCROLL_PAD, STARTING,
 };
 use iced::widget::{column, container, row, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
@@ -856,21 +856,16 @@ impl Console {
         let running = self.daemon.activity != daemon::Activity::Offline;
         let installed = self.models.iter().filter(|m| m.installed).count();
         let (label, dot) = activity_label(self.daemon.activity);
-        let service_action: Element<'_, Message> = match self.service_pending {
-            Some("start") => container(text("Starting…").size(13).color(MUTED))
-                .padding([7, 14])
-                .into(),
-            Some("restart") => container(text("Restarting…").size(13).color(MUTED))
-                .padding([7, 14])
-                .into(),
-            Some(_) => container(text("Working…").size(13).color(MUTED))
-                .padding([7, 14])
-                .into(),
-            None => action_msg(
-                if running { "Restart" } else { "Start" },
+        let service_action: Element<'_, Message> = match service_action_label(
+            self.service_pending,
+            running,
+        ) {
+            Some(action) => action_msg(
+                action,
                 !running,
                 Message::Service(if running { "restart" } else { "start" }),
             ),
+            None => Space::new().height(0).into(),
         };
 
         let header = row![
@@ -1508,11 +1503,15 @@ impl Console {
 fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
     match activity {
         daemon::Activity::Offline => ("Flow isn't running", FAINT),
-        daemon::Activity::Starting => ("Starting…", MUTED),
+        daemon::Activity::Starting => ("Starting…", STARTING),
         daemon::Activity::Ready => ("Flow is ready", FAINT),
         daemon::Activity::Listening => ("Listening", ACCENT),
         daemon::Activity::Working => ("Refining your words", ACCENT),
     }
+}
+
+fn service_action_label(pending: Option<&str>, running: bool) -> Option<&'static str> {
+    pending.is_none().then_some(if running { "Restart" } else { "Start" })
 }
 
 /// The dot's colour and the line beside it, for each thing an update check can
@@ -1538,7 +1537,9 @@ fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) 
 
 #[cfg(test)]
 mod tests {
-    use super::Section;
+    use super::{activity_label, service_action_label, Section};
+    use crate::daemon;
+    use crate::theme::STARTING;
 
     /// The lookup reads the nav labels, so renaming a section would otherwise
     /// silently turn FLOW_SECTION into "open Overview" with nothing to say so.
@@ -1560,5 +1561,13 @@ mod tests {
         assert_eq!(Section::from_label("AUDIO"), Some(Section::Audio));
         assert_eq!(Section::from_label("aud"), None);
         assert_eq!(Section::from_label(""), None);
+    }
+
+    #[test]
+    fn startup_is_named_once_in_the_status() {
+        assert_eq!(activity_label(daemon::Activity::Starting), ("Starting…", STARTING));
+        assert_eq!(service_action_label(Some("start"), false), None);
+        assert_eq!(service_action_label(Some("restart"), true), None);
+        assert_eq!(service_action_label(None, false), Some("Start"));
     }
 }

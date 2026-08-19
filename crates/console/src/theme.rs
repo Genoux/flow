@@ -49,6 +49,7 @@ pub(crate) const RAIL_ON: Color = Color { r: 0.145, g: 0.157, b: 0.176, a: 1.0 }
 /// shows up as a rule *on* the card.
 pub(crate) const EDGE: Color = Color { r: 0.149, g: 0.165, b: 0.184, a: 1.0 }; // #262A2F
 pub(crate) const ACCENT: Color = Color { r: 0.180, g: 0.835, b: 0.451, a: 1.0 }; // #2ED573
+pub(crate) const STARTING: Color = Color { r: 0.929, g: 0.612, b: 0.216, a: 1.0 }; // #ED9C37
 pub(crate) const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
 /// "Nothing to do" - and the same green as ACCENT, deliberately. It used to be
 /// a muted olive of its own, to sit at ERR's weight in a row of dots, and next
