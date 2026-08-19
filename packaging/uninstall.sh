@@ -20,7 +20,7 @@ say "Removing binaries, service, desktop entry and icon"
 rm -fv "$bin_dir/flow" "$bin_dir/flow-console" \
        "$units/flow.service" \
        "$data/applications/flow-console.desktop" \
-       "$data/icons/hicolor/scalable/apps/flow-console.svg"
+       "$data/icons/hicolor/512x512/apps/flow-console.png"
 
 systemctl --user daemon-reload
 command -v update-desktop-database >/dev/null && update-desktop-database "$data/applications" 2>/dev/null || true

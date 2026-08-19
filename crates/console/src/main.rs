@@ -32,7 +32,10 @@ mod system;
 mod update;
 mod vocabulary;
 
-use iced::widget::{button, column, container, row, scrollable, slider, text, text_editor, Space};
+use iced::widget::{
+    button, column, container, responsive, row, scrollable, slider, text, text_editor, tooltip,
+    Space,
+};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 // ---------------------------------------------------------------------------
@@ -49,7 +52,7 @@ const LINE: Color = Color { r: 0.106, g: 0.118, b: 0.137, a: 1.0 }; // #1B1E23
 /// The lifted surface a rail item sits on when selected or hovered. One step
 /// off the ground, no more: the rail is chrome and should stay quiet.
 const RAISED: Color = Color { r: 0.102, g: 0.110, b: 0.125, a: 1.0 }; // #1A1C20
-const ACCENT: Color = Color { r: 0.847, g: 0.651, b: 0.341, a: 1.0 }; // #D8A657
+const ACCENT: Color = Color { r: 0.180, g: 0.835, b: 0.451, a: 1.0 }; // #2ED573
 const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
 /// The only green in the product, and it means exactly one thing: nothing to
 /// do. Muted to the same weight as ERR so a row of dots reads as one family.
@@ -58,10 +61,21 @@ const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
 
 const RAIL_WIDTH: f32 = 176.0;
 
-/// How far back the Overview activity calendar looks. 26 weeks reads like a
-/// half-year at a glance without the grid outgrowing the pane.
-const CALENDAR_WEEKS: usize = 26;
+/// How far back the Overview keeps daily counts. Not the number of weeks on
+/// screen: the calendar draws as many weeks as the pane is wide, so this is
+/// the ceiling for a very wide window - two years, past which a dictation
+/// habit is better summarised than drawn.
+const CALENDAR_WEEKS: usize = 104;
 const CALENDAR_DAYS: usize = CALENDAR_WEEKS * 7;
+
+/// One calendar cell, and the gap between two of them. Fixed rather than
+/// stretched to the pane: a heat cell is read by colour, and colour on a
+/// square is easier to compare than colour on a rectangle that changes shape
+/// with the window. The pane's width buys more weeks instead.
+const CELL: f32 = 13.0;
+const CELL_GAP: f32 = 3.0;
+/// The Mon/Wed/Fri gutter down the left of the grid.
+const WEEKDAY_GUTTER: f32 = 28.0;
 
 /// How long each motion takes. Only two things move - a toggle's knob and a
 /// rail item warming under the pointer - because those are the two that
@@ -255,8 +269,9 @@ struct Console {
     /// One read-only editor per entry, purely so its transcript can be mouse-
     /// selected and copied - iced has no plain selectable text widget.
     history_editors: Vec<text_editor::Content>,
-    /// Word counts for the Overview activity calendar, oldest day first.
-    daily_words: Vec<u32>,
+    /// Per-day rollup for the Overview's calendar and week numbers, oldest
+    /// day first.
+    days: Vec<history::Day>,
     /// Result of the last update check. Starts Unknown: opening a settings
     /// window should not put a network call in the path of flipping a switch.
     update: update::Status,
@@ -301,7 +316,7 @@ impl Console {
                 input: system::default_input(),
                 entries,
                 history_editors,
-                daily_words: history::daily_words(CALENDAR_DAYS),
+                days: history::daily(CALENDAR_DAYS),
                 update: update::Status::default(),
                 updating: false,
                 models: system::models(),
@@ -413,7 +428,7 @@ impl Console {
                 if self.daemon.words != before {
                     self.entries = history::recent();
                     self.history_editors = history_editors(&self.entries);
-                    self.daily_words = history::daily_words(CALENDAR_DAYS);
+                    self.days = history::daily(CALENDAR_DAYS);
                 }
             }
             Message::HistoryAction(index, action) => {
