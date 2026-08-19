@@ -34,6 +34,7 @@ mod format;
 mod history;
 mod layout;
 mod settings;
+mod setup;
 mod system;
 mod theme;
 mod update;
@@ -163,7 +164,7 @@ impl Section {
 enum Message {
     Select(Section),
     PushToTalk(bool),
-    Cleanup(bool),
+    Refine(bool),
     Terminal(bool),
     Denoise(bool),
     Autostart(bool),
@@ -190,8 +191,18 @@ enum Message {
     HoverEntry(Option<usize>),
     /// Put one transcript on the clipboard.
     Copy(usize),
-    InstallModels,
-    ModelsInstalled(Result<(), String>),
+    /// Start, or restart after a failure, the first-run install.
+    BeginSetup,
+    /// Go back through setup deliberately, from About.
+    RerunSetup,
+    /// One line from `flow install --porcelain`.
+    SetupEvent(setup::Event),
+    /// `flow probe` came back with where refining will run.
+    Probed(Option<String>),
+    /// Stop after the speech model and get on with it.
+    SkipRefine,
+    /// Leave setup for the console proper.
+    FinishSetup,
     CheckUpdate,
     UpdateChecked(update::Status),
     InstallUpdate,
@@ -226,8 +237,9 @@ struct Console {
     /// True while the release tarball is downloading and installing.
     updating: bool,
     models: Vec<system::Model>,
-    /// True while `flow install` is running in the background.
-    installing_models: bool,
+    /// Some until the models are on disk. While it is set the window is the
+    /// setup screen and nothing else - no rail, no sections. See `setup`.
+    setup: Option<setup::State>,
     session: String,
     terms: Vec<String>,
     typing: String,
@@ -266,6 +278,16 @@ impl Console {
     fn new() -> (Self, Task<Message>) {
         let entries = history::recent();
         let pretend = demo::requested();
+
+        // A machine with no speech model cannot dictate, so the window has
+        // nothing to report and one thing to do. Demo mode decides for itself,
+        // so the screen can be laid out on a machine where the models are
+        // present - or absent - either way.
+        let first_run = match demo::setup() {
+            Some(wanted) => wanted,
+            None => setup::needed(),
+        };
+
         (
             Self {
                 section: Section::initial(),
@@ -287,7 +309,7 @@ impl Console {
                     Some(_) => demo::models(),
                     None => system::models(),
                 },
-                installing_models: false,
+                setup: first_run.then(setup::State::default),
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
@@ -304,7 +326,10 @@ impl Console {
                 entry_hover_at: std::time::Instant::now(),
                 toggled_at: std::collections::HashMap::new(),
             },
-            Task::none(),
+            // Setup starts itself. Launching Flow with nothing installed is
+            // already the request; a Begin button in front of it would only be
+            // asking the same question twice.
+            if first_run { Task::done(Message::BeginSetup) } else { Task::none() },
         )
     }
 
@@ -324,6 +349,10 @@ impl Console {
             || running(self.entry_hover_at, FADE)
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
             || self.toggled_at.values().any(|at| running(*at, KNOB))
+            // The only motion in the product driven by something outside it:
+            // the bar is chasing a download, so it moves until it catches up
+            // rather than for a fixed duration.
+            || self.setup.as_ref().is_some_and(setup::State::running)
     }
 
     /// True while this row's copy button should still be saying so.
@@ -365,7 +394,16 @@ impl Console {
 
         match message {
             Message::Select(section) => self.section = section,
-            Message::Tick(now) => self.now = now,
+            Message::Tick(now) => {
+                // The gap since the last frame, which is what the bar's easing
+                // needs: a fraction-per-frame chase would settle at a different
+                // speed on a 60Hz screen than on a 144Hz one.
+                let elapsed = now.saturating_duration_since(self.now).as_secs_f32();
+                self.now = now;
+                if let Some(state) = self.setup.as_mut() {
+                    state.advance(elapsed);
+                }
+            }
             Message::Hover(section) => {
                 if self.hovered != section {
                     self.hovered = section;
@@ -383,9 +421,9 @@ impl Console {
                 self.toggled_at.insert("push_to_talk", std::time::Instant::now());
                 self.persist();
             }
-            Message::Cleanup(on) => {
-                self.settings.cleanup = on;
-                self.toggled_at.insert("cleanup", std::time::Instant::now());
+            Message::Refine(on) => {
+                self.settings.refine = on;
+                self.toggled_at.insert("refine", std::time::Instant::now());
                 self.persist();
             }
             Message::Terminal(on) => {
@@ -495,16 +533,6 @@ impl Console {
                     self.save_error = Some(err);
                 }
             }
-            Message::InstallModels => {
-                if !self.installing_models {
-                    self.installing_models = true;
-                    self.save_error = None;
-                    return Task::perform(
-                        async { system::install_models() },
-                        Message::ModelsInstalled,
-                    );
-                }
-            }
             Message::CheckUpdate => {
                 if self.update != update::Status::Checking {
                     self.update = update::Status::Checking;
@@ -530,11 +558,71 @@ impl Console {
                     Err(err) => self.save_error = Some(err),
                 }
             }
-            Message::ModelsInstalled(result) => {
-                self.installing_models = false;
-                match result {
-                    Ok(()) => self.models = system::models(),
-                    Err(err) => self.save_error = Some(err),
+            // A rerun keeps whatever the screen already knew about the machine,
+            // so pressing Run setup from About does not blank the hardware line
+            // it is about to show again.
+            Message::BeginSetup | Message::RerunSetup => {
+                let rerun = matches!(message, Message::RerunSetup);
+
+                // Demo mode never spawns the installer: the point of it is to
+                // lay this screen out on a machine that has no `flow` binary
+                // at all, and a failure line is not the state worth looking at.
+                if self.demo {
+                    self.setup = Some(setup::State { rerun, ..demo::setup_state() });
+                    return Task::none();
+                }
+
+                let (events, handle) = setup::install(false);
+                self.setup = Some(setup::State { handle, rerun, ..setup::State::default() });
+                return Task::batch([
+                    Task::run(events, Message::SetupEvent),
+                    // Asked once, alongside the download rather than before it:
+                    // `flow probe` initialises Vulkan to enumerate cards, and
+                    // nothing should stand between launching Flow and the first
+                    // byte arriving.
+                    Task::perform(async { setup::probe() }, Message::Probed),
+                ]);
+            }
+            Message::SetupEvent(event) => {
+                if let Some(state) = self.setup.as_mut() {
+                    state.apply(event);
+                }
+            }
+            Message::Probed(hardware) => {
+                if let Some(state) = self.setup.as_mut() {
+                    state.hardware = hardware;
+                }
+            }
+            Message::SkipRefine => {
+                if let Some(state) = self.setup.as_mut() {
+                    // Marked before the kill, so the failure the reader is
+                    // about to report is read as the skip it is.
+                    state.skipped = true;
+                    state.handle.stop();
+                }
+            }
+            Message::FinishSetup => {
+                let first_run = self.setup.as_ref().is_some_and(|state| !state.rerun);
+                self.setup = None;
+                // Everything the window reports on was unanswerable a moment
+                // ago: no models on disk, and a daemon that had nothing to
+                // load. Re-read it rather than opening the console on the
+                // emptiness setup just finished fixing.
+                self.models = system::models();
+                self.input = system::default_input();
+                self.entries = history::recent();
+                self.autostart = system::autostart_enabled();
+
+                // Only on a real first run. Someone who stopped the daemon and
+                // then repaired a model from About did not ask for it back, and
+                // starting it anyway would undo a deliberate choice with a
+                // button that said nothing about doing so.
+                if first_run {
+                    if let Err(err) = system::service("start") {
+                        self.save_error = Some(err);
+                    }
+                } else {
+                    self.section = Section::About;
                 }
             }
         }
@@ -557,6 +645,14 @@ impl Console {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        // Setup takes the whole window, rail included. The rail is a way to
+        // move between seven screens that have nothing on them yet, and
+        // offering it here would be offering the user seven ways to watch the
+        // same download from somewhere it cannot be seen.
+        if let Some(state) = &self.setup {
+            return setup::view(state);
+        }
+
         // The rail/pane divider is its own element: a container border applies
         // to all four sides, and only this edge should be drawn.
         row![self.rail(), vertical_hairline(), self.pane()].into()
@@ -925,9 +1021,9 @@ impl Console {
                 .into(),
             ),
             setting(
-                "Clean up transcript",
+                "Refine transcript",
                 "Removes filler and fixes punctuation with the local model. Turning it back on needs a restart.",
-                toggle(self.settings.cleanup, self.travel("cleanup"), Message::Cleanup),
+                toggle(self.settings.refine, self.travel("refine"), Message::Refine),
             ),
             setting(
                 "Terminal paste chord",
@@ -1122,9 +1218,12 @@ impl Console {
                 text(total).size(12).font(Font::MONOSPACE).color(FAINT).into(),
                 (!all_installed).then(|| {
                     action_msg(
-                        if self.installing_models { "Installing…" } else { "Install models" },
+                        "Install models",
                         true,
-                        Message::InstallModels,
+                        // The same screen the first run uses, so a download
+                        // here gets the same progress bar rather than a button
+                        // that says "Installing…" for twenty minutes.
+                        Message::RerunSetup,
                     )
                 }),
             )),
@@ -1135,6 +1234,7 @@ impl Console {
         // Bound so the borrows outlive the rows built from them.
         let rows: Vec<Element<Message>> = vec![
             self.version_row(),
+            self.setup_row(),
             fact_row("Session", self.session.clone()),
             fact_path("Config", &settings::config_path()),
             fact_path("History", &history::path()),
@@ -1146,6 +1246,35 @@ impl Console {
             rows,
             None,
         )
+    }
+
+    /// The way back to the first-run screen.
+    ///
+    /// It is not only for a machine that never finished: the installer verifies
+    /// every file against its pinned hash, so running it again repairs a model
+    /// that was interrupted, truncated or deleted, and re-reads which card the
+    /// refining will use. That makes it the honest answer to "something is
+    /// wrong with my models" as well as to "I skipped that, I want it now".
+    fn setup_row(&self) -> Element<'_, Message> {
+        container(
+            row![
+                column![
+                    text("Setup").size(13.5).color(FG),
+                    Space::new().height(3),
+                    text("Check both models against their hashes, and fetch whatever is missing.")
+                        .size(12)
+                        .color(FAINT),
+                ]
+                .width(Length::FillPortion(3)),
+                Space::new().width(20),
+                container(action_msg("Run setup", false, Message::RerunSetup))
+                    .width(Length::FillPortion(2))
+                    .align_x(iced::alignment::Horizontal::Right),
+            ]
+            .align_y(iced::Center),
+        )
+        .padding([ROW_PAD, 0.0])
+        .into()
     }
 
     /// What is running, whether anything newer exists, and the one button that
@@ -1195,7 +1324,7 @@ fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
         daemon::Activity::Starting => ("Starting…", MUTED),
         daemon::Activity::Ready => ("Flow is ready", FAINT),
         daemon::Activity::Listening => ("Listening", ACCENT),
-        daemon::Activity::Working => ("Cleaning up your words", ACCENT),
+        daemon::Activity::Working => ("Refining your words", ACCENT),
     }
 }
 

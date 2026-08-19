@@ -6,8 +6,10 @@
 //! install can never look like a finished one.
 
 use anyhow::{bail, Context, Result};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 #[derive(Clone, Copy)]
 pub struct Asset {
@@ -31,7 +33,7 @@ impl Asset {
 }
 
 /// Parakeet TDT 0.6B v3, int8 ONNX. Runs on CPU at ~23x realtime, which is what
-/// keeps the GPU free for cleanup. Multilingual (25 languages) - the int8 export
+/// keeps the GPU free for refining. Multilingual (25 languages) - the int8 export
 /// of the v2 English-only model has the same filenames, so the hashes below are
 /// the only thing distinguishing them.
 pub const SPEECH: &[Asset] = &[
@@ -78,13 +80,13 @@ pub const SPEECH: &[Asset] = &[
 ];
 
 /// Qwen3 4B Instruct, Q4_K_M. Separate from [`SPEECH`] because it is optional:
-/// cleanup degrades to the raw transcript, dictation does not degrade at all.
+/// refining degrades to the raw transcript, dictation does not degrade at all.
 ///
-/// 4B is a deliberate floor, not a default. Cleanup's one unforgivable failure is
+/// 4B is a deliberate floor, not a default. Refining's one unforgivable failure is
 /// paraphrasing instead of punctuating, and that is instruction-following - the
 /// first capability to go when a model shrinks. This one already needed the
 /// language rule promoted out of a bullet list to stop it translating.
-pub const CLEANUP: &[Asset] = &[Asset {
+pub const REFINE: &[Asset] = &[Asset {
     repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
     revision: "a06e946bb6b655725eafa393f4a9745d460374c9",
     file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
@@ -95,6 +97,100 @@ pub const CLEANUP: &[Asset] = &[Asset {
 
 pub fn total_bytes(assets: &[Asset]) -> u64 {
     assets.iter().map(|asset| asset.bytes).sum()
+}
+
+/// What an install is doing, as it does it.
+///
+/// Reported rather than printed because there are two audiences now: a person
+/// watching a terminal, and the setup screen in the console, which needs
+/// numbers it can draw a bar from rather than a bar someone else already drew.
+/// Both get the same events, so the window can never show progress the terminal
+/// disagrees with.
+pub enum Event<'a> {
+    /// Everything that will be fetched, before any of it starts. Sent once.
+    Planned { total: u64 },
+    /// Hashing - either checking what is already on disk, or verifying what
+    /// just came down. A 2.4 GB file takes long enough that a bar which simply
+    /// stops moving reads as a hang.
+    Verifying { asset: &'a Asset },
+    Fetching { asset: &'a Asset },
+    /// Bytes done across the whole install, not this asset.
+    Progress { done: u64 },
+    Installed { asset: &'a Asset },
+    /// A template landed (`written`) or an existing file was left alone.
+    Seeded { path: PathBuf, written: bool },
+    Finished,
+}
+
+/// How often the download loop looks at the part file. Fast enough that the
+/// bar moves like a download rather than a slideshow, slow enough that a
+/// 2.4 GB fetch is not thousands of stats.
+const POLL: Duration = Duration::from_millis(120);
+
+/// The terminal's view: a line per asset, rewritten in place as it fills.
+///
+/// Flow draws this itself now instead of handing the job to curl's own bar.
+/// Two renderers of one download disagree eventually, and the one the console
+/// reads has to be the one that is right.
+#[derive(Default)]
+pub struct Terminal {
+    total: u64,
+}
+
+impl Terminal {
+    pub fn report(&mut self, event: Event) {
+        match event {
+            Event::Planned { total } => {
+                self.total = total;
+                eprintln!("  {} to fetch", size(total));
+            }
+            Event::Verifying { asset } => self.line(&format!("{} - checking…", asset.dest)),
+            Event::Fetching { asset } => {
+                self.line(&format!("{} ({})", asset.dest, size(asset.bytes)));
+            }
+            Event::Progress { done } if self.total > 0 => {
+                let percent = done * 100 / self.total;
+                self.line(&format!("{} of {}  {percent}%", size(done), size(self.total)));
+            }
+            Event::Progress { .. } => {}
+            // Ends the line the three above have been rewriting, so the next
+            // asset starts on its own rather than overwriting this one.
+            Event::Installed { asset } => eprintln!("\r  {} ✓\x1b[K", asset.dest),
+            Event::Seeded { path, written } => {
+                eprintln!("{} {}", if written { "wrote" } else { "kept your" }, path.display());
+            }
+            Event::Finished => {}
+        }
+    }
+
+    /// Carriage return, then erase to end of line: without the erase, a short
+    /// line leaves the tail of a longer one behind it.
+    fn line(&self, text: &str) {
+        eprint!("\r  {text}\x1b[K");
+        let _ = std::io::stderr().flush();
+    }
+}
+
+/// The console's view: one whitespace-delimited line per event on stdout.
+///
+/// stdout and nothing else, so curl's own errors on stderr can never be
+/// mistaken for protocol. Destinations are relative paths with no spaces in
+/// them, which is what lets this stay a split rather than a parser.
+pub fn to_console(event: Event) {
+    match event {
+        Event::Planned { total } => println!("total {total}"),
+        Event::Verifying { asset } => println!("verifying {}", asset.dest),
+        Event::Fetching { asset } => println!("fetching {} {}", asset.dest, asset.bytes),
+        Event::Progress { done } => println!("progress {done}"),
+        Event::Installed { asset } => println!("installed {}", asset.dest),
+        Event::Seeded { path, written } => {
+            println!("seeded {} {}", if written { "wrote" } else { "kept" }, path.display());
+        }
+        Event::Finished => println!("finished"),
+    }
+    // The window is reading this as it arrives; a block-buffered pipe would
+    // deliver the whole install in one burst at the end.
+    let _ = std::io::stdout().flush();
 }
 
 pub fn size(bytes: u64) -> String {
@@ -131,10 +227,14 @@ fn is_installed(path: &Path, asset: &Asset) -> bool {
         && sha256(path).is_ok_and(|hash| hash == asset.sha256)
 }
 
-fn fetch(asset: &Asset, root: &Path) -> Result<()> {
+/// `base` is how many bytes the whole install had already finished before this
+/// asset started, so progress is reported against the total rather than
+/// restarting from zero on every file.
+fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -> Result<()> {
     let path = root.join(asset.dest);
+    report(Event::Verifying { asset });
     if is_installed(&path, asset) {
-        eprintln!("  {} already installed", asset.dest);
+        report(Event::Installed { asset });
         return Ok(());
     }
 
@@ -143,18 +243,49 @@ fn fetch(asset: &Asset, root: &Path) -> Result<()> {
             .with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    // ponytail: curl, for resume and a progress bar on a 2.4GB download without
-    // writing either. Inherits stdio so the user sees the bar.
+    // ponytail: curl, for resume on a 2.4GB download without writing it. Its
+    // own bar is off now - the part file is the progress, and reading it is
+    // what lets the terminal and the window show the same number.
     let part = path.with_extension("part");
-    eprintln!("  {} ({})", asset.dest, size(asset.bytes));
-    let status = Command::new("curl")
-        .args(["-fL", "--progress-bar", "-C", "-", "-o"])
+    report(Event::Fetching { asset });
+    let mut child = Command::new("curl")
+        .args(["-fL", "--silent", "--show-error", "-C", "-", "-o"])
         .arg(&part)
         .arg(asset.url())
-        .status()
+        .stdin(std::process::Stdio::null())
+        // stdout stays clear: it carries the console's protocol, and curl must
+        // never be able to write a line onto it.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .context("running curl - is it installed?")?;
+
+    // `-C -` resumes into the part file, so its length already counts whatever
+    // an interrupted run left there and this stays correct across a retry.
+    let status = loop {
+        if let Some(status) = child.try_wait().context("waiting for curl")? {
+            break status;
+        }
+        let so_far = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
+        report(Event::Progress { done: base + so_far });
+        std::thread::sleep(POLL);
+    };
+
     if !status.success() {
-        bail!("downloading {} failed - rerun to resume", asset.url());
+        // curl says why - a DNS failure and a 404 are different problems, and
+        // "downloading failed" tells whoever hit it neither. Safe to read only
+        // now that curl has exited: with `-sS` it writes nothing until it does.
+        let mut reason = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            use std::io::Read;
+            let _ = stderr.read_to_string(&mut reason);
+        }
+        let reason = reason.trim();
+        bail!(
+            "downloading {} failed{} - rerun to resume",
+            asset.dest,
+            if reason.is_empty() { String::new() } else { format!(": {reason}") }
+        );
     }
 
     // Verified before the rename, so a truncated or tampered file never lands at
@@ -168,6 +299,7 @@ fn fetch(asset: &Asset, root: &Path) -> Result<()> {
             part.display()
         );
     }
+    report(Event::Verifying { asset });
     let hash = sha256(&part)?;
     if hash != asset.sha256 {
         bail!(
@@ -180,14 +312,30 @@ fn fetch(asset: &Asset, root: &Path) -> Result<()> {
 
     std::fs::rename(&part, &path)
         .with_context(|| format!("moving {} into place", asset.dest))?;
+    report(Event::Installed { asset });
+    Ok(())
+}
+
+/// `base` carries forward between assets so one download finishing does not
+/// send the bar back to where the last one started.
+fn fetch_all_from(
+    assets: &[Asset],
+    root: &Path,
+    base: &mut u64,
+    report: &mut dyn FnMut(Event),
+) -> Result<()> {
+    for asset in assets {
+        fetch(asset, root, *base, report)?;
+        *base += asset.bytes;
+        report(Event::Progress { done: *base });
+    }
     Ok(())
 }
 
 pub fn fetch_all(assets: &[Asset], root: &Path) -> Result<()> {
-    for asset in assets {
-        fetch(asset, root)?;
-    }
-    Ok(())
+    let mut terminal = Terminal::default();
+    let mut base = 0;
+    fetch_all_from(assets, root, &mut base, &mut |event| terminal.report(event))
 }
 
 /// Create-if-absent, never overwrite: the target may be a symlink into a dotfiles
@@ -209,41 +357,49 @@ pub fn models_root() -> PathBuf {
     flow_paths::models_dir()
 }
 
-/// Speech first and always: cleanup is skippable, and a machine that only
-/// dictates is a working install rather than a failed one.
+/// What `run` will fetch, without fetching it. The setup screen asks so it can
+/// name the download size before anyone commits to it.
+pub fn planned_bytes(speech_only: bool) -> u64 {
+    total_bytes(SPEECH) + if speech_only { 0 } else { total_bytes(REFINE) }
+}
+
+/// The whole install, reporting itself through `report`.
+///
+/// The terminal and the console pass different reporters and share every other
+/// line of this, so there is one installer and not two that drift.
+pub fn run_reported(speech_only: bool, report: &mut dyn FnMut(Event)) -> Result<()> {
+    let root = models_root();
+    report(Event::Planned { total: planned_bytes(speech_only) });
+
+    let mut base = 0;
+    fetch_all_from(SPEECH, &root, &mut base, report)?;
+    if !speech_only {
+        fetch_all_from(REFINE, &root, &mut base, report)?;
+    }
+
+    // Seeded after the models, so a download that fails leaves no config
+    // implying an install that finished.
+    for (path, contents) in [
+        (super::config::path(), include_str!("../packaging/config.template.toml")),
+        (flow_paths::vocabulary_file(), include_str!("../packaging/vocabulary.template.txt")),
+    ] {
+        let written = seed(&path, contents)?;
+        report(Event::Seeded { path, written });
+    }
+
+    report(Event::Finished);
+    Ok(())
+}
+
 pub fn run(speech_only: bool) -> Result<()> {
     let root = models_root();
     eprintln!("installing into {}", root.display());
-
-    eprintln!(
-        "\nspeech recognition ({}) - required",
-        size(total_bytes(SPEECH))
-    );
-    fetch_all(SPEECH, &root)?;
-
     if speech_only {
-        eprintln!("\nskipping cleanup model (--speech-only)");
-    } else {
-        eprintln!(
-            "\ncleanup model ({}) - optional, skip with --speech-only",
-            size(total_bytes(CLEANUP))
-        );
-        fetch_all(CLEANUP, &root)?;
+        eprintln!("speech recognition only (--speech-only)");
     }
 
-    let config = super::config::path();
-    if seed(&config, include_str!("../packaging/config.template.toml"))? {
-        eprintln!("\nwrote {}", config.display());
-    } else {
-        eprintln!("\nkept your {}", config.display());
-    }
-
-    let vocabulary = flow_paths::vocabulary_file();
-    if seed(&vocabulary, include_str!("../packaging/vocabulary.template.txt"))? {
-        eprintln!("wrote {}", vocabulary.display());
-    } else {
-        eprintln!("kept your {}", vocabulary.display());
-    }
+    let mut terminal = Terminal::default();
+    run_reported(speech_only, &mut |event| terminal.report(event))?;
 
     eprintln!("\ndone. `flow daemon` to run it, or install packaging/flow.service");
     Ok(())

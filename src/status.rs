@@ -113,7 +113,7 @@ pub struct Reporter {
 impl Reporter {
     /// Starts the listener thread. A failure here is reported and swallowed:
     /// the daemon must still dictate on a machine where the socket cannot be
-    /// created, exactly as it still dictates without a cleanup model.
+    /// created, exactly as it still dictates without a refining model.
     pub fn spawn() -> Self {
         let reporter = Self {
             state: Arc::new(Mutex::new(State {

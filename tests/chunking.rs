@@ -127,7 +127,7 @@ fn does_splitting_the_audio_change_the_words() {
     let joined = joined.join(" ");
     eprintln!("\njoined  ({pieces_took:?}): {joined:?}");
 
-    // Compare on words alone: punctuation and capitalisation are cleanup's job,
+    // Compare on words alone: punctuation and capitalisation are refining's job,
     // and a split legitimately changes where sentences appear to end.
     let words = |text: &str| {
         text.split_whitespace()

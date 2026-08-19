@@ -2,7 +2,7 @@
 //!
 //! Flow runs as a user unit with no terminal, so every line it prints lands in
 //! the journal and stays there. The daemon's normal output is worth keeping:
-//! one line per dictation plus the raw and cleaned text is exactly what you
+//! one line per dictation plus the raw and refined text is exactly what you
 //! want when asking "what did it hear". Device enumeration and chord-release
 //! internals are not - they answer a question nobody has until the binding
 //! misbehaves, and by then they are 200 dictations back.

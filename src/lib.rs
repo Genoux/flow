@@ -1,5 +1,5 @@
 pub mod audio;
-pub mod cleanup;
+pub mod refine;
 pub mod config;
 pub mod debug;
 pub mod denoise;

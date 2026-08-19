@@ -7,7 +7,7 @@ use flow::config::Config;
 fn defaults_need_no_file() {
     let defaults = Config::default();
     assert!(defaults.push_to_talk);
-    assert!(defaults.cleanup);
+    assert!(defaults.refine);
     assert_eq!(defaults.duck, 50);
     assert!(!defaults.terminal);
 }
@@ -21,7 +21,7 @@ fn missing_file_is_the_normal_state() {
 #[test]
 fn file_overrides_every_key() {
     let parsed = Config::parse(
-        "push_to_talk = false\nduck = 20\ncleanup = false\nterminal = true\n",
+        "push_to_talk = false\nduck = 20\nrefine = false\nterminal = true\n",
     )
     .expect("parse");
     assert_eq!(
@@ -29,7 +29,7 @@ fn file_overrides_every_key() {
         Config {
             push_to_talk: false,
             duck: 20,
-            cleanup: false,
+            refine: false,
             terminal: true,
             chord: Default::default(),
             gpu: None, denoise: false, record_debug: false,
@@ -42,7 +42,7 @@ fn partial_file_keeps_the_other_defaults() {
     let parsed = Config::parse("duck = 0\n").expect("parse");
     assert_eq!(parsed.duck, 0);
     assert_eq!(parsed.push_to_talk, Config::default().push_to_talk);
-    assert_eq!(parsed.cleanup, Config::default().cleanup);
+    assert_eq!(parsed.refine, Config::default().refine);
 }
 
 #[test]
@@ -94,11 +94,11 @@ fn a_typo_names_itself() {
 
 #[test]
 fn a_bad_value_names_its_line() {
-    let err = Config::parse("cleanup = true\nduck = loud\n").expect_err("bad number");
+    let err = Config::parse("refine = true\nduck = loud\n").expect_err("bad number");
     assert!(err.to_string().contains("line 2"), "{err}");
 
-    let err = Config::parse("cleanup = yes\n").expect_err("bad bool");
-    assert!(err.to_string().contains("cleanup"), "{err}");
+    let err = Config::parse("refine = yes\n").expect_err("bad bool");
+    assert!(err.to_string().contains("refine"), "{err}");
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn flags_win_over_the_file() {
     let from_file = Config {
         push_to_talk: true,
         duck: 50,
-        cleanup: true,
+        refine: true,
         terminal: false,
         chord: Default::default(),
         gpu: None, denoise: false, record_debug: false,
@@ -143,7 +143,7 @@ fn flags_win_over_the_file() {
 
     let effective = from_file.overridden_by(&flags);
     assert!(!effective.push_to_talk);
-    assert!(!effective.cleanup);
+    assert!(!effective.refine);
     assert!(effective.terminal);
     assert_eq!(effective.duck, 20);
 }
@@ -153,7 +153,7 @@ fn absent_flags_leave_the_file_alone() {
     let from_file = Config {
         push_to_talk: false,
         duck: 20,
-        cleanup: false,
+        refine: false,
         terminal: true,
         chord: Default::default(),
         gpu: None, denoise: false, record_debug: false,

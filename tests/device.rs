@@ -1,9 +1,9 @@
-//! Which GPU the cleanup model lands on, and when it should not run at all.
+//! Which GPU the refining model lands on, and when it should not run at all.
 //!
 //! Both are pure logic so they can be tested without a GPU or a model. The
 //! topologies below are real ones, including the machine this was written on.
 
-use flow::cleanup::{Candidate, choose_device};
+use flow::refine::{Candidate, choose_device};
 
 fn candidate(index: usize, description: &str, discrete: bool, free_gb: f64) -> Candidate {
     Candidate {
@@ -87,12 +87,12 @@ fn no_accelerator_means_cpu() {
 // Every string below was really dictated on this machine and pulled from the
 // journal, so the split is what the model actually has to deal with.
 
-use flow::cleanup::needs_cleanup;
+use flow::refine::needs_refining;
 
 /// Already capitalised, already punctuated, no fillers - the model can only
 /// return it unchanged, so paying ~200ms to hear that is waste.
 ///
-/// "Mm-hmm." used to be here. It is pure filler now and never reaches cleanup at
+/// "Mm-hmm." used to be here. It is pure filler now and never reaches refining at
 /// all, so what this function would say about it no longer matters.
 #[test]
 fn short_and_already_clean_skips_the_model() {
@@ -106,7 +106,7 @@ fn short_and_already_clean_skips_the_model() {
         "No!",
         "Why?",
     ] {
-        assert!(!needs_cleanup(already_clean), "{already_clean:?} should skip");
+        assert!(!needs_refining(already_clean), "{already_clean:?} should skip");
     }
 }
 
@@ -124,7 +124,7 @@ fn anything_the_model_could_fix_still_goes_through() {
         "I mean, yes.",      // multi-word filler
         "so i pushed the change to the config and then restarted it",
     ] {
-        assert!(needs_cleanup(needs_work), "{needs_work:?} should be cleaned");
+        assert!(needs_refining(needs_work), "{needs_work:?} should be cleaned");
     }
 }
 
@@ -133,18 +133,18 @@ fn anything_the_model_could_fix_still_goes_through() {
 #[test]
 fn longer_utterances_are_never_skipped() {
     let clean_but_long = "One two three four five six seven.";
-    assert!(needs_cleanup(clean_but_long), "too long to assume it is finished");
+    assert!(needs_refining(clean_but_long), "too long to assume it is finished");
 }
 
 #[test]
 fn empty_input_needs_nothing() {
-    assert!(!needs_cleanup(""));
-    assert!(!needs_cleanup("   "));
+    assert!(!needs_refining(""));
+    assert!(!needs_refining("   "));
 }
 
 // -- hesitation is not text -------------------------------------------------
 
-use flow::cleanup::is_only_filler;
+use flow::refine::is_only_filler;
 
 /// Holding the key and saying "uh" is a pause, not a dictation. It used to reach
 /// the model, which deleted the filler, found nothing left, and answered the

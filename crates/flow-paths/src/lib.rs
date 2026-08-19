@@ -86,12 +86,12 @@ pub fn speech_model_dir() -> PathBuf {
     models_dir().join("tdt")
 }
 
-/// The cleanup model, as a single gguf file rather than a directory.
+/// The refining model, as a single gguf file rather than a directory.
 ///
 /// The filename names the quantisation on purpose: swapping the model means
 /// changing this, which is the point at which someone has to notice that
 /// `install.rs` pins a matching sha256.
-pub fn cleanup_model_file() -> PathBuf {
+pub fn refine_model_file() -> PathBuf {
     models_dir().join("qwen3-4b-instruct-q4km.gguf")
 }
 

@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use flow::{
-    audio, cleanup, config, denoise, duck, history, hotkey, inject, install, ipc, notify, overlay,
+    audio, config, denoise, duck, history, hotkey, inject, install, ipc, notify, overlay, refine,
     status, stt, wav,
 };
 use std::time::{Duration, Instant};
@@ -27,7 +27,8 @@ USAGE
 COMMANDS
     daemon           Watch the hotkey and dictate. What flow.service runs.
     start | stop     Begin or end a dictation without holding the chord
-    install          Download the speech and cleanup models
+    install          Download the speech and refining models
+    probe            Where refining would run on this machine
     logs [ARGS..]    The daemon's journal. Arguments go straight to journalctl,
                      so `flow logs -f` and `flow logs --since today` both work.
     retry [N]        Replay a saved dictation, counting back from the newest.
@@ -40,7 +41,9 @@ COMMANDS
     version          Print the version
 
 FLAGS
-    --raw            Skip the cleanup model for this run
+    --speech-only    install: skip the optional refining model
+    --porcelain      install: report progress as lines, for the setup screen
+    --raw            Skip the refining model for this run
     --terminal       Type the text out instead of pasting it
     --no-ptt         Do not watch the hotkey
     --denoise | --no-denoise
@@ -77,8 +80,15 @@ fn main() -> Result<()> {
         Some("start") => return ipc::send(ipc::START),
         Some("stop") => return ipc::send(ipc::STOP),
         Some("install") => {
-            return install::run(args.iter().any(|a| a == "--speech-only"))
+            let speech_only = args.iter().any(|a| a == "--speech-only");
+            // The console drives the same installer and needs numbers rather
+            // than a bar, so it asks for the machine-readable rendering.
+            if args.iter().any(|a| a == "--porcelain") {
+                return install::run_reported(speech_only, &mut install::to_console);
+            }
+            return install::run(speech_only);
         }
+        Some("probe") => return probe(),
         Some("logs") => return logs(&args[1..]),
         _ => {}
     }
@@ -137,31 +147,43 @@ fn main() -> Result<()> {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
         Some("retry") => {
             let back = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-            retry(&mut engine, back, settings.cleanup, settings.gpu)
+            retry(&mut engine, back, settings.refine, settings.gpu)
         }
         Some("daemon") => {
-            // Cleanup is the point of the tool, so it stays on unless the config
+            // Refining is the point of the tool, so it stays on unless the config
             // or --raw turns it off, or the model is missing.
-            let cleaner = if settings.cleanup {
-                match cleanup::Cleaner::load(
-                    &cleanup::model_path(),
-                    cleanup::vocabulary(),
+            let refiner = if settings.refine {
+                match refine::Refiner::load(
+                    &refine::model_path(),
+                    refine::vocabulary(),
                     settings.gpu,
                 ) {
-                    Ok(cleaner) => {
-                        cleaner.warm_up();
-                        Some(cleaner)
+                    Ok(refiner) => {
+                        refiner.warm_up();
+                        Some(refiner)
                     }
                     Err(err) => {
                         // Dictation still works, so this is not fatal - but the
                         // output silently becomes raw transcript, and without a
                         // word here that reads as the tool getting worse.
-                        notify::failure(
-                            "Flow: cleanup disabled",
-                            "Dictation works, but text will be unpunctuated. \
-                             Run `flow install` if the cleanup model is missing.",
-                        );
-                        eprintln!("cleanup model: {err}");
+                        //
+                        // Only when the file is actually there, though. Setup
+                        // lets people skip this model on purpose, and popping a
+                        // failure notification on every login for a choice they
+                        // made once is nagging, not informing - the console's
+                        // Models screen already says it is missing and offers
+                        // the button that fetches it. A model that is present
+                        // and still will not load is a real fault and does say
+                        // so: a corrupt file or a card that cannot hold it are
+                        // both things the user would otherwise never find out.
+                        if refine::model_path().is_file() {
+                            notify::failure(
+                                "Flow: refining disabled",
+                                "Dictation works, but text will be unpunctuated. \
+                                 See `flow logs` for why the model would not load.",
+                            );
+                        }
+                        eprintln!("refining model: {err}");
                         None
                     }
                 }
@@ -178,7 +200,7 @@ fn main() -> Result<()> {
                 &mut engine,
                 settings.chord.clone(),
                 settings.push_to_talk,
-                cleaner,
+                refiner,
                 live,
             )
         }
@@ -224,9 +246,9 @@ fn wants_usage(args: &[String]) -> bool {
 ///
 /// Unlike `benchmark` this runs the real pipeline rather than timing the
 /// recogniser three times: the transcript people actually receive has been
-/// through cleanup, so a retry that stopped at the raw text would answer a
+/// through refining, so a retry that stopped at the raw text would answer a
 /// question nobody asked.
-fn retry(engine: &mut stt::Stt, back: usize, cleanup_wanted: bool, gpu: Option<usize>) -> Result<()> {
+fn retry(engine: &mut stt::Stt, back: usize, refine_wanted: bool, gpu: Option<usize>) -> Result<()> {
     let takes = recorded_takes()?;
     let Some(raw_path) = takes.iter().rev().nth(back) else {
         bail!(
@@ -255,15 +277,15 @@ fn retry(engine: &mut stt::Stt, back: usize, cleanup_wanted: bool, gpu: Option<u
         println!("denoised  {denoised_text}");
     }
 
-    if !cleanup_wanted {
+    if !refine_wanted {
         return Ok(());
     }
-    match cleanup::Cleaner::load(&cleanup::model_path(), cleanup::vocabulary(), gpu) {
-        Ok(cleaner) => match cleaner.clean(&raw_text) {
-            Ok(cleaned) => println!("cleaned   {cleaned}"),
-            Err(err) => eprintln!("cleanup failed: {err}"),
+    match refine::Refiner::load(&refine::model_path(), refine::vocabulary(), gpu) {
+        Ok(refiner) => match refiner.refine(&raw_text) {
+            Ok(refined) => println!("refined   {refined}"),
+            Err(err) => eprintln!("refining failed: {err}"),
         },
-        Err(err) => eprintln!("cleanup unavailable: {err}"),
+        Err(err) => eprintln!("refining unavailable: {err}"),
     }
     Ok(())
 }
@@ -321,6 +343,47 @@ fn logs(args: &[String]) -> Result<()> {
     .context("running journalctl - is this a systemd machine?")
 }
 
+/// Where refining would run on this machine, as `key<TAB>value` lines.
+///
+/// The console cannot answer this itself: enumerating GPUs means llama.cpp,
+/// and the whole reason the window is a second binary is that it does not carry
+/// that tree. So it asks the daemon binary, which already knows.
+///
+/// The config is read leniently rather than with `?`. A machine part-way
+/// through setup may have no config file at all, and a broken one is a reason
+/// to ignore a `gpu = ` override, not a reason to refuse to say what hardware
+/// is present.
+fn probe() -> Result<()> {
+    let gpu = config::Config::load().ok().and_then(|settings| settings.gpu);
+    let plan = refine::plan(gpu);
+
+    match plan.device {
+        Some(device) => {
+            println!("refine\t{}", device.description);
+            println!(
+                "detail\tVulkan · {:.1} GB free",
+                device.free_bytes as f64 / 1e9
+            );
+        }
+        None => {
+            println!("refine\tCPU");
+            println!(
+                "detail\t{}",
+                if plan.best_free == 0 {
+                    format!("no GPU found · needs {:.1} GB", plan.needed as f64 / 1e9)
+                } else {
+                    format!(
+                        "needs {:.1} GB, the roomiest card has {:.1} GB",
+                        plan.needed as f64 / 1e9,
+                        plan.best_free as f64 / 1e9
+                    )
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Two ways in, and the second is deliberately not compositor-specific.
 ///
 /// Flow watches its own chord on the keyboard, so a fresh install dictates with
@@ -339,7 +402,7 @@ fn daemon(
     engine: &mut stt::Stt,
     chord: hotkey::Chord,
     ptt: bool,
-    cleaner: Option<cleanup::Cleaner>,
+    refiner: Option<refine::Refiner>,
     live: Live,
 ) -> Result<()> {
     let device = audio::open_device()?;
@@ -360,7 +423,7 @@ fn daemon(
     duck::restore_stale();
 
     let (events, incoming) = std::sync::mpsc::channel();
-    // Degrades rather than bails, the way a missing cleanup model does: the signal
+    // Degrades rather than bails, the way a missing refining model does: the signal
     // path is independent, so a machine without /dev/input access should still
     // dictate from a compositor bind instead of refusing to start.
     // Shared with the config watcher, so rebinding the chord in the console
@@ -448,7 +511,7 @@ fn daemon(
                     &mut injector,
                     samples,
                     done,
-                    cleaner.as_ref(),
+                    refiner.as_ref(),
                     island,
                     status,
                     live,
@@ -794,20 +857,20 @@ fn handle(
     samples: Vec<f32>,
     early: Vec<String>,
 
-    cleaner: Option<&cleanup::Cleaner>,
+    refiner: Option<&refine::Refiner>,
     island: &overlay::Overlay,
     reporter: &status::Reporter,
     live: &Live,
 ) -> Result<()> {
     // One read for the whole of this dictation, so a file change part-way
-    // through cannot clean the text but paste it with the other chord.
-    let (terminal, denoise_audio, record_debug, cleanup_wanted) = {
+    // through cannot refine the text but paste it with the other chord.
+    let (terminal, denoise_audio, record_debug, refine_wanted) = {
         let config = live.lock().expect("config");
         (
             config.terminal,
             config.denoise,
             config.record_debug,
-            config.cleanup,
+            config.refine,
         )
     };
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
@@ -893,42 +956,42 @@ fn handle(
 
     // Held the key and hesitated. Pasting "Um" would be noise and sending it to
     // the model produced worse - it deleted the filler and then answered "None."
-    if cleanup::is_only_filler(&text) {
+    if refine::is_only_filler(&text) {
         eprintln!("({spoken:.1}s, {level}, only hesitation - skipped: {text:?})");
         return Ok(());
     }
 
-    // Words, and cleanup is about to take a while. Everything above this point
+    // Words, and refining is about to take a while. Everything above this point
     // returns without drawing anything, so a cough gets no spinner.
     island.working();
 
-    // A cleanup failure must never cost the user their words, so the raw
+    // A refining failure must never cost the user their words, so the raw
     // transcript stands in whenever the model errors or returns nothing.
     //
-    // `cleanup_wanted` is read live, so turning it off takes effect on the next
+    // `refine_wanted` is read live, so turning it off takes effect on the next
     // dictation. Turning it back on only works if the model was loaded at
     // startup - loading one here would stall the paste for several seconds,
     // which is exactly the trade this whole path refuses to make.
-    let final_text = match cleaner.filter(|_| cleanup_wanted) {
-        Some(cleaner) => match cleaner.clean(&text) {
-            Ok(cleaned) if !cleaned.trim().is_empty() => cleaned,
+    let final_text = match refiner.filter(|_| refine_wanted) {
+        Some(refiner) => match refiner.refine(&text) {
+            Ok(refined) if !refined.trim().is_empty() => refined,
             Ok(_) => {
-                eprintln!("cleanup returned nothing, using raw transcript");
+                eprintln!("refining returned nothing, using raw transcript");
                 text.clone()
             }
             Err(err) => {
-                eprintln!("cleanup failed ({err}), using raw transcript");
+                eprintln!("refining failed ({err}), using raw transcript");
                 text.clone()
             }
         },
         None => text.clone(),
     };
-    let cleaned_at = started.elapsed();
+    let refined_at = started.elapsed();
 
     injector.inject(&final_text, terminal)?;
     // Injection is timed because it was once the largest term of the three and
     // nothing pointed at it: a device probe on every paste, invisible in a total.
-    let injected = started.elapsed() - cleaned_at;
+    let injected = started.elapsed() - refined_at;
 
     reporter.finished(status::Dictation {
         text: final_text.clone(),
@@ -951,8 +1014,8 @@ fn handle(
         );
     } else {
         eprintln!(
-            "{spoken:.1}s{head} {level} -> {transcribed:?} stt, {:?} clean, {injected:?} paste, {:?} total\n  raw:   {text}\n  clean: {final_text}",
-            cleaned_at - transcribed,
+            "{spoken:.1}s{head} {level} -> {transcribed:?} stt, {:?} refine, {injected:?} paste, {:?} total\n  raw:   {text}\n  refined: {final_text}",
+            refined_at - transcribed,
             started.elapsed()
         );
     }

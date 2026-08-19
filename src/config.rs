@@ -10,11 +10,11 @@ pub struct Config {
     /// Percentage of its current volume each other app is held at while
     /// recording. 0 disables ducking.
     pub duck: u32,
-    pub cleanup: bool,
+    pub refine: bool,
     pub terminal: bool,
     /// Key combination held to dictate. Only consulted when `push_to_talk` is on.
     pub chord: super::hotkey::Chord,
-    /// Which GPU runs the cleanup model. `None` picks the roomiest discrete one,
+    /// Which GPU runs the refining model. `None` picks the roomiest discrete one,
     /// which is right on every machine tested so far; an index is the escape hatch
     /// for when it is not.
     pub gpu: Option<usize>,
@@ -36,7 +36,7 @@ impl Default for Config {
         Self {
             push_to_talk: true,
             duck: 50,
-            cleanup: true,
+            refine: true,
             terminal: false,
             chord: super::hotkey::Chord::default(),
             gpu: None,
@@ -83,7 +83,7 @@ impl Config {
 
             match key {
                 "push_to_talk" => config.push_to_talk = boolean(&at, key, value)?,
-                "cleanup" => config.cleanup = boolean(&at, key, value)?,
+                "refine" => config.refine = boolean(&at, key, value)?,
                 "terminal" => config.terminal = boolean(&at, key, value)?,
                 "denoise" => config.denoise = boolean(&at, key, value)?,
                 "record_debug" => config.record_debug = boolean(&at, key, value)?,
@@ -117,7 +117,7 @@ impl Config {
         let present = |flag: &str| args.iter().any(|arg| arg == flag);
 
         self.push_to_talk &= !present("--no-ptt");
-        self.cleanup &= !present("--raw");
+        self.refine &= !present("--raw");
         self.terminal |= present("--terminal");
         self.denoise |= present("--denoise");
         self.denoise &= !present("--no-denoise");

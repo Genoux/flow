@@ -48,10 +48,18 @@ command -v update-desktop-database >/dev/null && update-desktop-database "$apps"
 command -v gtk-update-icon-cache >/dev/null &&
   gtk-update-icon-cache -qtf "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 
-# Models, config and vocabulary. Run through the freshly installed binary so a
-# stale one in the repo cannot be what seeds the config.
-say "Fetching models"
-"$bin_dir/flow" install "$@"
+# Models are deliberately NOT fetched here. They are ~3 GB, and a terminal that
+# sits on a progress bar for twenty minutes is the worst first impression this
+# tool can make. Opening Flow shows a setup screen that downloads them, says
+# which GPU it found while it does, and starts the daemon at the end.
+#
+# `flow install` still exists and still does the whole job, for a scripted or
+# headless install that wants it: run it yourself, or pass --models here.
+if [ "${1:-}" = "--models" ]; then
+  shift
+  say "Fetching models"
+  "$bin_dir/flow" install "$@"
+fi
 
 # The question is whether this user can open /dev/uinput, not whether our rule
 # file exists. Many setups already grant it - a logind uaccess ACL, an existing
@@ -88,9 +96,15 @@ case ":$PATH:" in
      echo "  Add it in your shell's rc file, or the desktop entry will work and the terminal will not."
      ;;
 esac
+# The one instruction that matters is first and on its own. Everything under
+# it is for later; the models are not downloaded yet, so anything that suggests
+# starting the daemon before opening the window would only start a daemon with
+# nothing to load.
 cat <<EOF
-Start it now:         systemctl --user start flow.service
+Open Flow to finish setting up - it downloads the models and starts the daemon.
+
+  flow-console          or "Flow" in your launcher
+
 Start it at login:    systemctl --user enable flow.service
-Settings and history:  flow-console  (or "Flow" in your launcher)
-Everything else:       flow help
+Everything else:      flow help
 EOF

@@ -18,7 +18,13 @@ use std::time::{Duration, Instant};
 /// Two rules carry most of the weight. "Never addressed to you" stops the model
 /// answering a dictated question instead of transcribing it. "Repeat it
 /// unchanged" stops it rewriting sentences that were already fine, which is how
-/// a cleanup pass quietly starts putting words in the speaker's mouth.
+/// a refining pass quietly starts putting words in the speaker's mouth.
+///
+/// The prompt still says "clean up" while the rest of the product says
+/// "refine", and that is deliberate. This wording is measured, not decorative -
+/// it has already been retuned twice to stop the model translating - so it is
+/// not something to reword for consistency with a UI label. Change it only with
+/// `tests/language.rs` and `tests/refine.rs` rerun against the result.
 const SYSTEM: &str = "\
 You clean up raw speech-to-text transcripts.
 
@@ -62,14 +68,14 @@ fn backend() -> Result<&'static LlamaBackend> {
         .ok_or_else(|| anyhow!("llama backend failed to initialise"))
 }
 
-/// How long cleanup may take before the raw transcript is shipped instead.
+/// How long refining may take before the raw transcript is shipped instead.
 ///
 /// Polish is worth a moment, never an unbounded one: the model went from a 469ms
 /// median on a discrete GPU to 4-9s on an integrated one, and the dictation
 /// arriving nine seconds after the key was released reads as the binding having
 /// failed. Parakeet already punctuates and capitalises, so the fallback is a
 /// slightly rougher sentence rather than no sentence.
-const CLEANUP_BUDGET: Duration = Duration::from_millis(2_500);
+const REFINE_BUDGET: Duration = Duration::from_millis(2_500);
 
 /// Filler words the prompt asks the model to delete. Only used to decide whether
 /// an utterance carries anything, never to edit text - deleting these by string
@@ -99,20 +105,20 @@ const TRIVIAL_WORDS: usize = 4;
 ///
 /// `None` for anything short or ambiguous. Guessing would be worse than not
 /// knowing: every caller here treats a detected mismatch as a reason to throw the
-/// cleanup away, so a false positive silently switches cleanup off.
+/// refining away, so a false positive silently switches refining off.
 pub fn language(text: &str) -> Option<whatlang::Lang> {
     whatlang::detect(text)
         .filter(|info| info.is_reliable())
         .map(|info| info.lang())
 }
 
-/// Did cleanup translate?
+/// Did refining translate?
 ///
 /// The prompt has forbidden translation since commit 03085c6 and the model still
 /// does it - Québécois French with English loanwords came back entirely in
 /// English. Asking more firmly has been tried; this checks instead.
-pub fn changed_language(cleaned: &str, raw: &str) -> bool {
-    match (language(raw), language(cleaned)) {
+pub fn changed_language(refined: &str, raw: &str) -> bool {
+    match (language(raw), language(refined)) {
         (Some(before), Some(after)) => before != after,
         // One of them could not be placed, so there is nothing to compare.
         _ => false,
@@ -129,7 +135,7 @@ fn words(raw: &str) -> Vec<String> {
 
 /// A transcript with no words in it - somebody held the key and hesitated.
 ///
-/// Worth its own check because the model handles it badly: asked to clean "Uh" it
+/// Worth its own check because the model handles it badly: asked to refine "Uh" it
 /// deletes the filler, finds nothing left, and answers the question it thinks it
 /// was asked, pasting the literal word "None." Nothing is the right output here,
 /// and nothing is cheaper to produce than to repair.
@@ -145,27 +151,27 @@ pub fn is_only_filler(raw: &str) -> bool {
         || words.iter().all(|word| FILLERS.contains(&word.as_str()))
 }
 
-/// The model declining rather than cleaning.
+/// The model declining rather than refining.
 ///
 /// Checked against the raw text so a genuine "None." survives: if the speaker
 /// never said the word, the model invented it, and inventing words is the one
-/// thing cleanup must never do.
-fn is_non_answer(cleaned: &str, raw: &str) -> bool {
+/// thing refining must never do.
+fn is_non_answer(refined: &str, raw: &str) -> bool {
     const REFUSALS: [&str; 5] = ["none", "n/a", "nothing", "empty", "no text"];
-    let trimmed = cleaned.trim().trim_end_matches(['.', '!']).to_lowercase();
+    let trimmed = refined.trim().trim_end_matches(['.', '!']).to_lowercase();
     REFUSALS.contains(&trimmed.as_str()) && !raw.to_lowercase().contains(&trimmed)
 }
 
 /// Is there anything here for the model to do?
 ///
 /// A capitalised, terminally punctuated, filler-free phrase of a few words is
-/// already what cleanup would return, and ~20% of real dictations are exactly
+/// already what refining would return, and ~20% of real dictations are exactly
 /// that - "Yeah.", "Mm-hmm.", "Thank you." Skipping the model there is the
 /// difference between instant and noticeably late on the shortest inputs.
 ///
-/// Deliberately biased towards saying yes: a needless cleanup pass costs
+/// Deliberately biased towards saying yes: a needless refining pass costs
 /// milliseconds, while wrongly skipping one ships unpunctuated text.
-pub fn needs_cleanup(raw: &str) -> bool {
+pub fn needs_refining(raw: &str) -> bool {
     let text = raw.trim();
     if text.is_empty() {
         return false;
@@ -188,7 +194,7 @@ pub fn needs_cleanup(raw: &str) -> bool {
     })
 }
 
-/// A GPU the cleanup model could be offloaded to. Mirrors the fields of
+/// A GPU the refining model could be offloaded to. Mirrors the fields of
 /// llama.cpp's device list that matter, so [`choose_device`] can be tested
 /// against real machine topologies without a GPU present.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,6 +226,53 @@ pub fn choose_device(candidates: &[Candidate], needed: u64) -> Option<&Candidate
 /// Q4_K_M at its 512-token context: 108MB KV, 302MB compute.
 const DEVICE_OVERHEAD: u64 = 512 * 1024 * 1024;
 
+/// Where refining will run, decided without loading anything.
+///
+/// Exists so the setup screen can say where the work will happen *before* the
+/// model is on disk. It calls the same [`choose_device`] against the same
+/// candidate list that [`Refiner::load`] does, so the promise the window makes
+/// during setup is the one the daemon keeps afterwards - a second, simpler
+/// guess in the console would eventually contradict it.
+pub struct Plan {
+    /// `None` means the CPU, which is a working answer rather than a failure.
+    pub device: Option<Candidate>,
+    pub needed: u64,
+    /// The roomiest card seen, whether or not it was big enough. What turns
+    /// "running on the CPU" into "running on the CPU *because*".
+    pub best_free: u64,
+}
+
+/// How much room the refining model wants. Falls back to the pinned download
+/// size when the file is not there yet, which is exactly the setup case.
+fn needed_bytes() -> u64 {
+    std::fs::metadata(model_path())
+        .map(|meta| meta.len())
+        .unwrap_or_else(|_| crate::install::total_bytes(crate::install::REFINE))
+        + DEVICE_OVERHEAD
+}
+
+pub fn plan(gpu: Option<usize>) -> Plan {
+    let needed = needed_bytes();
+    let available = candidates();
+    let best_free = available.iter().map(|c| c.free_bytes).max().unwrap_or(0);
+
+    // An explicit index is the escape hatch, and it is deliberately not
+    // validated against `needed`: someone overriding this knows their machine
+    // better than a size estimate does.
+    let device = match gpu {
+        Some(index) => match available.iter().find(|c| c.index == index) {
+            Some(candidate) => Some(candidate.clone()),
+            None => {
+                eprintln!("config wants gpu {index}, which is not a GPU here - falling back to auto");
+                choose_device(&available, needed).cloned()
+            }
+        },
+        None => choose_device(&available, needed).cloned(),
+    };
+
+    Plan { device, needed, best_free }
+}
+
 fn candidates() -> Vec<Candidate> {
     use llama_cpp_2::LlamaBackendDeviceType as Kind;
     llama_cpp_2::list_llama_ggml_backend_devices()
@@ -241,7 +294,7 @@ fn candidates() -> Vec<Candidate> {
 }
 
 pub fn model_path() -> PathBuf {
-    flow_paths::cleanup_model_file()
+    flow_paths::refine_model_file()
 }
 
 /// Terms the recogniser mangles, one per line, from
@@ -265,7 +318,7 @@ pub fn vocabulary() -> Vec<String> {
         .collect()
 }
 
-pub struct Cleaner {
+pub struct Refiner {
     model: LlamaModel,
     /// Terms the recogniser tends to mangle - product names, jargon. Fed to the
     /// model as context rather than string-replaced, because "Flow" and "flow"
@@ -273,37 +326,23 @@ pub struct Cleaner {
     vocabulary: Vec<String>,
 }
 
-impl Cleaner {
+impl Refiner {
     pub fn load(path: &Path, vocabulary: Vec<String>, gpu: Option<usize>) -> Result<Self> {
         let started = Instant::now();
         let backend = backend()?;
 
-        let needed = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) + DEVICE_OVERHEAD;
-        let available = candidates();
-
-        // An explicit index is the escape hatch, and it is deliberately not
-        // validated against `needed`: someone overriding this knows their machine
-        // better than a size estimate does.
-        let chosen = match gpu {
-            Some(index) => match available.iter().find(|c| c.index == index) {
-                Some(candidate) => Some(candidate),
-                None => {
-                    eprintln!(
-                        "config wants gpu {index}, which is not a GPU here - falling back to auto"
-                    );
-                    choose_device(&available, needed)
-                }
-            },
-            None => choose_device(&available, needed),
-        };
+        // The same decision the setup screen showed, from the same function:
+        // a window that promised the RTX and a daemon that then used the iGPU
+        // would be worse than either answer on its own.
+        let chosen = plan(gpu);
 
         // Offloading everything is the whole point of leaving STT on the CPU, but
         // only onto a device that can hold it: too little VRAM either fails the
         // load or thrashes, and slow-but-correct on the CPU beats both.
-        let params = match chosen {
+        let params = match &chosen.device {
             Some(candidate) => {
                 eprintln!(
-                    "cleanup on gpu {} ({}, {:.1} GB free)",
+                    "refining on gpu {} ({}, {:.1} GB free)",
                     candidate.index,
                     candidate.description,
                     candidate.free_bytes as f64 / 1e9
@@ -314,15 +353,12 @@ impl Cleaner {
             }
             None => {
                 eprintln!(
-                    "cleanup on cpu: no GPU with {:.1} GB free{}",
-                    needed as f64 / 1e9,
-                    if available.is_empty() {
+                    "refining on cpu: no GPU with {:.1} GB free{}",
+                    chosen.needed as f64 / 1e9,
+                    if chosen.best_free == 0 {
                         String::new()
                     } else {
-                        format!(
-                            " (best was {:.1} GB)",
-                            available.iter().map(|c| c.free_bytes).max().unwrap_or(0) as f64 / 1e9
-                        )
+                        format!(" (best was {:.1} GB)", chosen.best_free as f64 / 1e9)
                     }
                 );
                 LlamaModelParams::default().with_n_gpu_layers(0)
@@ -332,7 +368,7 @@ impl Cleaner {
         let model = LlamaModel::load_from_file(backend, path, &params)
             .with_context(|| format!("loading {}", path.display()))?;
 
-        eprintln!("cleanup model loaded in {:?}", started.elapsed());
+        eprintln!("refining model loaded in {:?}", started.elapsed());
         Ok(Self { model, vocabulary })
     }
 
@@ -341,8 +377,8 @@ impl Cleaner {
     /// first dictation.
     pub fn warm_up(&self) {
         let started = Instant::now();
-        if self.clean("um hello").is_ok() {
-            eprintln!("cleanup warmed up in {:?}", started.elapsed());
+        if self.refine("um hello").is_ok() {
+            eprintln!("refining warmed up in {:?}", started.elapsed());
         }
     }
 
@@ -368,20 +404,20 @@ impl Cleaner {
         prompt
     }
 
-    /// Cleans within the shipping budget. The prompt's behaviour is tested
-    /// through [`Cleaner::clean_within`] instead, so the regression suite measures
+    /// Refines within the shipping budget. The prompt's behaviour is tested
+    /// through [`Refiner::refine_within`] instead, so the regression suite measures
     /// what the model writes rather than how fast this machine's GPU is.
-    pub fn clean(&self, raw: &str) -> Result<String> {
-        self.clean_within(raw, CLEANUP_BUDGET)
+    pub fn refine(&self, raw: &str) -> Result<String> {
+        self.refine_within(raw, REFINE_BUDGET)
     }
 
-    pub fn clean_within(&self, raw: &str, budget_for: Duration) -> Result<String> {
+    pub fn refine_within(&self, raw: &str, budget_for: Duration) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
-        // Inside `clean` rather than at the call site so every caller gets it,
+        // Inside `refine` rather than at the call site so every caller gets it,
         // and so the gate is impossible to forget when another one appears.
-        if !needs_cleanup(raw) {
+        if !needs_refining(raw) {
             return Ok(raw.trim().to_string());
         }
 
@@ -395,7 +431,7 @@ impl Cleaner {
         let tokens = self.model.str_to_token(&prompt, AddBos::Always)?;
         let spoken = self.model.str_to_token(raw, AddBos::Never)?.len();
 
-        // Cleanup only ever shortens or lightly rewrites, so a generous ceiling
+        // Refining only ever shortens or lightly rewrites, so a generous ceiling
         // still catches the model going off and answering instead.
         let budget = (spoken * 2 + 32) as i32;
 
@@ -430,9 +466,9 @@ impl Cleaner {
             // Bounded so the wait between speaking and seeing text cannot run
             // away with the hardware. Erroring rather than returning the partial
             // generation hands main.rs the raw transcript, which is a finished
-            // sentence - a truncated cleanup would not be.
+            // sentence - a truncated refining would not be.
             if Instant::now() > deadline {
-                bail!("cleanup exceeded {budget_for:?}");
+                bail!("refining exceeded {budget_for:?}");
             }
             let token = sampler.sample(&ctx, -1);
             sampler.accept(token);
@@ -447,20 +483,20 @@ impl Cleaner {
             ctx.decode(&mut batch)?;
         }
 
-        let cleaned = tidy(&output);
-        if is_non_answer(&cleaned, raw) {
-            bail!("cleanup answered {cleaned:?} instead of cleaning");
+        let refined = tidy(&output);
+        if is_non_answer(&refined, raw) {
+            bail!("the model answered {refined:?} instead of refining it");
         }
         // Losing the polish is a nuisance; losing the language the words were
         // spoken in makes the transcript somebody else's sentence.
-        if changed_language(&cleaned, raw) {
+        if changed_language(&refined, raw) {
             bail!(
-                "cleanup translated {:?} into {:?}",
+                "refining translated {:?} into {:?}",
                 language(raw).map(|l| l.eng_name()).unwrap_or("?"),
-                language(&cleaned).map(|l| l.eng_name()).unwrap_or("?")
+                language(&refined).map(|l| l.eng_name()).unwrap_or("?")
             );
         }
-        Ok(cleaned)
+        Ok(refined)
     }
 }
 
