@@ -181,6 +181,8 @@ enum Message {
     CancelCapture,
     /// Put the chord back to what a fresh install uses.
     ResetChord,
+    /// Delete the `.part` files a stopped install left behind.
+    DiscardPartial,
     TypingTerm(String),
     AddTerm,
     RemoveTerm(usize),
@@ -239,6 +241,9 @@ struct Console {
     /// True while the release tarball is downloading and installing.
     updating: bool,
     models: Vec<system::Model>,
+    /// Bytes sitting in unfinished `.part` downloads. Zero on a clean install,
+    /// and then the Models screen says nothing about them.
+    partial: u64,
     /// Some until the models are on disk. While it is set the window is the
     /// setup screen and nothing else - no rail, no sections. See `setup`.
     setup: Option<setup::State>,
@@ -312,6 +317,7 @@ impl Console {
                     None => system::models(),
                 },
                 setup: first_run.then(setup::State::default),
+                partial: system::partial_bytes(),
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
@@ -507,6 +513,13 @@ impl Console {
                     Message::Captured,
                 );
             }
+            Message::DiscardPartial => {
+                match system::discard_partials() {
+                    Ok(()) => self.save_error = None,
+                    Err(err) => self.save_error = Some(err),
+                }
+                self.partial = system::partial_bytes();
+            }
             Message::ResetChord => {
                 self.settings.hotkey = settings::DEFAULT_HOTKEY.to_string();
                 self.chord_error = None;
@@ -616,6 +629,7 @@ impl Console {
                 // load. Re-read it rather than opening the console on the
                 // emptiness setup just finished fixing.
                 self.models = system::models();
+                self.partial = system::partial_bytes();
                 self.input = system::default_input();
                 self.entries = history::recent();
                 self.autostart = system::autostart_enabled();
@@ -1227,6 +1241,13 @@ impl Console {
             })
             .collect();
 
+        // Only when there is something stranded. A row explaining that you
+        // have no unfinished downloads would be a row about nothing.
+        let mut rows = rows;
+        if self.partial > 0 {
+            rows.push(self.partial_row());
+        }
+
         let total = format!(
             "{} in {}",
             system::human_bytes(self.models.iter().map(|m| m.bytes).sum()),
@@ -1252,6 +1273,48 @@ impl Console {
                 }),
             )),
         )
+    }
+
+    /// What a skipped or interrupted download left behind, and the way to be
+    /// rid of it.
+    ///
+    /// Kept by default because curl resumes from it, so changing your mind
+    /// costs only the bytes that never arrived. This row exists for the other
+    /// case: deciding you never wanted the model at all, which the file itself
+    /// has no way of knowing.
+    fn partial_row(&self) -> Element<'_, Message> {
+        container(
+            row![
+                column![
+                    text("Unfinished download").size(13.5).color(FG),
+                    Space::new().height(3),
+                    text(
+                        "From an install that stopped early. Installing again resumes from it \
+                         instead of starting over.",
+                    )
+                    .size(12)
+                    .color(FAINT),
+                ]
+                .width(Length::FillPortion(3)),
+                Space::new().width(20),
+                container(
+                    row![
+                        text(system::human_bytes(self.partial))
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .color(FAINT),
+                        Space::new().width(14),
+                        action_msg("Discard", false, Message::DiscardPartial),
+                    ]
+                    .align_y(iced::Center),
+                )
+                .width(Length::FillPortion(2))
+                .align_x(iced::alignment::Horizontal::Right),
+            ]
+            .align_y(iced::Center),
+        )
+        .padding([ROW_PAD, 0.0])
+        .into()
     }
 
     fn about_section(&self) -> Element<'_, Message> {
