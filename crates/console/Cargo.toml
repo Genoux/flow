@@ -12,8 +12,13 @@ description = "Status and settings window for the Flow dictation daemon"
 [dependencies]
 iced = "0.14"
 serde_json = "1.0"
-evdev = "0.13"
 flow-paths = { path = "../flow-paths" }
+
+# Linux-only, and the only dependency here that is: evdev is the chord picker
+# reading /dev/input. Keeping it off other platforms is what lets the window
+# build on a Mac for design work - see the `chord` module in main.rs.
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
 
 [[bin]]
 name = "flow-console"
