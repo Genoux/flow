@@ -135,6 +135,15 @@ impl Injector {
         }
     }
 
+    /// Which backend `new` settled on. The fallback is silent by design, so
+    /// this is the only way a caller can tell that the Wayland path was lost.
+    pub fn backend(&self) -> &'static str {
+        match self.backend {
+            Backend::Wayland(_) => "wayland",
+            Backend::Uinput(_) => "uinput",
+        }
+    }
+
     /// Put `text` in the focused window by staging it on the clipboard and
     /// sending one paste chord from Flow's own keyboard.
     ///
