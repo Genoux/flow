@@ -182,6 +182,56 @@ pub fn models() -> Vec<Model> {
     ]
 }
 
+/// Every unfinished download under the models directory, and what they weigh.
+///
+/// An interrupted or skipped install leaves its `.part` file behind on purpose:
+/// curl resumes from it, so coming back later costs only the bytes that never
+/// arrived. That is the right default for "not now" and the wrong one for
+/// "never" - somebody who skips at 60% of a 2.5 GB file and never wants it has
+/// 1.5 GB of nothing, and nothing on screen ever mentions it.
+///
+/// So the window counts them and offers to let them go. Listed rather than
+/// summed blindly: `discard` deletes exactly what this returns, and a function
+/// that decides what to delete separately from what it showed is a function
+/// that will eventually delete something else.
+pub fn partial_downloads() -> Vec<PathBuf> {
+    parts_in(&flow_paths::models_dir())
+}
+
+/// Split from `partial_downloads` so the rule can be tested against a real
+/// directory without moving the whole models tree. What it must never do is
+/// return anything that is not a `.part` file - the caller deletes these.
+fn parts_in(dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        if path.is_dir() {
+            found.extend(parts_in(&path));
+        } else if path.extension().is_some_and(|ext| ext == "part") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+pub fn partial_bytes() -> u64 {
+    partial_downloads().iter().map(|path| size_of(path)).sum()
+}
+
+/// Delete the unfinished downloads. Only ever files this same module just
+/// listed, and only ever ones named `.part` under the models directory - a
+/// finished model has already been renamed off that extension, so there is no
+/// path where this can take one.
+pub fn discard_partials() -> Result<(), String> {
+    for path in partial_downloads() {
+        std::fs::remove_file(&path)
+            .map_err(|err| format!("could not delete {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// The biggest `.gguf` in `root`, which is the refining model. Biggest rather
 /// than first so a leftover from an older, smaller model is not mistaken for
 /// the one in use.
@@ -267,6 +317,34 @@ const OPENER: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The delete path's one rule. A finished model has been renamed off the
+    /// `.part` extension, so nothing here may ever pick one up.
+    #[test]
+    fn only_part_files_are_ever_collected() {
+        let root = std::env::temp_dir().join(format!("flow-parts-{}", std::process::id()));
+        let nested = root.join("tdt");
+        std::fs::create_dir_all(&nested).expect("temp dir");
+
+        for (path, name) in [
+            (&root, "qwen3-4b-instruct-q4km.part"),
+            (&root, "qwen3-4b-instruct-q4km.gguf"),
+            (&nested, "encoder-model.int8.part"),
+            (&nested, "encoder-model.int8.onnx"),
+            (&nested, "vocab.txt"),
+        ] {
+            std::fs::write(path.join(name), b"x").expect("write");
+        }
+
+        let mut found: Vec<String> = parts_in(&root)
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+
+        assert_eq!(found, ["encoder-model.int8.part", "qwen3-4b-instruct-q4km.part"]);
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn bytes_read_the_way_a_person_would() {
