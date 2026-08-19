@@ -265,12 +265,21 @@ pub fn open(path: &std::path::Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("{} does not exist yet", path.display()));
     }
-    match run("xdg-open", &[&path.display().to_string()]) {
+    match run(OPENER, &[&path.display().to_string()]) {
         Some(output) if output.status.success() => Ok(()),
-        Some(_) => Err("xdg-open could not open it".to_string()),
-        None => Err("xdg-open is not available".to_string()),
+        Some(_) => Err(format!("{OPENER} could not open it")),
+        None => Err(format!("{OPENER} is not available")),
     }
 }
+
+/// The desktop's handler goes by a different name on macOS, where the console
+/// is built for design work. Named in the error text too, so a failure says
+/// which tool was actually missing.
+const OPENER: &str = if cfg!(target_os = "macos") {
+    "open"
+} else {
+    "xdg-open"
+};
 
 #[cfg(test)]
 mod tests {

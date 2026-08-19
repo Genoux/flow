@@ -7,7 +7,24 @@
 //! `config.toml`, `history` reads the transcript log, `vocabulary` edits
 //! `vocabulary.txt`.
 
+#[cfg(target_os = "linux")]
 mod chord;
+
+/// Capturing a chord means reading `/dev/input` below the compositor, and only
+/// Linux has it. Elsewhere the console is a window for looking at and laying
+/// out - the picker reports itself unavailable, which is the same answer Linux
+/// gives when `/dev/input` is not readable, so no call site changes.
+#[cfg(not(target_os = "linux"))]
+mod chord {
+    pub fn available() -> bool {
+        false
+    }
+
+    pub fn capture(_cancel: &dyn Fn() -> bool) -> Option<String> {
+        None
+    }
+}
+
 mod daemon;
 mod history;
 mod settings;
@@ -88,6 +105,10 @@ fn main() -> iced::Result {
             min_size: Some(iced::Size::new(640.0, 460.0)),
             // Without this the Wayland app_id is empty, so compositor window
             // rules, taskbars and .desktop matching have nothing to key on.
+            // The field is itself Linux-only - macOS names its window through
+            // the bundle, and its PlatformSpecific has different fields
+            // entirely, so this cannot be set unconditionally.
+            #[cfg(target_os = "linux")]
             platform_specific: iced::window::settings::PlatformSpecific {
                 application_id: "flow-console".to_string(),
                 ..Default::default()
