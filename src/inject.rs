@@ -6,8 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wl_clipboard_rs::copy::{self, MimeSource, MimeType as CopyMime, Options, Source};
 use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
-use xkb_type::wayland_vk::WaylandVkKeyboard;
-use xkb_type::KeyInjector;
+use crate::wayland_vk::VirtualKeyboard;
 
 /// uinput devices need a moment for udev to create the node and for compositors
 /// to pick them up; emitting immediately after build silently drops events.
@@ -93,7 +92,7 @@ static CLIPBOARD_GENERATION: AtomicUsize = AtomicUsize::new(0);
 /// the fallback for X11 or the handful of Wayland compositors that don't
 /// implement the protocol.
 enum Backend {
-    Wayland(WaylandVkKeyboard),
+    Wayland(VirtualKeyboard),
     Uinput(VirtualDevice),
 }
 
@@ -110,7 +109,7 @@ impl Injector {
     /// when the compositor doesn't advertise the protocol (or there is no
     /// Wayland session, e.g. X11).
     pub fn new() -> Result<Self> {
-        match WaylandVkKeyboard::new(KEY_DELAY) {
+        match VirtualKeyboard::new(KEY_DELAY) {
             Ok(kb) => {
                 eprintln!("inject: using wayland virtual-keyboard");
                 Ok(Self {

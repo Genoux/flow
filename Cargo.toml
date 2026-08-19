@@ -1,12 +1,12 @@
 [workspace]
 # Declared explicitly because path dependencies are NOT members by default:
-# without this, `cargo test --workspace` built xkb-type and flow-paths but ran
-# none of their tests. xkb-type had 61 of them, and had never run one.
+# without this, `cargo test --workspace` built flow-paths but ran none of its
+# tests.
 #
 # The console stays out on purpose - it is its own workspace root so that
 # iced's tree and llama.cpp's tree are never resolved together. CI runs it as
 # a separate step.
-members = [".", "crates/flow-paths", "crates/xkb-type"]
+members = [".", "crates/flow-paths"]
 exclude = ["crates/console"]
 
 [package]
@@ -30,8 +30,8 @@ realfft = "3.5.0"
 signal-hook = "0.4.4"
 wayland-client = "0.31.15"
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wl-clipboard-rs = "0.9.3"
-xkb-type = { path = "crates/xkb-type", features = ["wayland-vk"] }
 nnnoiseless = { version = "0.5", default-features = false }
 rubato = "0.15"
 whatlang = "0.18.0"
