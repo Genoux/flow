@@ -1,17 +1,22 @@
-//! Whether a newer Flow exists than the one running.
+//! Whether a newer Flow exists than the one running, and installing it.
 //!
 //! Asks GitHub for the newest published release and compares its tag against
-//! this build's version. Checking only: telling you an update exists is a
-//! different job from replacing a daemon while it runs, and only the first one
-//! is safe to do from a settings window.
+//! this build's version. Installing is the release tarball unpacked into a
+//! temporary directory and its own `packaging/install.sh` run from there - the
+//! same script a person would run by hand, rather than a second install path
+//! that can drift from it.
 //!
 //! curl rather than an HTTP crate, the same call `install.rs` already makes for
 //! the models. An update check does not justify pulling reqwest, rustls and an
 //! async runtime into a window whose dependency tree is already iced and wgpu.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const LATEST_RELEASE: &str = "https://api.github.com/repos/Genoux/flow/releases/latest";
+
+/// Where the release workflow's tarball lands, named after the tag it was cut
+/// from. Kept in step with the `Package` step in `.github/workflows/release.yml`.
+const DOWNLOAD: &str = "https://github.com/Genoux/flow/releases/download";
 
 /// How long to wait on GitHub before giving up. A settings window that hangs on
 /// a dead network is worse than one that says it could not check.
@@ -26,6 +31,10 @@ pub enum Status {
     Checking,
     Current,
     Available(String),
+    /// Installed, but not running yet: this window and the daemon are still the
+    /// old binaries until they are restarted, and saying "up to date" while the
+    /// old one is on screen would be a lie.
+    Installed(String),
     /// Kept as text because every reason a user can act on is different: no
     /// releases yet, no network, no curl.
     Failed(String),
@@ -73,6 +82,56 @@ pub fn latest() -> Status {
         "403" => Status::Failed("GitHub rate limit reached, try later".into()),
         other => Status::Failed(format!("GitHub returned {other}")),
     }
+}
+
+/// Download the release tarball for `tag` and run its installer.
+///
+/// Blocking, and long: this is a download of a few tens of megabytes followed
+/// by a script. Call it off the UI thread.
+///
+/// The console replaces its own binary here, which works because `install`
+/// unlinks the destination before writing - the running process keeps the file
+/// it was started from. It does mean the new version only appears on the next
+/// launch, which is what `Status::Installed` exists to say.
+pub fn install(tag: &str) -> Result<(), String> {
+    let name = format!("flow-{tag}-x86_64-linux");
+    let dir = std::env::temp_dir().join(format!("flow-update-{tag}"));
+    // Left over from an interrupted attempt otherwise, and tar would unpack
+    // over a half-written tree.
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+
+    let tarball = dir.join(format!("{name}.tar.gz"));
+    run(Command::new("curl")
+        .args(["-sSL", "--fail", "--max-time", "600", "-o"])
+        .arg(&tarball)
+        .arg(format!("{DOWNLOAD}/{tag}/{name}.tar.gz")))?;
+    run(Command::new("tar").arg("xzf").arg(&tarball).arg("-C").arg(&dir))?;
+    run(Command::new("bash").arg(dir.join(&name).join("packaging/install.sh")))?;
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Run a command to completion, failing with whatever it said on stderr.
+fn run(command: &mut Command) -> Result<(), String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let output = command
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("{program}: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // The last line: a failing install.sh ends on the step that broke, and the
+    // hundred lines of progress above it are not what went wrong.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr.trim().lines().last().unwrap_or_default().trim();
+    Err(if reason.is_empty() {
+        format!("{program} failed")
+    } else {
+        reason.to_string()
+    })
 }
 
 fn tag_of(json: &str) -> Option<String> {

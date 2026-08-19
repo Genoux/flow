@@ -34,6 +34,9 @@ const LINE: Color = Color { r: 0.106, g: 0.118, b: 0.137, a: 1.0 }; // #1B1E23
 const RAISED: Color = Color { r: 0.102, g: 0.110, b: 0.125, a: 1.0 }; // #1A1C20
 const ACCENT: Color = Color { r: 0.847, g: 0.651, b: 0.341, a: 1.0 }; // #D8A657
 const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
+/// The only green in the product, and it means exactly one thing: nothing to
+/// do. Muted to the same weight as ERR so a row of dots reads as one family.
+const OK: Color = Color { r: 0.549, g: 0.729, b: 0.478, a: 1.0 }; // #8CBA7A
 const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
 
 const RAIL_WIDTH: f32 = 176.0;
@@ -187,6 +190,8 @@ enum Message {
     ModelsInstalled(Result<(), String>),
     CheckUpdate,
     UpdateChecked(update::Status),
+    InstallUpdate,
+    UpdateInstalled(Result<String, String>),
 }
 
 struct Console {
@@ -213,6 +218,8 @@ struct Console {
     /// Result of the last update check. Starts Unknown: opening a settings
     /// window should not put a network call in the path of flipping a switch.
     update: update::Status,
+    /// True while the release tarball is downloading and installing.
+    updating: bool,
     models: Vec<system::Model>,
     /// True while `flow install` is running in the background.
     installing_models: bool,
@@ -254,6 +261,7 @@ impl Console {
                 history_editors,
                 daily_words: history::daily_words(CALENDAR_DAYS),
                 update: update::Status::default(),
+                updating: false,
                 models: system::models(),
                 installing_models: false,
                 session: system::session(),
@@ -456,6 +464,24 @@ impl Console {
                 }
             }
             Message::UpdateChecked(status) => self.update = status,
+            Message::InstallUpdate => {
+                if let (false, update::Status::Available(tag)) = (self.updating, &self.update) {
+                    let tag = tag.clone();
+                    self.updating = true;
+                    self.save_error = None;
+                    return Task::perform(
+                        async move { update::install(&tag).map(|()| tag) },
+                        Message::UpdateInstalled,
+                    );
+                }
+            }
+            Message::UpdateInstalled(result) => {
+                self.updating = false;
+                match result {
+                    Ok(tag) => self.update = update::Status::Installed(tag),
+                    Err(err) => self.save_error = Some(err),
+                }
+            }
             Message::ModelsInstalled(result) => {
                 self.installing_models = false;
                 match result {
@@ -922,8 +948,7 @@ impl Console {
         let config = settings::config_path().display().to_string();
         let history_file = history::path().display().to_string();
         let rows: Vec<Element<Message>> = vec![
-            fact_row("Version", update::running()),
-            fact_row("Updates", update_summary(&self.update)),
+            self.version_row(),
             fact_row("Session", self.session.clone()),
             fact_row("Config", config),
             fact_row("History", history_file),
@@ -937,21 +962,51 @@ impl Console {
                 row![
                     Space::new().width(Fill),
                     action_msg("Open config", false, Message::OpenConfig),
-                    Space::new().width(8),
-                    action_msg(
-                        if self.update == update::Status::Checking {
-                            "Checking..."
-                        } else {
-                            "Check for updates"
-                        },
-                        false,
-                        Message::CheckUpdate,
-                    ),
                 ]
                 .align_y(iced::Center)
                 .into(),
             ),
         )
+    }
+
+    /// What is running, whether anything newer exists, and the one button that
+    /// acts on the answer - all on the row that already says which version this
+    /// is. An update check belongs beside the version it is about, not on a
+    /// second row explained by a button in the far corner of the pane.
+    fn version_row(&self) -> Element<'_, Message> {
+        let (dot, note) = update_state(&self.update);
+
+        let action = if self.updating {
+            action_msg("Updating…", true, Message::InstallUpdate)
+        } else if let update::Status::Available(tag) = &self.update {
+            action_msg(&format!("Update to {tag}"), true, Message::InstallUpdate)
+        } else if self.update == update::Status::Checking {
+            action_msg("Checking…", false, Message::CheckUpdate)
+        } else {
+            action_msg("Check for updates", false, Message::CheckUpdate)
+        };
+
+        container(
+            row![
+                column![
+                    text("Version").size(13.5).color(FG),
+                    Space::new().height(3),
+                    text(note).size(12).color(FAINT),
+                ],
+                Space::new().width(Fill),
+                pip(dot),
+                Space::new().width(7),
+                text(update::running())
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .color(MUTED),
+                Space::new().width(12),
+                action,
+            ]
+            .align_y(iced::Center),
+        )
+        .padding([14, 0])
+        .into()
     }
 }
 
@@ -1366,16 +1421,20 @@ fn scroll_x<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message
         .into()
 }
 
-/// One line saying where this build stands. Deliberately a fact row rather
-/// than a banner: an update is worth knowing about, not worth interrupting a
-/// window someone opened to change the ducking percentage.
-fn update_summary(status: &update::Status) -> String {
+/// The dot's colour and the line beside it, for each thing an update check can
+/// come back with. The dot is the glance - green nothing to do, accent
+/// something to install, red something went wrong - and the line is the detail
+/// for whoever looks closer.
+fn update_state(status: &update::Status) -> (Color, String) {
     match status {
-        update::Status::Unknown => "not checked".into(),
-        update::Status::Checking => "checking...".into(),
-        update::Status::Current => format!("{} is the latest", update::running()),
-        update::Status::Available(tag) => format!("{tag} available - run packaging/install.sh"),
-        update::Status::Failed(why) => format!("could not check: {why}"),
+        update::Status::Unknown => (FAINT, "not checked for updates yet".into()),
+        update::Status::Checking => (MUTED, "checking for updates…".into()),
+        update::Status::Current => (OK, "up to date".into()),
+        update::Status::Available(tag) => (ACCENT, format!("{tag} is available")),
+        update::Status::Installed(tag) => {
+            (OK, format!("{tag} installed - restart Flow to run it"))
+        }
+        update::Status::Failed(why) => (ERR, format!("could not check: {why}")),
     }
 }
 
