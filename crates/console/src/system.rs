@@ -67,11 +67,7 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
         return Ok(());
     }
     let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() {
-        format!("systemctl {verb} failed")
-    } else {
-        reason
-    })
+    Err(if reason.is_empty() { format!("systemctl {verb} failed") } else { reason })
 }
 
 /// Start, stop or restart the daemon.
@@ -86,11 +82,7 @@ pub fn service(verb: &str) -> Result<(), String> {
         return Ok(());
     }
     let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() {
-        format!("systemctl {verb} failed")
-    } else {
-        reason
-    })
+    Err(if reason.is_empty() { format!("systemctl {verb} failed") } else { reason })
 }
 
 /// The description of the default PipeWire source, which is the microphone
@@ -221,10 +213,7 @@ fn size_of(path: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(path) else {
         return 0;
     };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| size_of(&entry.path()))
-        .sum()
+    entries.filter_map(Result::ok).map(|entry| size_of(&entry.path())).sum()
 }
 
 /// Bytes as a human reads them. Kept here so the same rounding is used for a
@@ -252,11 +241,7 @@ pub fn install_models() -> Result<(), String> {
         return Ok(());
     }
     let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() {
-        "flow install failed".to_string()
-    } else {
-        reason
-    })
+    Err(if reason.is_empty() { "flow install failed".to_string() } else { reason })
 }
 
 /// Hand a path to the desktop's own handler. Used by the buttons that used to
@@ -272,14 +257,28 @@ pub fn open(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Show a path in the file manager rather than opening the file itself.
+/// `xdg-open` on a `.toml` would launch an editor; About wants the folder.
+pub fn reveal(path: &std::path::Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("{} does not exist yet", path.display()));
+    }
+    if cfg!(target_os = "macos") {
+        match run("open", &["-R", &path.display().to_string()]) {
+            Some(output) if output.status.success() => Ok(()),
+            Some(_) => Err("open could not reveal it".into()),
+            None => Err("open is not available".into()),
+        }
+    } else {
+        let folder = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
+        open(folder)
+    }
+}
+
 /// The desktop's handler goes by a different name on macOS, where the console
 /// is built for design work. Named in the error text too, so a failure says
 /// which tool was actually missing.
-const OPENER: &str = if cfg!(target_os = "macos") {
-    "open"
-} else {
-    "xdg-open"
-};
+const OPENER: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
 
 #[cfg(test)]
 mod tests {

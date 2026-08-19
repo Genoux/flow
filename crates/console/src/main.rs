@@ -34,10 +34,12 @@ mod update;
 mod vocabulary;
 
 use iced::widget::{
-    button, column, container, responsive, row, scrollable, slider, text, text_editor, tooltip,
-    Space,
+    button, canvas, column, container, responsive, rich_text, row, scrollable, slider, span, text,
+    tooltip, Canvas, Space,
 };
-use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
+use iced::{
+    Background, Border, Color, Element, Fill, Font, Length, Point, Size, Subscription, Task, Theme,
+};
 
 // ---------------------------------------------------------------------------
 // Tokens. Taken from the island in overlay.rs so the window and the overlay
@@ -47,11 +49,22 @@ use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription,
 
 const BG: Color = Color { r: 0.039, g: 0.043, b: 0.055, a: 1.0 }; // #0A0B0E
 const FG: Color = Color { r: 0.925, g: 0.929, b: 0.937, a: 1.0 }; // #ECEDEF
-const MUTED: Color = Color { r: 0.486, g: 0.510, b: 0.549, a: 1.0 }; // #7C828C
-const FAINT: Color = Color { r: 0.306, g: 0.329, b: 0.361, a: 1.0 }; // #4E545C
+/// Secondary text: labels, captions, the second line of a tile. Lifted from
+/// #7C828C, which sat at 4.4:1 on a card and so failed the same contrast bar
+/// the body text clears comfortably. Quiet is a job for weight and size here,
+/// not for a grey that has to be squinted at.
+const MUTED: Color = Color { r: 0.541, g: 0.565, b: 0.604, a: 1.0 }; // #8A909A
+/// The quietest text in the product - 11px meta: timestamps, month names, the
+/// label half of a label/value pair. Also lifted, from #4E545C at 2.2:1, which
+/// is decoration rather than text at that size.
+const FAINT: Color = Color { r: 0.424, g: 0.451, b: 0.490, a: 1.0 }; // #6C737D
 const LINE: Color = Color { r: 0.106, g: 0.118, b: 0.137, a: 1.0 }; // #1B1E23
-/// The lifted surface a card sits on. One step off the ground, no more.
-const RAISED: Color = Color { r: 0.102, g: 0.110, b: 0.125, a: 1.0 }; // #1A1C20
+/// The lifted surface a card sits on. Half a step off the ground rather than a
+/// full one: a card already carries a hairline and a shadow, and three depth
+/// cues on one rectangle - repeated down a page of them - is what turned the
+/// Overview into a stack of grey plates. The container recedes; the words on
+/// it are the thing to see.
+const RAISED: Color = Color { r: 0.082, g: 0.090, b: 0.106, a: 1.0 }; // #15171B
 /// What a rail item sits on when it is the current section. `RAISED` was doing
 /// this job too, and at card weight against the same ground the selected item
 /// was nearly invisible - a rail should stay quiet, but quiet still has to be
@@ -64,7 +77,12 @@ const RAIL_ON: Color = Color { r: 0.145, g: 0.157, b: 0.176, a: 1.0 }; // #25282
 /// because the space it was given to occupy stays behind and reads as two
 /// halves of a card drifting apart. The border already knew this; the rule did
 /// not, so both now come from here and cannot drift.
-const EDGE: Color = Color { r: 0.238, g: 0.248, b: 0.263, a: 1.0 }; // #3D3F43
+///
+/// A hairline, not an outline. At #3D3F43 every card was drawn as a box first
+/// and read as content second - seven outlined rectangles on one page. This is
+/// the lowest value that still separates a card from the ground and still
+/// shows up as a rule *on* the card.
+const EDGE: Color = Color { r: 0.149, g: 0.165, b: 0.184, a: 1.0 }; // #262A2F
 const ACCENT: Color = Color { r: 0.180, g: 0.835, b: 0.451, a: 1.0 }; // #2ED573
 const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
 /// "Nothing to do" - and the same green as ACCENT, deliberately. It used to be
@@ -72,11 +90,6 @@ const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
 /// to the accent it just read as a second, dirtier green. One green in the
 /// product, one meaning per colour: green is fine, red is not.
 const OK: Color = ACCENT;
-/// A week that went down. Not `ERR` - dictating less is not a fault, and a red
-/// number invites you to read it as one. A dimmed version of the gold the
-/// accent used to be, which is the one hue in this palette that already sits
-/// between "good" and "bad" without claiming either.
-const DIP: Color = Color { r: 0.757, g: 0.616, b: 0.393, a: 1.0 }; // #C19D64
 const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
 
 const RAIL_WIDTH: f32 = 176.0;
@@ -97,10 +110,6 @@ const CELL_GAP: f32 = 3.0;
 /// The Mon/Wed/Fri gutter down the left of the grid.
 const WEEKDAY_GUTTER: f32 = 28.0;
 
-/// How much of the transcript log the Overview repeats. Enough to recognise
-/// the last thing you said and no more - reading the log is History's job, and
-/// every extra line here is a line that pushes the page into scrolling.
-const RECENT_SHOWN: usize = 2;
 /// The one gap between everything on the Overview - between cards, and
 /// between the tiles in a row. A page of cards with three different gaps in it
 /// reads as a page of cards that were placed one at a time.
@@ -108,8 +117,35 @@ const GAP: f32 = 12.0;
 
 /// How much room a scrolling list keeps at each end, inside the viewport so
 /// that it scrolls with the content rather than being clipped away with it.
-const SCROLL_PAD: f32 = 22.0;
+const SCROLL_PAD: f32 = 18.0;
+/// Where the first thing on a page sits. Padding inside the scroll, so it
+/// is room above the heading and below the last row - it moves with them,
+/// and at either end of the page there is still air.
+const PAGE_TOP: f32 = 32.0;
 
+/// The pane's left margin, and the base for the content's right margin. One
+/// constant so the page reads as evenly framed even though the two sides get
+/// there differently - the left is a pane pad, the right is the same room
+/// plus the scrollbar's own footprint.
+const PANE_INSET: f32 = 32.0;
+/// Where the text stops on the right: the left margin plus clearance for the
+/// scrollbar (width 4, margin 2 on each side of its track), so a visible
+/// scroller never sits on top of a letter.
+const CONTENT_RIGHT: f32 = PANE_INSET;
+/// History keeps its text on the page grid while the hover surface reaches
+/// past it. The same value is the row's inner inset and the surface's bleed.
+const ENTRY_INSET: f32 = 12.0;
+/// Top and bottom padding for one row in a settings list, on both sides of
+/// every hairline between them. Anything else that borders a hairline - the
+/// footer's, for one - uses this too, so a divider always has the same air
+/// whichever two things it happens to be sitting between.
+const ROW_PAD: f32 = 16.0;
+/// The docked footer's band, above and below its content. Equal on both
+/// sides, because a bar reads as a bar only when its content sits in the
+/// middle of it - the old pairing borrowed `ROW_PAD` above and the page's
+/// whole bottom margin below, which left the button hung near the hairline
+/// with a stretch of dead floor under it.
+const FOOT_PAD: f32 = 18.0;
 
 /// How long each motion takes. Only two things move - a toggle's knob and a
 /// rail item warming under the pointer - because those are the two that
@@ -117,6 +153,10 @@ const SCROLL_PAD: f32 = 22.0;
 /// curve is visible rather than read as a snap.
 const KNOB: u64 = 220;
 const FADE: u64 = 200;
+/// How long a copied row keeps its paper lit before the icon goes back to
+/// waiting for a hover. Long enough to be read, short enough that it is never
+/// still saying it by the time you look again.
+const COPIED: u64 = 1600;
 
 /// Quartic ease-out. Everything here moves fastest at the start and settles
 /// gently into place rather than stopping - a steeper tail than cubic, which
@@ -174,10 +214,7 @@ fn theme(_state: &Console) -> Theme {
 }
 
 fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
-    iced::theme::Style {
-        background_color: BG,
-        text_color: FG,
-    }
+    iced::theme::Style { background_color: BG, text_color: FG }
 }
 
 fn subscription(state: &Console) -> Subscription<Message> {
@@ -232,9 +269,7 @@ impl Section {
     }
 
     fn from_label(name: &str) -> Option<Self> {
-        Section::ALL
-            .into_iter()
-            .find(|section| section.label().eq_ignore_ascii_case(name.trim()))
+        Section::ALL.into_iter().find(|section| section.label().eq_ignore_ascii_case(name.trim()))
     }
 
     fn label(self) -> &'static str {
@@ -260,6 +295,8 @@ enum Message {
     Autostart(bool),
     Duck(u32),
     OpenConfig,
+    /// Reveal a path in the file manager. About's config and history rows.
+    OpenPath(std::path::PathBuf),
     /// systemctl --user <verb> flow.service
     Service(&'static str),
     /// Start listening for the next chord the user presses.
@@ -274,8 +311,11 @@ enum Message {
     /// A frame went by; only delivered while something is moving.
     Tick(std::time::Instant),
     Hover(Option<Section>),
-    /// A selection/copy action on one history entry's transcript.
-    HistoryAction(usize, text_editor::Action),
+    /// Which transcript the pointer is over, so History can light the row and
+    /// offer copy without those being permanent chrome.
+    HoverEntry(Option<usize>),
+    /// Put one transcript on the clipboard.
+    Copy(usize),
     InstallModels,
     ModelsInstalled(Result<(), String>),
     CheckUpdate,
@@ -300,9 +340,9 @@ struct Console {
     /// The microphone PipeWire is actually handing the daemon.
     input: Option<String>,
     entries: Vec<history::Entry>,
-    /// One read-only editor per entry, purely so its transcript can be mouse-
-    /// selected and copied - iced has no plain selectable text widget.
-    history_editors: Vec<text_editor::Content>,
+    /// Which row was last copied and when, so its button can say so and then
+    /// go back to saying what it does.
+    copied: Option<(usize, std::time::Instant)>,
     /// Per-day rollup for the Overview's calendar and week numbers, oldest
     /// day first.
     days: Vec<history::Day>,
@@ -335,7 +375,15 @@ struct Console {
     // ago something changed, and everything here derives from that.
     now: std::time::Instant,
     hovered: Option<Section>,
+    /// Transcript under the pointer, if any. Independent of the rail so a
+    /// History hover cannot light a nav item, and the other way around.
+    hovered_entry: Option<usize>,
     hover_at: std::time::Instant,
+    /// This row's own clock, separate from the rail's `hover_at`: sharing one
+    /// clock meant moving from a nav item onto a row (or back) restarted the
+    /// row's fade from whatever point the nav's hover had reached, so the
+    /// highlight sometimes never finished settling.
+    entry_hover_at: std::time::Instant,
     /// When each toggle last flipped, so its knob can travel rather than jump.
     toggled_at: std::collections::HashMap<&'static str, std::time::Instant>,
 }
@@ -343,7 +391,6 @@ struct Console {
 impl Console {
     fn new() -> (Self, Task<Message>) {
         let entries = history::recent();
-        let history_editors = history_editors(&entries);
         let pretend = demo::requested();
         (
             Self {
@@ -358,7 +405,7 @@ impl Console {
                     None => system::default_input(),
                 },
                 entries,
-                history_editors,
+                copied: None,
                 days: history::daily(CALENDAR_DAYS),
                 update: update::Status::default(),
                 updating: false,
@@ -378,7 +425,9 @@ impl Console {
                 chord_error: None,
                 now: std::time::Instant::now(),
                 hovered: None,
+                hovered_entry: None,
                 hover_at: std::time::Instant::now(),
+                entry_hover_at: std::time::Instant::now(),
                 toggled_at: std::collections::HashMap::new(),
             },
             Task::none(),
@@ -388,10 +437,7 @@ impl Console {
     /// How far this toggle is through its travel, 0 to 1. A toggle that has
     /// never moved is already home.
     fn travel(&self, key: &str) -> f32 {
-        self.toggled_at
-            .get(key)
-            .map(|at| progress(*at, self.now, KNOB))
-            .unwrap_or(1.0)
+        self.toggled_at.get(key).map(|at| progress(*at, self.now, KNOB)).unwrap_or(1.0)
     }
 
     /// True while any motion is still running, which is what decides whether
@@ -401,10 +447,26 @@ impl Console {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
         running(self.hover_at, FADE)
-            || self
-                .toggled_at
-                .values()
-                .any(|at| running(*at, KNOB))
+            || running(self.entry_hover_at, FADE)
+            || self.copied.is_some_and(|(_, at)| running(at, COPIED))
+            || self.toggled_at.values().any(|at| running(*at, KNOB))
+    }
+
+    /// True while this row's copy button should still be saying so.
+    fn just_copied(&self, index: usize) -> bool {
+        self.copied.is_some_and(|(i, at)| {
+            i == index && self.now.saturating_duration_since(at).as_millis() < COPIED as u128
+        })
+    }
+
+    /// 0 to 1, how far this transcript's hover has settled. Same easing and
+    /// duration as the rail (`progress`, `FADE`), just its own clock.
+    fn entry_warmth(&self, index: usize) -> f32 {
+        if self.hovered_entry == Some(index) {
+            progress(self.entry_hover_at, self.now, FADE)
+        } else {
+            0.0
+        }
     }
 
     /// Write after every change. There is no Save button on purpose: a settings
@@ -436,6 +498,12 @@ impl Console {
                     self.hover_at = std::time::Instant::now();
                 }
             }
+            Message::HoverEntry(index) => {
+                if self.hovered_entry != index {
+                    self.hovered_entry = index;
+                    self.entry_hover_at = std::time::Instant::now();
+                }
+            }
             Message::PushToTalk(on) => {
                 self.settings.push_to_talk = on;
                 self.toggled_at.insert("push_to_talk", std::time::Instant::now());
@@ -461,8 +529,7 @@ impl Console {
                 self.persist();
             }
             Message::Autostart(on) => {
-                self.toggled_at
-                    .insert("autostart", std::time::Instant::now());
+                self.toggled_at.insert("autostart", std::time::Instant::now());
                 match system::set_autostart(on) {
                     // Re-read rather than assume: systemd is the authority on
                     // whether that worked, not our optimism.
@@ -481,22 +548,16 @@ impl Console {
                 // outlives the daemon.
                 if self.daemon.words != before {
                     self.entries = history::recent();
-                    self.history_editors = history_editors(&self.entries);
                     self.days = history::daily(CALENDAR_DAYS);
                 }
             }
-            Message::HistoryAction(index, action) => {
-                // Read-only: every action but editing is let through, so the
-                // mouse can still select and Ctrl+C still copies.
-                if let Some(content) = self.history_editors.get_mut(index) {
-                    if !matches!(action, text_editor::Action::Edit(_)) {
-                        content.perform(action);
-                    }
+            Message::Copy(index) => {
+                if let Some(text) = self.entries.get(index).map(|entry| entry.text.clone()) {
+                    self.copied = Some((index, std::time::Instant::now()));
+                    return iced::clipboard::write(text);
                 }
             }
-            Message::Daemon(daemon::Event::Disconnected) => {
-                self.daemon = daemon::State::default()
-            }
+            Message::Daemon(daemon::Event::Disconnected) => self.daemon = daemon::State::default(),
             Message::TypingTerm(text) => {
                 self.typing = text;
                 self.term_error = None;
@@ -528,16 +589,13 @@ impl Console {
                 // Off the UI thread: this blocks on the keyboard until a chord
                 // arrives or the user gives up.
                 return Task::perform(
-                    async move {
-                        tokio_free_capture(cancelled)
-                    },
+                    async move { tokio_free_capture(cancelled) },
                     Message::Captured,
                 );
             }
             Message::CancelCapture => {
                 self.capturing = false;
-                self.cancel_capture
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cancel_capture.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Message::Captured(captured) => {
                 self.capturing = false;
@@ -555,6 +613,11 @@ impl Console {
             }
             Message::OpenConfig => {
                 if let Err(err) = system::open(&settings::config_path()) {
+                    self.save_error = Some(err);
+                }
+            }
+            Message::OpenPath(path) => {
+                if let Err(err) = system::reveal(&path) {
                     self.save_error = Some(err);
                 }
             }
@@ -610,9 +673,7 @@ impl Console {
     fn save_note(&self) -> Element<'_, Message> {
         match (&self.save_error, self.saved) {
             (Some(err), _) => text(format!("Couldn't save: {err}")).size(12).color(ERR),
-            (None, true) => text("Saved. Applies to your next dictation.")
-                .size(12)
-                .color(FAINT),
+            (None, true) => text("Saved. Applies to your next dictation.").size(12).color(FAINT),
             (None, false) => text(settings::config_path().display().to_string())
                 .size(12)
                 .font(Font::MONOSPACE)
@@ -650,8 +711,10 @@ impl Console {
             column![
                 items,
                 Space::new().height(Fill),
-                container(text(env!("CARGO_PKG_VERSION")).size(11).font(Font::MONOSPACE).color(FAINT))
-                    .padding([0, 9]),
+                container(
+                    text(env!("CARGO_PKG_VERSION")).size(11).font(Font::MONOSPACE).color(FAINT)
+                )
+                .padding([0, 9]),
             ]
             .spacing(0),
         )
@@ -674,22 +737,26 @@ impl Console {
             Section::About => self.about_section(),
         };
 
-        // The Overview is one long scroll and pads itself, because a scroll
-        // viewport clips at the frame: with the breathing room outside the
-        // scrollable, the first and last card get sliced off at a hard edge
-        // 34px in, which reads as a broken layout rather than as more content.
-        // Inside, the padding scrolls with the cards and the ends look like
-        // ends. Every other section pins its own header and scrolls only the
-        // rows under it, so the frame is the right place for their padding.
-        let vertical = if self.section == Section::Overview { 0 } else { 34 };
-
         // Switching sections is deliberately instant. Motion here read as the
         // page arriving late rather than as polish - navigation should feel
         // like the content was already there.
+        //
+        // Left only, not both sides: a right pad here would sit outside the
+        // scrollable and push its whole viewport away from the window edge,
+        // floating the scrollbar in a dead gutter instead of letting it run
+        // where every other app puts one - flush against the edge it scrolls.
+        // `scroll_pad` owns the right side, on the content, so the bar can
+        // sit at the edge while the text keeps its own margin from it.
+        let left = if matches!(self.section, Section::History) {
+            PANE_INSET - ENTRY_INSET
+        } else {
+            PANE_INSET
+        };
+
         container(content)
             .width(Fill)
             .height(Fill)
-            .padding([vertical, 36])
+            .padding(iced::Padding::default().left(left))
             .into()
     }
 
@@ -760,40 +827,33 @@ impl Console {
                 if dictations == 0 {
                     ("nothing this week".to_string(), MUTED)
                 } else {
-                    (
-                        format!("{} average", history::duration(spoken / dictations as f32)),
-                        MUTED,
-                    )
+                    (format!("{} average", history::duration(spoken / dictations as f32)), MUTED)
                 },
             ),
             Space::new().width(GAP),
             stat_tile(
                 "Current streak",
                 plural(streak as u32, "day"),
-                (
-                    format!("longest {}", plural(longest_streak(&self.days) as u32, "day")),
-                    MUTED,
-                ),
+                (format!("longest {}", plural(longest_streak(&self.days) as u32, "day")), MUTED,),
             ),
-        ];
-
-        let body = column![
-            header,
-            Space::new().height(GAP),
-            self.setup_card(installed),
-            Space::new().height(GAP),
-            kpis,
-            Space::new().height(GAP),
-            calendar_card(&self.days),
-            Space::new().height(GAP),
-            self.recent_card(),
         ];
 
         // Sized to fit the default window, so the common case does not scroll
         // at all. Scrolled rather than compressed when it does not fit: a user
         // who drags the window down to the minimum height should have to reach
-        // the last card rather than have every card shrink to meet them.
-        scroll(body)
+        // the last card rather than have every card shrink to meet them. The
+        // heading is in the scroll, same as every other page: a window this
+        // short has to give the cards the room, not keep a title parked over
+        // them.
+        scroll(column![
+            header,
+            Space::new().height(SCROLL_PAD),
+            self.setup_card(installed),
+            Space::new().height(GAP),
+            kpis,
+            Space::new().height(GAP),
+            calendar_card(&self.days),
+        ])
     }
 
     /// The three settings that decide whether Flow can work at all, and
@@ -816,29 +876,77 @@ impl Console {
                 },
             ),
             Space::new().width(44),
-            fact(
-                "Microphone",
-                clip(
-                    self.input.as_deref().unwrap_or("system default"),
-                    38,
-                ),
-            ),
+            fact("Microphone", clip(self.input.as_deref().unwrap_or("system default"), 38,),),
             Space::new().width(Fill),
             fact("Models", format!("{installed} of {}", self.models.len())),
         ];
 
         let mut body = column![];
         let notes = self.attention(installed);
-        for (colour, note) in &notes {
+        // Notes sit close together - they are one list of problems - and the
+        // rule under them takes `ROW_PAD` on both sides, the same as every
+        // other divider in the console. Borrowing a tighter gap above it and
+        // a wider one below made the card's two rules read as different
+        // rules on a page where they are the same one.
+        for (index, (colour, note)) in notes.iter().enumerate() {
+            if index > 0 {
+                body = body.push(Space::new().height(8));
+            }
             body = body.push(text(note.clone()).size(12).color(*colour));
-            body = body.push(Space::new().height(8));
         }
         if !notes.is_empty() {
+            body = body.push(Space::new().height(ROW_PAD));
             body = body.push(card_rule());
-            body = body.push(Space::new().height(13));
+            body = body.push(Space::new().height(ROW_PAD));
         }
 
+        body = body.push(self.last_said());
+        body = body.push(Space::new().height(ROW_PAD));
+        body = body.push(card_rule());
+        body = body.push(Space::new().height(ROW_PAD));
+
         panel(body.push(facts).into())
+    }
+
+    /// The last thing Flow typed, as one line.
+    ///
+    /// This used to be a card of its own holding two full History rows, copy
+    /// controls included, and a link back to the page those rows came from -
+    /// History rebuilt on the page next to History. What it was actually for
+    /// survives here and the duplicate does not: a word count says dictation
+    /// ran, and a sentence says it ran *well*, which is the question someone
+    /// opens this page with. Reading the log, copying out of it and scrolling
+    /// back through it stay History's job, one item down the rail.
+    fn last_said(&self) -> Element<'_, Message> {
+        let latest = self.entries.first();
+        let when = latest.map(|entry| history::ago(entry.at, history::now())).unwrap_or_default();
+
+        let heading = row![
+            text("Last dictation").size(11).color(FAINT),
+            Space::new().width(Fill),
+            // `ago` already says "just now" for the last minute; empty means
+            // the timestamp is missing or in the future, and no label is
+            // better than a confident wrong one.
+            text(when)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .color(FAINT),
+        ]
+        .align_y(iced::Center);
+
+        // Clipped to one line on purpose: the full text, wrapped, is a
+        // transcript, and a transcript on this page is the card that just got
+        // deleted. One line is enough to recognise what was said and how well
+        // it was heard.
+        let line = match latest {
+            Some(entry) => text(clip(&entry.text, 78))
+                .size(12.5)
+                .color(mix(MUTED, FG, 0.55))
+                .wrapping(text::Wrapping::None),
+            None => text("nothing yet - hold the chord and say something").size(12.5).color(FAINT),
+        };
+
+        column![heading, Space::new().height(5), line].into()
     }
 
     /// Everything on this page that is worth doing something about, in the
@@ -868,88 +976,45 @@ impl Console {
         notes
     }
 
-    /// The last few transcripts, because the fastest way to tell whether Flow
-    /// is doing a good job is to read what it wrote.
-    ///
-    /// Same rows as History, and selectable through the same editors: a
-    /// transcript you can read but not copy is a transcript you have to retype,
-    /// and the answer to "which page was I on" should not be what decides it.
-    /// The full text rather than a truncated line for the same reason - copying
-    /// a sentence that ends in an ellipsis is worse than not copying it.
-    fn recent_card(&self) -> Element<'_, Message> {
-        let now = history::now();
-
-        let mut list = column![];
-        if self.entries.is_empty() {
-            list = list.push(
-                text("Nothing yet. Hold the chord and say something.")
-                    .size(13)
-                    .color(FAINT),
-            );
-        } else {
-            for (index, entry) in self.entries.iter().take(RECENT_SHOWN).enumerate() {
-                if index > 0 {
-                    list = list.push(card_rule());
-                }
-                list = list.push(entry_row(
-                    selectable_line(&self.history_editors[index], index),
-                    entry,
-                    now,
-                ));
-            }
-        }
-
-        panel(
-            column![
-                row![
-                    text("Recent dictations").size(12.5).color(MUTED),
-                    Space::new().width(Fill),
-                    button(text("All history").size(12).color(MUTED))
-                        .padding(0)
-                        .style(ghost)
-                        .on_press(Message::Select(Section::History)),
-                ]
-                .align_y(iced::Center),
-                Space::new().height(8),
-                list,
-            ]
-            .into(),
-        )
-    }
-
     fn history_section(&self) -> Element<'_, Message> {
         let now = history::now();
 
-        let mut list = column![];
-        if self.entries.is_empty() {
-            list = list.push(
-                text("Nothing yet. Hold the chord and say something.")
-                    .size(13)
-                    .color(FAINT),
-            );
+        let list: Element<'_, Message> = if self.entries.is_empty() {
+            // Sits on the heading's left edge and at a row's own top pad, so
+            // the line reads as the first entry's place rather than as loose
+            // text floating outside the list.
+            container(text("Nothing yet. Hold the chord and say something.").size(13).color(FAINT))
+                .padding([10.0, ENTRY_INSET])
+                .width(Fill)
+                .into()
         } else {
+            let mut rows = column![];
             for (index, entry) in self.entries.iter().enumerate() {
-                list = list.push(entry_row(
-                    selectable_line(&self.history_editors[index], index),
+                rows = rows.push(entry_row(
                     entry,
+                    index,
                     now,
+                    self.just_copied(index),
+                    self.entry_warmth(index),
+                    index + 1 < self.entries.len(),
                 ));
-                if index + 1 < self.entries.len() {
-                    list = list.push(hairline());
-                }
             }
-        }
+            entry_list(rows)
+        };
 
-        column![
-            text("History").size(22).color(FG),
-            Space::new().height(10),
-            text("Everything Flow has typed for you, most recent first.")
-                .size(13)
-                .color(MUTED),
-            Space::new().height(6),
-            scroll(list),
-        ]
-        .into()
+        scroll_inset(
+            column![
+                container(heading(
+                    "History",
+                    "Everything Flow has typed for you, most recent first.",
+                ))
+                .padding([0.0, ENTRY_INSET])
+                .width(Fill),
+                list,
+            ],
+            PAGE_TOP,
+            CONTENT_RIGHT - ENTRY_INSET,
+        )
     }
 
     fn dictation_section(&self) -> Element<'_, Message> {
@@ -1038,20 +1103,21 @@ impl Console {
             setting(
                 "Microphone",
                 "Follows your system's default input. Change it in your sound settings.",
-                text(
-                    self.input
-                        .clone()
-                        .unwrap_or_else(|| "not detected".to_string()),
-                )
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(MUTED)
-                .into(),
+                text(self.input.clone().unwrap_or_else(|| "not detected".to_string()))
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .color(MUTED)
+                    .into(),
             ),
             setting(
                 "Turn other apps down",
                 "Keeps your speakers out of the microphone while you dictate.",
-                value_slider(0..=100, self.settings.duck, Message::Duck, &format!("{}%", self.settings.duck)),
+                value_slider(
+                    0..=100,
+                    self.settings.duck,
+                    Message::Duck,
+                    &format!("{}%", self.settings.duck),
+                ),
             ),
             setting(
                 "Noise suppression",
@@ -1064,7 +1130,7 @@ impl Console {
             "Audio",
             "What Flow listens to, and what it does to the room first.",
             rows,
-            Some(self.save_note()),
+            None,
         )
     }
 
@@ -1074,9 +1140,14 @@ impl Console {
         let mut list = column![];
         if self.terms.is_empty() {
             list = list.push(
-                text("No terms yet. Add the words Flow keeps mishearing.")
-                    .size(13)
-                    .color(FAINT),
+                // Sits where the first term would, so the line reads as the
+                // list's own state rather than as a third paragraph of help.
+                container(
+                    text("No terms yet. Add the words Flow keeps mishearing.")
+                        .size(13)
+                        .color(FAINT),
+                )
+                .padding([ROW_PAD, 0.0]),
             );
         } else {
             for (index, term) in self.terms.iter().enumerate() {
@@ -1089,7 +1160,11 @@ impl Console {
                         ]
                         .align_y(iced::Center),
                     )
-                    .padding([6, 0]),
+                    // The same air as any other row in this console, on both
+                    // sides of every hairline. At 6 the terms read as a
+                    // cramped table dropped into a page whose every other
+                    // list breathes.
+                    .padding([ROW_PAD, 0.0]),
                 );
                 if index + 1 < self.terms.len() {
                     list = list.push(hairline());
@@ -1105,11 +1180,7 @@ impl Console {
                 .padding([8, 10])
                 .style(|_theme, _status| iced::widget::text_input::Style {
                     background: Background::Color(BG),
-                    border: Border {
-                        color: LINE,
-                        width: 1.0,
-                        radius: 6.0.into(),
-                    },
+                    border: Border { color: LINE, width: 1.0, radius: 6.0.into() },
                     icon: FAINT,
                     placeholder: FAINT,
                     value: FG,
@@ -1132,29 +1203,26 @@ impl Console {
             .into(),
         };
 
-        column![
-            text("Vocabulary").size(22).color(FG),
-            Space::new().height(10),
-            text("Names and jargon the recogniser gets wrong. One per line, spelled the way you want it written.")
-                .size(13)
-                .color(MUTED),
-            Space::new().height(22),
+        scroll(column![
+            heading(
+                "Vocabulary",
+                "Names and jargon the recogniser gets wrong. One per line, spelled the way you want it written.",
+            ),
             entry,
-            Space::new().height(10),
+            // Tight to the field it explains, then a real gap before the
+            // list - the two spaces have to differ or the field, its note
+            // and the terms read as three unrelated things equally spaced.
+            Space::new().height(8),
             note,
-            Space::new().height(20),
-            scroll(list),
-        ]
-        .into()
+            Space::new().height(GAP),
+            list,
+        ])
     }
 
     fn models_section(&self) -> Element<'_, Message> {
         // Bound so the borrows in the rows outlive their construction.
-        let sizes: Vec<String> = self
-            .models
-            .iter()
-            .map(|model| system::human_bytes(model.bytes))
-            .collect();
+        let sizes: Vec<String> =
+            self.models.iter().map(|model| system::human_bytes(model.bytes)).collect();
 
         let rows: Vec<Element<Message>> = self
             .models
@@ -1164,7 +1232,6 @@ impl Console {
                 model_row(model.label, model.detail.clone(), size.clone(), model.installed)
             })
             .collect();
-
 
         let total = format!(
             "{} in {}",
@@ -1177,54 +1244,33 @@ impl Console {
             "Models",
             "Both models run on this machine. Nothing you say leaves it.",
             rows,
-            Some({
-                // The path takes what is left over, rather than a Fill space
-                // taking it: the path is the flexible half of this row and the
-                // button is the fixed half, and a wrapping text asked to
-                // shrink will happily claim the whole row first.
-                let mut footer = row![
-                    text(total)
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .color(FAINT)
-                        .width(Fill),
-                    Space::new().width(12),
-                ];
-                if !all_installed {
-                    footer = footer.push(action_msg(
+            Some(path_cta(
+                text(total).size(12).font(Font::MONOSPACE).color(FAINT).into(),
+                (!all_installed).then(|| {
+                    action_msg(
                         if self.installing_models { "Installing…" } else { "Install models" },
                         true,
                         Message::InstallModels,
-                    ));
-                }
-                footer.align_y(iced::Center).into()
-            }),
+                    )
+                }),
+            )),
         )
     }
 
     fn about_section(&self) -> Element<'_, Message> {
         // Bound so the borrows outlive the rows built from them.
-        let config = settings::config_path().display().to_string();
-        let history_file = history::path().display().to_string();
         let rows: Vec<Element<Message>> = vec![
             self.version_row(),
             fact_row("Session", self.session.clone()),
-            fact_row("Config", config),
-            fact_row("History", history_file),
+            fact_path("Config", &settings::config_path()),
+            fact_path("History", &history::path()),
         ];
 
         section_shell(
             "Flow",
             "Push-to-talk dictation that runs entirely on your own machine.",
             rows,
-            Some(
-                row![
-                    Space::new().width(Fill),
-                    action_msg("Open config", false, Message::OpenConfig),
-                ]
-                .align_y(iced::Center)
-                .into(),
-            ),
+            None,
         )
     }
 
@@ -1255,73 +1301,88 @@ impl Console {
                 Space::new().width(Fill),
                 pip(dot),
                 Space::new().width(7),
-                text(update::running())
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(MUTED),
+                text(update::running()).size(12).font(Font::MONOSPACE).color(MUTED),
                 Space::new().width(12),
                 action,
             ]
             .align_y(iced::Center),
         )
-        .padding([14, 0])
+        .padding([ROW_PAD, 0.0])
         .into()
     }
 }
 
-fn history_editors(entries: &[history::Entry]) -> Vec<text_editor::Content> {
-    entries
-        .iter()
-        .map(|entry| text_editor::Content::with_text(&entry.text))
-        .collect()
-}
-
-/// A selectable, copyable line of text with no visible editor chrome - so it
-/// reads exactly like the plain `text()` it replaces, mouse selection and
-/// Ctrl+C aside.
 /// One transcript and what it cost: the line itself, then how long it took to
 /// say and how long ago that was. Shared so the Overview's excerpt and the
 /// History log are the same row rather than two rows that look alike.
+///
+/// Copy is an icon on the row, not a label and not a hidden editor. iced draws
+/// a caret in the text colour on any focused `text_editor`, and there is no
+/// way to style it off - so a click that was meant to select a sentence parked
+/// a blinking cursor in the middle of a settings window.
+///
+/// The icon's slot is always in the layout, at a fixed size, and only its
+/// opacity moves with the hover - it never appears or disappears as an
+/// element. Swapping a `Space` in for it while hidden (the first version of
+/// this) changed the row's height between the two states, which under a
+/// stationary pointer flips which row it is over and made the highlight
+/// flicker between rows rather than hold still on one.
+///
+/// The transparent gap lives inside the hover target so moving between rows
+/// cannot drop the highlight.
+///
+/// Rows only *set* the hovered index. Clearing it is `entry_list`'s job: a
+/// nested copy control used to capture the event iced's `mouse_area` needs
+/// to see, so `on_exit` fired while the pointer was still on the row, and
+/// crossing from one row onto the next went through `None` and dropped the
+/// highlight.
 fn entry_row<'a>(
-    line: Element<'a, Message>,
-    entry: &history::Entry,
+    entry: &'a history::Entry,
+    index: usize,
     now: u64,
+    copied: bool,
+    warmth: f32,
+    separated: bool,
 ) -> Element<'a, Message> {
     let when = history::ago(entry.at, now);
-    container(
-        column![
-            line,
-            Space::new().height(4),
-            text(if when.is_empty() {
-                format!("{:.1}s", entry.spoken)
-            } else {
-                format!("{:.1}s  ·  {when}", entry.spoken)
-            })
-            .size(11)
-            .font(Font::MONOSPACE)
-            .color(FAINT),
-        ],
+    let body = container(
+        row![
+            column![
+                text(&entry.text).size(13).color(FG),
+                Space::new().height(4),
+                text(if when.is_empty() {
+                    format!("{:.1}s", entry.spoken)
+                } else {
+                    format!("{:.1}s  ·  {when}", entry.spoken)
+                })
+                .size(11)
+                .font(Font::MONOSPACE)
+                .color(FAINT),
+            ]
+            .width(Fill),
+            copy_btn(index, copied, warmth),
+        ]
+        .align_y(iced::Center),
     )
-    .padding([10, 0])
-    .into()
+    .padding([10.0, ENTRY_INSET])
+    .width(Fill)
+    .style(move |_theme| container::Style {
+        background: Some(Background::Color(mix(Color::TRANSPARENT, RAIL_ON, warmth * 0.7))),
+        border: Border { radius: 6.0.into(), ..Default::default() },
+        ..Default::default()
+    });
+
+    let mut stack = column![body].width(Fill);
+    if separated {
+        stack = stack.push(Space::new().height(2));
+    }
+
+    iced::widget::mouse_area(stack).on_enter(Message::HoverEntry(Some(index))).into()
 }
 
-fn selectable_line<'a>(
-    content: &'a text_editor::Content,
-    index: usize,
-) -> Element<'a, Message> {
-    text_editor(content)
-        .on_action(move |action| Message::HistoryAction(index, action))
-        .size(13)
-        .padding(0)
-        .style(|_theme, _status| text_editor::Style {
-            background: Background::Color(Color::TRANSPARENT),
-            border: Border::default(),
-            placeholder: FG,
-            value: FG,
-            selection: Color { a: 0.35, ..ACCENT },
-        })
-        .into()
+/// The list, not the row, owns "pointer left". See `entry_row`.
+fn entry_list<'a>(rows: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    iced::widget::mouse_area(rows).on_exit(Message::HoverEntry(None)).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -1332,53 +1393,70 @@ fn selectable_line<'a>(
 /// is over it, a faint hairline while hovered. Iced's default is a wide rail
 /// that sits there permanently, which reads as chrome in a window this small.
 ///
-/// The breathing room is *inside* the scroll area, and that is the whole point
-/// of this function owning it. A viewport clips at its own frame, so padding
-/// applied outside one buys nothing: the content still runs to the very edge
-/// and the first and last rows are sliced off mid-glyph. Padding inside
-/// scrolls with the content, so both ends of the list look like ends.
-///
-/// The right pad is for the bar itself, which iced overlays on top of the
+/// Top and bottom padding is on the content, not the pane: it is the air
+/// above the heading and below the last row, and it scrolls with them. The
+/// right pad is for the bar itself, which iced overlays on top of the
 /// content rather than beside it.
 fn scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    scrollable(
-        container(content).padding(
-            iced::Padding::default()
-                .top(SCROLL_PAD)
-                .bottom(SCROLL_PAD)
-                .right(16.0),
-        ),
-    )
-        .direction(scrollable::Direction::Vertical(
-            scrollable::Scrollbar::new()
-                .width(4)
-                .margin(2)
-                .scroller_width(4),
-        ))
-        .style(|theme, status| {
-            let base = scrollable::default(theme, status);
-            let scroller_colour = match status {
-                scrollable::Status::Active { .. } => Color::TRANSPARENT,
-                _ => FAINT,
-            };
-            scrollable::Style {
-                vertical_rail: scrollable::Rail {
-                    background: None,
-                    scroller: scrollable::Scroller {
-                        background: scroller_colour.into(),
-                        ..base.vertical_rail.scroller
-                    },
-                    ..base.vertical_rail
-                },
-                ..base
-            }
-        })
-        .height(Fill)
-        .into()
+    scroll_pad(content, PAGE_TOP)
 }
 
-/// Every settings screen is the same shape: a heading, a sentence, a list of
-/// rows separated by hairlines, and an optional footer pinned to the bottom.
+fn scroll_pad<'a>(content: impl Into<Element<'a, Message>>, bottom: f32) -> Element<'a, Message> {
+    scroll_inset(content, bottom, CONTENT_RIGHT)
+}
+
+fn scroll_inset<'a>(
+    content: impl Into<Element<'a, Message>>,
+    bottom: f32,
+    right: f32,
+) -> Element<'a, Message> {
+    scrollable(
+        container(content)
+            .padding(iced::Padding::default().top(PAGE_TOP).bottom(bottom).right(right)),
+    )
+    .direction(scrollable::Direction::Vertical(
+        scrollable::Scrollbar::new().width(4).margin(2).scroller_width(4),
+    ))
+    .style(|theme, status| {
+        let base = scrollable::default(theme, status);
+        let scroller_colour = match status {
+            scrollable::Status::Active { .. } => Color::TRANSPARENT,
+            _ => FAINT,
+        };
+        scrollable::Style {
+            vertical_rail: scrollable::Rail {
+                background: None,
+                scroller: scrollable::Scroller {
+                    background: scroller_colour.into(),
+                    ..base.vertical_rail.scroller
+                },
+                ..base.vertical_rail
+            },
+            ..base
+        }
+    })
+    .height(Fill)
+    .into()
+}
+
+/// A page's heading. Lives in the scroll with the rest of the page, so a
+/// short window can give the rows the room instead of keeping a title parked
+/// over them. The top inset is on `scroll`'s content, so every page starts
+/// on the same line and that air is still there when you scroll back up.
+fn heading<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
+    column![
+        text(title).size(22).color(FG),
+        Space::new().height(10),
+        text(subtitle).size(13).color(MUTED),
+        Space::new().height(SCROLL_PAD),
+    ]
+    .into()
+}
+
+/// Every settings screen is the same shape: a heading and a list that
+/// scroll together, and a footer docked to the pane. The title yields its
+/// room in a short window; the path and its action do not ride under the
+/// last row.
 fn section_shell<'a>(
     title: &'a str,
     subtitle: &'a str,
@@ -1394,24 +1472,46 @@ fn section_shell<'a>(
         }
     }
 
-    let mut body = column![
-        text(title).size(22).color(FG),
-        Space::new().height(10),
-        text(subtitle).size(13).color(MUTED),
-        // Small, because `scroll` keeps its own room at the top now and the
-        // two would otherwise add up to a hole under the heading.
-        Space::new().height(6),
-        scroll(list),
-    ];
+    let body = column![heading(title, subtitle), list];
 
-    if let Some(foot) = foot {
-        body = body.push(Space::new().height(4));
-        body = body.push(hairline());
-        body = body.push(Space::new().height(16));
-        body = body.push(foot);
+    match foot {
+        // The footer sits below the scrollable, not inside it, so it never
+        // gets `scroll_pad`'s own right inset - it needs its own, or it would
+        // bleed to the window edge while everything above it stops short.
+        //
+        // The list keeps `ROW_PAD` under its last row, so the footer's
+        // hairline gets the same air above it as every hairline between two
+        // rows - it reads as the end of the list rather than as a second,
+        // larger padding.
+        //
+        // Below it is a bar, not another row, and it is padded like one:
+        // `FOOT_PAD` above and below its content, so the path and the button
+        // sit centred in their band instead of tucked under the rule with the
+        // page's full bottom margin left empty beneath them.
+        Some(foot) => column![
+            scroll_pad(body, ROW_PAD),
+            container(hairline()).padding(iced::Padding::default().right(CONTENT_RIGHT)),
+            container(foot).padding(
+                iced::Padding::default().top(FOOT_PAD).bottom(FOOT_PAD).right(CONTENT_RIGHT),
+            ),
+        ]
+        .height(Fill)
+        .into(),
+        None => scroll(body),
     }
+}
 
-    body.into()
+/// Path (or save note) on the left, optional action on the right. The path
+/// is the flexible half so a long directory cannot shove the button off.
+fn path_cta<'a>(
+    note: Element<'a, Message>,
+    action: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut footer = row![container(note).width(Fill)];
+    if let Some(action) = action {
+        footer = footer.push(Space::new().width(12)).push(action);
+    }
+    footer.align_y(iced::Center).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,16 +1537,9 @@ fn nav(section: Section, selected: bool, warmth: f32) -> Element<'static, Messag
             .width(Fill)
             .padding([6, 9])
             .style(move |_theme, _status| button::Style {
-                background: Some(Background::Color(mix(
-                    Color::TRANSPARENT,
-                    RAIL_ON,
-                    fill,
-                ))),
+                background: Some(Background::Color(mix(Color::TRANSPARENT, RAIL_ON, fill))),
                 text_color: colour,
-                border: Border {
-                    radius: 6.0.into(),
-                    ..Default::default()
-                },
+                border: Border { radius: 6.0.into(), ..Default::default() },
                 ..Default::default()
             })
             .on_press(Message::Select(section)),
@@ -1477,7 +1570,7 @@ fn setting<'a>(
         ]
         .align_y(iced::Center),
     )
-    .padding([14, 0])
+    .padding([ROW_PAD, 0.0])
     .into()
 }
 
@@ -1503,15 +1596,11 @@ fn panel<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
         .width(Fill)
         .style(|_theme| container::Style {
             background: Some(Background::Color(RAISED)),
-            border: Border {
-                color: EDGE,
-                width: 1.0,
-                radius: 10.0.into(),
-            },
+            border: Border { color: EDGE, width: 1.0, radius: 10.0.into() },
             shadow: iced::Shadow {
-                color: Color { a: 0.35, ..Color::BLACK },
+                color: Color { a: 0.22, ..Color::BLACK },
                 offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 10.0,
+                blur_radius: 14.0,
             },
             ..Default::default()
         })
@@ -1520,14 +1609,7 @@ fn panel<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 
 /// A panel with its subject named along the top.
 fn card<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
-    panel(
-        column![
-            text(title).size(12.5).color(MUTED),
-            Space::new().height(12),
-            content,
-        ]
-        .into(),
-    )
+    panel(column![text(title).size(12.5).color(MUTED), Space::new().height(12), content,].into())
 }
 
 /// A number with what it is above it and what it means below it.
@@ -1557,8 +1639,7 @@ fn stat_tile(
 /// This week against last week, as the second line of a KPI tile.
 ///
 /// A percentage needs something to be a percentage of, so a first week says so
-/// instead of dividing by zero. A rise takes the accent and a fall does not:
-/// dictating less in a week is not a fault to flag in red.
+/// instead of dividing by zero. Up takes the accent, down takes red.
 fn trend(now: u32, before: u32) -> (String, Color) {
     if before == 0 {
         return if now == 0 {
@@ -1571,7 +1652,7 @@ fn trend(now: u32, before: u32) -> (String, Color) {
     match change {
         0 => ("level with last week".to_string(), MUTED),
         up if up > 0 => (format!("+{up}% vs last week"), ACCENT),
-        down => (format!("{down}% vs last week"), DIP),
+        down => (format!("{down}% vs last week"), ERR),
     }
 }
 
@@ -1618,6 +1699,38 @@ fn clip(text: &str, chars: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
+/// Like `clip`, but keeps the end. A path that does not fit should still name
+/// the file; cutting from the start would leave a directory prefix and lose
+/// the only part that distinguishes Config from History.
+fn clip_tail(text: &str, chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= chars {
+        return text.to_string();
+    }
+    let keep = chars.saturating_sub(1);
+    let tail: String = text.chars().skip(count.saturating_sub(keep)).collect();
+    format!("…{tail}")
+}
+
+/// `$HOME/…` as `~/…`, which is how the rest of Flow writes these paths.
+/// Anything outside home is left alone - a custom XDG directory is the
+/// actual location, not a tilde we invented.
+fn display_path(path: &std::path::Path) -> String {
+    collapse_home(path, std::env::var_os("HOME").as_deref().map(std::path::Path::new))
+}
+
+fn collapse_home(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    let shown = path.display().to_string();
+    let Some(home) = home else {
+        return shown;
+    };
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => shown,
+    }
+}
+
 /// How many of these days had at least one word dictated.
 fn active_days(days: &[history::Day]) -> usize {
     days.iter().filter(|day| day.words > 0).count()
@@ -1635,11 +1748,7 @@ fn current_streak(days: &[history::Day]) -> usize {
     if ending_today > 0 || days.len() < 2 {
         return ending_today;
     }
-    days[..days.len() - 1]
-        .iter()
-        .rev()
-        .take_while(|day| day.words > 0)
-        .count()
+    days[..days.len() - 1].iter().rev().take_while(|day| day.words > 0).count()
 }
 
 /// The longest run of consecutive active days anywhere in the buffer.
@@ -1683,15 +1792,20 @@ fn heat_color(count: u32, ceiling: u32) -> Color {
         // has to read as "a square in the grid", not as a hole in it.
         return mix(RAISED, FG, 0.12);
     }
+    // The ramp stops short of the raw accent. A busy year fills this grid with
+    // hundreds of cells, and at full strength that made the calendar the
+    // loudest thing in the window - louder than the live pip, which is the one
+    // place in the product the accent means something. The steps still read
+    // apart from each other; they just do it below the accent's own weight.
     let t = (count as f32 / ceiling as f32).min(1.0);
     let step = if t > 0.75 {
-        1.0
+        0.82
     } else if t > 0.5 {
-        0.72
+        0.62
     } else if t > 0.25 {
-        0.48
+        0.42
     } else {
-        0.3
+        0.26
     };
     mix(RAISED, ACCENT, step)
 }
@@ -1704,10 +1818,7 @@ fn heat_cell(colour: Color, size: f32) -> Element<'static, Message> {
         .height(Length::Fixed(size))
         .style(move |_theme| container::Style {
             background: Some(Background::Color(colour)),
-            border: Border {
-                radius: (size * 0.22).into(),
-                ..Default::default()
-            },
+            border: Border { radius: (size * 0.22).into(), ..Default::default() },
             ..Default::default()
         })
         .into()
@@ -1725,17 +1836,13 @@ fn day_cell(day: history::Day, number: u64, ceiling: u32) -> Element<'static, Me
 
     tooltip(
         heat_cell(heat_color(day.words, ceiling), CELL),
-        container(text(format!("{when} · {what}")).size(11.5).color(FG))
-            .padding([5, 8])
-            .style(|_theme| container::Style {
+        container(text(format!("{when} · {what}")).size(11.5).color(FG)).padding([5, 8]).style(
+            |_theme| container::Style {
                 background: Some(Background::Color(BG)),
-                border: Border {
-                    color: mix(LINE, FG, 0.22),
-                    width: 1.0,
-                    radius: 6.0.into(),
-                },
+                border: Border { color: mix(LINE, FG, 0.22), width: 1.0, radius: 6.0.into() },
                 ..Default::default()
-            }),
+            },
+        ),
         tooltip::Position::Top,
     )
     .gap(6)
@@ -1787,10 +1894,7 @@ fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
                     Some(index) if number <= today && (index as usize) < days.len() => {
                         day_cell(days[index as usize], number, ceiling)
                     }
-                    _ => Space::new()
-                        .width(Length::Fixed(CELL))
-                        .height(Length::Fixed(CELL))
-                        .into(),
+                    _ => Space::new().width(Length::Fixed(CELL)).height(Length::Fixed(CELL)).into(),
                 };
                 week = week.push(cell);
             }
@@ -1829,10 +1933,7 @@ fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
         let months = iced::widget::Row::with_children(labels).spacing(CELL_GAP);
 
         column![
-            row![
-                Space::new().width(Length::Fixed(WEEKDAY_GUTTER)),
-                months,
-            ],
+            row![Space::new().width(Length::Fixed(WEEKDAY_GUTTER)), months,],
             Space::new().height(MONTH_ROW - 11.0),
             row![weekday_gutter(), weeks],
         ]
@@ -1858,12 +1959,8 @@ fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
         column![
             grid,
             Space::new().height(14),
-            row![
-                text(caption).size(12).color(MUTED),
-                Space::new().width(Fill),
-                legend(),
-            ]
-            .align_y(iced::Center),
+            row![text(caption).size(12).color(MUTED), Space::new().width(Fill), legend(),]
+                .align_y(iced::Center),
         ]
         .into(),
     )
@@ -1918,9 +2015,8 @@ fn latest_day(days: &[history::Day], today: u64) -> u64 {
 }
 
 fn month_name(month: u32) -> &'static str {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
+    const MONTHS: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     MONTHS[((month - 1) % 12) as usize]
 }
 
@@ -1944,9 +2040,7 @@ fn update_state(status: &update::Status) -> (Color, String) {
         update::Status::Checking => (MUTED, "checking for updates…".into()),
         update::Status::Current => (OK, "up to date".into()),
         update::Status::Available(tag) => (ACCENT, format!("{tag} is available")),
-        update::Status::Installed(tag) => {
-            (OK, format!("{tag} installed - restart Flow to run it"))
-        }
+        update::Status::Installed(tag) => (OK, format!("{tag} installed - restart Flow to run it")),
         update::Status::Failed(why) => (ERR, format!("could not check: {why}")),
     }
 }
@@ -1961,8 +2055,50 @@ fn fact_row(label: &'static str, value: impl Into<String>) -> Element<'static, M
         ]
         .align_y(iced::Center),
     )
-    .padding([14, 0])
+    .padding([ROW_PAD, 0.0])
     .into()
+}
+
+/// Like `fact_row`, but the value is a path you can click to open in the
+/// file manager. The type is the affordance; a second "Open" button would
+/// repeat what the path already is.
+///
+/// The path is the shrinking half of the row: a long directory must not sit
+/// on the label the way a short Session value can sit on a Fill. `~/…` is
+/// what we draw; the real file is what a click reveals.
+fn fact_path(label: &'static str, path: &std::path::Path) -> Element<'static, Message> {
+    let real = path.to_path_buf();
+    let shown = display_path(path);
+    container(
+        row![
+            text(label).size(13.5).color(FG),
+            Space::new().width(20),
+            responsive(move |size| {
+                // Default monospace at 12px is a little under 8px wide; the
+                // extra room is the ellipsis, so a custom XDG path keeps the
+                // filename instead of running off the pane.
+                let chars = (size.width / 8.0).floor().max(8.0) as usize;
+                container(path_link(real.clone(), clip_tail(&shown, chars)))
+                    .width(Fill)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .into()
+            })
+            .height(Length::Shrink),
+        ]
+        .align_y(iced::Center),
+    )
+    .padding([ROW_PAD, 0.0])
+    .into()
+}
+
+fn path_link(path: std::path::PathBuf, shown: String) -> Element<'static, Message> {
+    // A rich-text link, not a button: iced already turns those into a
+    // pointer and an underline on hover, which is the affordance a path
+    // sitting where Session's value sits would otherwise lack.
+    rich_text![span(shown).size(12).font(Font::MONOSPACE).color(MUTED).link(path)]
+        .on_link_click(Message::OpenPath)
+        .wrapping(text::Wrapping::None)
+        .into()
 }
 
 fn model_row(
@@ -1986,9 +2122,7 @@ fn model_row(
                     Space::new().width(14),
                     pip(if installed { OK } else { ERR }),
                     Space::new().width(7),
-                    text(if installed { "Installed" } else { "Missing" })
-                        .size(12)
-                        .color(MUTED),
+                    text(if installed { "Installed" } else { "Missing" }).size(12).color(MUTED),
                 ]
                 .align_y(iced::Center),
             )
@@ -1997,7 +2131,7 @@ fn model_row(
         ]
         .align_y(iced::Center),
     )
-    .padding([14, 0])
+    .padding([ROW_PAD, 0.0])
     .into()
 }
 
@@ -2020,10 +2154,7 @@ fn toggle(value: bool, travel: f32, on_change: fn(bool) -> Message) -> Element<'
         .height(Length::Fixed(12.0))
         .style(move |_| container::Style {
             background: Some(Background::Color(mix(MUTED, ON_ACCENT, at))),
-            border: Border {
-                radius: 6.0.into(),
-                ..Default::default()
-            },
+            border: Border { radius: 6.0.into(), ..Default::default() },
             ..Default::default()
         });
 
@@ -2040,18 +2171,11 @@ fn toggle(value: bool, travel: f32, on_change: fn(bool) -> Message) -> Element<'
     .padding([3, 3])
     .style(move |_| container::Style {
         background: Some(Background::Color(mix(LINE, ACCENT, at))),
-        border: Border {
-            radius: 9.0.into(),
-            ..Default::default()
-        },
+        border: Border { radius: 9.0.into(), ..Default::default() },
         ..Default::default()
     });
 
-    button(track)
-        .padding(0)
-        .style(ghost)
-        .on_press(on_change(!value))
-        .into()
+    button(track).padding(0).style(ghost).on_press(on_change(!value)).into()
 }
 
 /// A slider with its value beside it, so the number is always readable rather
@@ -2063,33 +2187,26 @@ fn value_slider<'a>(
     label: &str,
 ) -> Element<'a, Message> {
     row![
-        container(
-            slider(range, value, on_change)
-                .height(14)
-                .style(|_theme, _status| slider::Style {
-                    rail: slider::Rail {
-                        backgrounds: (Background::Color(ACCENT), Background::Color(LINE)),
-                        width: 2.0,
-                        border: Border::default(),
-                    },
-                    handle: slider::Handle {
-                        shape: slider::HandleShape::Circle { radius: 5.0 },
-                        background: Background::Color(FG),
-                        border_width: 0.0,
-                        border_color: Color::TRANSPARENT,
-                    },
-                })
-        )
+        container(slider(range, value, on_change).height(14).style(|_theme, _status| {
+            slider::Style {
+                rail: slider::Rail {
+                    backgrounds: (Background::Color(ACCENT), Background::Color(LINE)),
+                    width: 2.0,
+                    border: Border::default(),
+                },
+                handle: slider::Handle {
+                    shape: slider::HandleShape::Circle { radius: 5.0 },
+                    background: Background::Color(FG),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                },
+            }
+        }))
         .width(Length::Fixed(140.0)),
         Space::new().width(12),
-        container(
-            text(label.to_string())
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(MUTED)
-        )
-        .width(Length::Fixed(56.0))
-        .align_x(iced::alignment::Horizontal::Right),
+        container(text(label.to_string()).size(12).font(Font::MONOSPACE).color(MUTED))
+            .width(Length::Fixed(56.0))
+            .align_x(iced::alignment::Horizontal::Right),
     ]
     .align_y(iced::Center)
     .into()
@@ -2102,10 +2219,7 @@ fn pip(colour: Color) -> Element<'static, Message> {
         .height(Length::Fixed(7.0))
         .style(move |_| container::Style {
             background: Some(Background::Color(colour)),
-            border: Border {
-                radius: 3.5.into(),
-                ..Default::default()
-            },
+            border: Border { radius: 3.5.into(), ..Default::default() },
             ..Default::default()
         })
         .into()
@@ -2186,6 +2300,110 @@ fn ghost(_theme: &Theme, _status: button::Status) -> button::Style {
     }
 }
 
+/// The slot copy sits in, on the meta line of a transcript. Fixed size at
+/// every warmth so hovering never changes the row's height (see
+/// `entry_row`); only the icon's opacity moves, using the row's own fade so
+/// it settles in lockstep with the highlight rather than snapping in on top
+/// of it.
+///
+/// A paper, not a word: drawn rather than picked from a font so it matches
+/// the rest of the chrome instead of arriving as someone else's glyph. Copied
+/// swaps the glyph itself to a checkmark, full opacity and accent - a colour
+/// change alone on the same paper reads as "this button is now green", not as
+/// "this worked".
+///
+/// A `mouse_area`, not a `button` and not a tooltip: both of those captured
+/// the pointer event the parent row needs to stay hovered, and the tooltip
+/// invalidated layout as it opened, which is what made the highlight drop
+/// whenever the pointer reached the icon.
+const COPY_SLOT: f32 = 20.0;
+const COPY_GLYPH: f32 = 13.0;
+
+fn copy_btn(index: usize, copied: bool, warmth: f32) -> Element<'static, Message> {
+    let opacity = if copied { 1.0 } else { warmth };
+    let colour = if copied { ACCENT } else { MUTED };
+    iced::widget::mouse_area(
+        container(
+            Canvas::new(CopyMark { colour: Color { a: opacity, ..colour }, checked: copied })
+                .width(Length::Fixed(COPY_GLYPH))
+                .height(Length::Fixed(COPY_GLYPH)),
+        )
+        .width(Length::Fixed(COPY_SLOT))
+        .height(Length::Fixed(COPY_SLOT))
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center),
+    )
+    .on_press(Message::Copy(index))
+    .interaction(iced::mouse::Interaction::Pointer)
+    .into()
+}
+
+/// Two sheets, one offset, for "copy"; a single tick for "copied". Stroke
+/// only, so it thins and fades with whatever colour and alpha it is asked
+/// for rather than filling a blob that fights the rest of the row.
+struct CopyMark {
+    colour: Color,
+    checked: bool,
+}
+
+impl canvas::Program<Message> for CopyMark {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let stroke = canvas::Stroke::default()
+            .with_width(0.85)
+            .with_color(self.colour)
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+
+        // Built from the canvas's own size, as fractions, rather than points
+        // tuned by eye for one fixed box: that's what let the two sheets sit
+        // 1px low the first time round, and would do it again the next time
+        // `COPY_GLYPH` changed. The sheets are placed by an equal-and-opposite
+        // offset from the centre on each axis, which centres the combined
+        // shape by construction - not by re-measuring its bounding box.
+        let (w, h) = (bounds.width, bounds.height);
+        let (cx, cy) = (w / 2.0, h / 2.0);
+
+        if self.checked {
+            let mut check = canvas::path::Builder::new();
+            check.move_to(Point::new(0.127 * w, 0.527 * h));
+            check.line_to(Point::new(0.382 * w, 0.800 * h));
+            check.line_to(Point::new(0.873 * w, 0.200 * h));
+            frame.stroke(&check.build(), stroke);
+        } else {
+            let (sw, sh) = (0.58 * w, 0.68 * h);
+            let (dx, dy) = (0.12 * w, 0.12 * h);
+            let radius = 0.12 * w.min(h);
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    Point::new(cx - sw / 2.0 + dx, cy - sh / 2.0 - dy),
+                    Size::new(sw, sh),
+                    radius.into(),
+                ),
+                stroke,
+            );
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    Point::new(cx - sw / 2.0 - dx, cy - sh / 2.0 + dy),
+                    Size::new(sw, sh),
+                    radius.into(),
+                ),
+                stroke,
+            );
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
 /// Read the keyboard until a chord arrives, on whatever thread the runtime
 /// gives us. Split out so the async block above stays a one-liner.
 fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<String> {
@@ -2194,7 +2412,11 @@ fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) 
 
 #[cfg(test)]
 mod tests {
-    use super::{commas, current_streak, heat_ceiling, trend, Section, ACCENT, DIP, MUTED};
+    use super::{
+        clip_tail, collapse_home, commas, current_streak, heat_ceiling, trend, Section, ACCENT,
+        ERR, MUTED,
+    };
+    use std::path::Path;
 
     fn days(words: &[u32]) -> Vec<crate::history::Day> {
         words
@@ -2234,8 +2456,8 @@ mod tests {
         assert_eq!(trend(120, 100).0, "+20% vs last week");
         assert_eq!(trend(80, 100).0, "-20% vs last week");
         assert_eq!(trend(100, 100), ("level with last week".to_string(), MUTED));
-        // A week that went down gets its own colour, and it is not ERR.
-        assert_eq!(trend(80, 100).1, DIP);
+        assert_eq!(trend(120, 100).1, ACCENT);
+        assert_eq!(trend(80, 100).1, ERR);
         assert_eq!(trend(50, 0).1, ACCENT);
         assert_eq!(trend(0, 0), ("nothing yet".to_string(), MUTED));
     }
@@ -2268,5 +2490,34 @@ mod tests {
         assert_eq!(Section::from_label("AUDIO"), Some(Section::Audio));
         assert_eq!(Section::from_label("aud"), None);
         assert_eq!(Section::from_label(""), None);
+    }
+
+    #[test]
+    fn home_is_written_as_a_tilde() {
+        let home = Path::new("/home/j");
+        assert_eq!(
+            collapse_home(Path::new("/home/j/.config/flow/config.toml"), Some(home)),
+            "~/.config/flow/config.toml"
+        );
+        assert_eq!(
+            collapse_home(Path::new("/home/j/.local/share/flow/history.jsonl"), Some(home)),
+            "~/.local/share/flow/history.jsonl"
+        );
+        assert_eq!(collapse_home(home, Some(home)), "~");
+    }
+
+    #[test]
+    fn a_path_outside_home_is_left_alone() {
+        assert_eq!(
+            collapse_home(Path::new("/custom/config/flow/config.toml"), Some(Path::new("/home/j"))),
+            "/custom/config/flow/config.toml"
+        );
+        assert_eq!(collapse_home(Path::new("/tmp/x"), None), "/tmp/x");
+    }
+
+    #[test]
+    fn a_long_path_keeps_the_filename() {
+        assert_eq!(clip_tail("abcdef", 6), "abcdef");
+        assert_eq!(clip_tail("/private/tmp/claude/flow/config.toml", 17), "…flow/config.toml");
     }
 }
