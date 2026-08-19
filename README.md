@@ -121,6 +121,3 @@ Build dependencies: `libasound2-dev`, `libvulkan-dev`, `glslang-tools`,
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
-
-`crates/xkb-type` is vendored from [whisrs](https://github.com/y0sif/whisrs)
-and keeps its own MIT notice, as that licence requires.

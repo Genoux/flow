@@ -14,3 +14,4 @@ pub mod overlay;
 pub mod status;
 pub mod stt;
 pub mod wav;
+pub mod wayland_vk;

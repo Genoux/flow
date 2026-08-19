@@ -53,7 +53,7 @@ jobs:
       #
       # --workspace only means anything because the root Cargo.toml now lists
       # its members: path dependencies are not members by default, so this
-      # used to build xkb-type and run none of its 61 tests.
+      # used to build the path crates and run none of their tests.
       - name: Build tests (daemon)
         run: cargo test --workspace --all-targets --no-run
 
