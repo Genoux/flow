@@ -84,6 +84,7 @@ fn main() -> iced::Result {
         .subscription(subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(880.0, 580.0),
+            position: iced::window::Position::Centered,
             min_size: Some(iced::Size::new(640.0, 460.0)),
             // Without this the Wayland app_id is empty, so compositor window
             // rules, taskbars and .desktop matching have nothing to key on.
@@ -539,7 +540,8 @@ impl Console {
             column![
                 items,
                 Space::new().height(Fill),
-                text(env!("CARGO_PKG_VERSION")).size(11).font(Font::MONOSPACE).color(FAINT),
+                container(text(env!("CARGO_PKG_VERSION")).size(11).font(Font::MONOSPACE).color(FAINT))
+                    .padding([0, 9]),
             ]
             .spacing(0),
         )
