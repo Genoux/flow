@@ -58,6 +58,10 @@ pub fn setup() -> Option<bool> {
 pub fn setup_state() -> crate::setup::State {
     crate::setup::State {
         total: 3_167_800_824,
+        groups: vec![
+            ("speech".into(), 670_619_706),
+            ("refine".into(), 2_497_181_118),
+        ],
         done: 1_402_000_000,
         phase: crate::setup::Phase::Fetching("qwen3-4b-instruct-q4km.gguf".into()),
         hardware: Some("NVIDIA GeForce RTX 3060 Ti".into()),

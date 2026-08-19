@@ -11,7 +11,7 @@
 //! reason an install can be trusted; a second downloader in the window would be
 //! a second place for them to be wrong.
 
-use crate::control::meter;
+use crate::control::{meter, quiet_action};
 use crate::theme::{ERR, FAINT, FG, GAP, MUTED, PANE_INSET};
 use crate::Message;
 use iced::widget::{column, container, row, text, Space};
@@ -35,6 +35,8 @@ pub fn needed() -> bool {
 pub enum Event {
     /// Total bytes this install will fetch.
     Total(u64),
+    /// One model and its share of that total, in fetch order.
+    Group(String, u64),
     /// Hashing, either checking what is on disk or verifying what arrived.
     Verifying(String),
     /// Now downloading this file.
@@ -155,6 +157,10 @@ fn parse(line: &str) -> Option<Event> {
     };
     Some(match word {
         "total" => Event::Total(rest.parse().ok()?),
+        "group" => {
+            let (label, bytes) = rest.split_once(' ')?;
+            Event::Group(label.to_string(), bytes.parse().ok()?)
+        }
         "progress" => Event::Progress(rest.parse().ok()?),
         "verifying" => Event::Verifying(rest.to_string()),
         "fetching" => Event::Fetching(rest.split_once(' ').map_or(rest, |(dest, _)| dest).into()),
@@ -199,6 +205,9 @@ pub fn probe() -> Option<String> {
 pub struct State {
     pub total: u64,
     pub done: u64,
+    /// The models being fetched and their sizes, in fetch order. Empty until
+    /// the installer says; one bar is drawn per entry.
+    pub groups: Vec<(String, u64)>,
     /// Where the bar is actually drawn, which chases `done` rather than
     /// matching it. Progress arrives in ~120ms steps of tens of megabytes; a
     /// bar that jumped between them would tick like a clock instead of filling.
@@ -216,6 +225,20 @@ pub struct State {
     pub rerun: bool,
 }
 
+/// One model's slice of the progress bar.
+///
+/// Carries no label: the caption under the bar already names whichever model
+/// is being worked on, and repeating it on the bar would be the same fact
+/// twice in one glance.
+pub struct Segment {
+    /// How much of the bar's width this model is worth, 0 to 1. Proportional
+    /// rather than equal halves: the refining model is nearly four times the
+    /// speech model, and two equal bars would imply the first was half the
+    /// wait when it is closer to a fifth.
+    pub share: f32,
+    pub filled: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
     /// Between the window opening and the first line arriving.
@@ -231,6 +254,7 @@ impl Default for State {
         Self {
             total: 0,
             done: 0,
+            groups: Vec::new(),
             shown: 0.0,
             phase: Phase::Starting,
             hardware: None,
@@ -250,6 +274,9 @@ impl State {
     pub fn apply(&mut self, event: Event) {
         match event {
             Event::Total(total) => self.total = total,
+            // Re-running setup replans from scratch, so the old split must not
+            // survive into the new one.
+            Event::Group(label, bytes) => self.groups.push((label, bytes)),
             Event::Progress(done) => self.done = self.done.max(done),
             Event::Verifying(what) => self.phase = Phase::Verifying(what),
             Event::Fetching(what) => self.phase = Phase::Fetching(what),
@@ -280,6 +307,33 @@ impl State {
     pub fn advance(&mut self, seconds: f32) {
         let target = self.fraction();
         self.shown += (target - self.shown) * (1.0 - (-seconds / CHASE).exp());
+    }
+
+    /// One entry per model: its label, its share of the bar's width, and how
+    /// far along it is.
+    ///
+    /// Derived from the single running byte count rather than tracked per file,
+    /// which works because the installer always fetches the models in the order
+    /// it announced them: everything below the boundary belongs to the first,
+    /// everything above to the second. One eased number still drives both, so
+    /// the two bars cannot drift apart or animate at different speeds.
+    pub fn segments(&self) -> Vec<Segment> {
+        if self.total == 0 || self.groups.is_empty() {
+            return Vec::new();
+        }
+
+        let shown_bytes = self.shown * self.total as f32;
+        let mut offset = 0.0;
+
+        self.groups
+            .iter()
+            .map(|(_label, bytes)| {
+                let bytes = *bytes as f32;
+                let filled = ((shown_bytes - offset) / bytes).clamp(0.0, 1.0);
+                offset += bytes;
+                Segment { share: bytes / self.total as f32, filled }
+            })
+            .collect()
     }
 
     fn fraction(&self) -> f32 {
@@ -329,12 +383,18 @@ pub fn title(state: &State) -> &'static str {
 pub fn blurb(state: &State) -> &'static str {
     match (state.phase == Phase::Done, state.rerun, state.skipped) {
         (true, true, _) => "Both models are present and match their published hashes.",
-        // Says where to go back for the half that was skipped, at the one
-        // moment the decision is still fresh enough to change.
-        (true, false, true) => "Hold Super+Shift+D and talk. You can add refining later from Models.",
-        (true, false, false) => {
-            "Hold Super+Shift+D and talk. The text appears where your cursor already was."
+        // Says where to go back for the half that was skipped, and that going
+        // back is cheap: the part-downloaded file is kept, so whatever arrived
+        // before the skip is not paid for twice. Both halves of that matter at
+        // the one moment the decision is still fresh enough to change.
+        (true, false, true) => {
+            "Speech recognition is installed and the daemon is running. Models can add refining later, picking up where this left off."
         }
+        // What just happened, not how to use it. A finished install is a
+        // report: the chord is on the next screen, in the Dictation section,
+        // and repeating it here made the end of setup read like a tutorial
+        // nobody asked for.
+        (true, false, false) => "Both models are installed and the daemon is running.",
         // A rerun is repair, and saying "downloaded once" to someone who has
         // already done it would read as the screen having forgotten.
         (false, true, _) => "Each file is checked against its hash, and anything missing is fetched.",
@@ -356,16 +416,52 @@ pub fn view(state: &State) -> Element<'_, Message> {
     ]
     .width(Length::Fixed(COLUMN));
 
-    // Centred on both axes: this is the only screen in the product with no rail
-    // beside it, and a column pinned to the top-left of a 1040px window would
-    // read as the page having failed to load the rest of itself.
-    container(body)
-        .width(Fill)
-        .height(Fill)
-        .padding(PANE_INSET)
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
+    // Three bands: air, the work, air, and then the way out along the bottom
+    // edge. The skip is deliberately not in the column - sitting under the bar
+    // it read as the next step in the sequence, which is the opposite of what
+    // it is. Down here it is available without being offered, and the eye
+    // finishes on the download rather than on the way to avoid it.
+    //
+    // Centred horizontally because this is the only screen with no rail beside
+    // it, and a column pinned to the left of a 1040px window would read as the
+    // page having failed to load the rest of itself.
+    container(
+        column![
+            Space::new().height(Fill),
+            container(body).align_x(iced::alignment::Horizontal::Center),
+            Space::new().height(Fill),
+            bail_out(state),
+        ]
+        .align_x(iced::alignment::Horizontal::Center),
+    )
+    .width(Fill)
+    .height(Fill)
+    .padding(PANE_INSET)
+    .align_x(iced::alignment::Horizontal::Center)
+    .into()
+}
+
+/// The way past the optional half, along the bottom edge.
+///
+/// Two lines: what it does, and what it costs. The cost line is the one that
+/// matters - "skip" on its own sounds free, and the person reading it is being
+/// asked to give up the punctuation that makes dictation worth using.
+fn bail_out(state: &State) -> Element<'_, Message> {
+    if !state.skippable() {
+        return Space::new().height(0).into();
+    }
+
+    column![
+        quiet_action("Skip refining model", Message::SkipRefine),
+        Space::new().height(2),
+        text("Flow still works without it — your words arrive raw, with no punctuation and the ums left in.")
+            .size(11)
+            .color(FAINT)
+            .align_x(iced::alignment::Horizontal::Center),
+    ]
+    .align_x(iced::alignment::Horizontal::Center)
+    .width(Length::Fixed(COLUMN))
+    .into()
 }
 
 /// The bar, and the line under it that says what it is counting.
@@ -385,7 +481,7 @@ fn progress_block(state: &State) -> Element<'_, Message> {
     let failed = matches!(state.phase, Phase::Failed(_));
 
     column![
-        meter(state.shown, failed),
+        bars(state, failed),
         Space::new().height(12),
         row![
             // The bar's own caption wraps rather than clips: a curl error is a
@@ -400,6 +496,37 @@ fn progress_block(state: &State) -> Element<'_, Message> {
     ]
     .into()
 }
+
+/// The bar, as one length per model.
+///
+/// Two downloads shown as one bar hid which of them was running and made the
+/// speech model - a fifth of the bytes and the only required half - look like
+/// the same job as the refining model. Split, the first fills and stops, and
+/// the boundary is where the optional half begins.
+///
+/// Falls back to a single bar whenever the split is not known: a `--speech-only`
+/// install has one model, and the first frames arrive before the installer has
+/// said what it is fetching.
+fn bars(state: &State, failed: bool) -> Element<'_, Message> {
+    let segments = state.segments();
+    if segments.len() < 2 {
+        return meter(state.shown, failed);
+    }
+
+    let mut lengths = row![].spacing(SPLIT);
+    for segment in segments {
+        // Widths in thousandths, so a 21/79 split survives integer portions.
+        let portion = (segment.share * 1000.0).round().max(1.0) as u16;
+        lengths = lengths.push(
+            container(meter(segment.filled, failed)).width(Length::FillPortion(portion)),
+        );
+    }
+    lengths.into()
+}
+
+/// The gap between the two lengths. Wide enough to read as two bars, narrow
+/// enough that they still read as one measurement.
+const SPLIT: f32 = 5.0;
 
 /// One quiet line naming the card Flow picked, or nothing at all.
 ///
@@ -457,9 +584,11 @@ fn activity(state: &State) -> String {
     }
 }
 
-/// The one control this page ever shows, and only when there is a decision to
-/// make. Nothing to press while it downloads: the install needs no permission
-/// it was not already given by being launched.
+/// The page's primary control, and only when there is one.
+///
+/// Nothing to press while it downloads: the install needs no permission it was
+/// not already given by being launched. Skipping is not here - it lives at the
+/// bottom of the window, where a way out belongs (see `bail_out`).
 fn actions(state: &State) -> Element<'_, Message> {
     let button = match &state.phase {
         Phase::Done => Some(crate::control::action_msg(
@@ -472,11 +601,6 @@ fn actions(state: &State) -> Element<'_, Message> {
             true,
             Message::BeginSetup,
         )),
-        _ if state.skippable() => Some(crate::control::action_msg(
-            "Skip refining for now",
-            false,
-            Message::SkipRefine,
-        )),
         _ => None,
     };
 
@@ -484,7 +608,6 @@ fn actions(state: &State) -> Element<'_, Message> {
         // Says what the button will not do, which is the half people worry
         // about: a resumable download is a very different thing to lose.
         Phase::Failed(_) => "Nothing that arrived is lost - it picks up where it stopped.",
-        _ if state.skippable() => "Dictation works without it. Punctuation and filler removal do not.",
         _ => "",
     };
 
@@ -604,9 +727,13 @@ mod tests {
         let finished = State { rerun: true, phase: Phase::Done, ..State::default() };
         assert_eq!(title(&finished), "Everything checks out");
 
+        // A finished install reports what happened. Teaching the chord here
+        // made the end of setup read as a tutorial, and the chord lives on the
+        // Dictation screen the user is about to land on anyway.
         let first_run = State { phase: Phase::Done, ..State::default() };
         assert_eq!(title(&first_run), "Flow is ready");
-        assert!(blurb(&first_run).contains("Super+Shift+D"));
+        assert!(blurb(&first_run).contains("installed"));
+        assert!(!blurb(&first_run).contains("Super+Shift+D"));
     }
 
     /// The line is a reassurance about the machine, so it appears only when

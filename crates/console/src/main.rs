@@ -179,6 +179,8 @@ enum Message {
     /// A key arrived while capturing.
     Captured(Option<String>),
     CancelCapture,
+    /// Put the chord back to what a fresh install uses.
+    ResetChord,
     TypingTerm(String),
     AddTerm,
     RemoveTerm(usize),
@@ -504,6 +506,11 @@ impl Console {
                     async move { tokio_free_capture(cancelled) },
                     Message::Captured,
                 );
+            }
+            Message::ResetChord => {
+                self.settings.hotkey = settings::DEFAULT_HOTKEY.to_string();
+                self.chord_error = None;
+                self.persist();
             }
             Message::CancelCapture => {
                 self.capturing = false;
@@ -996,7 +1003,12 @@ impl Console {
             ),
             setting(
                 "Chord",
-                "Held down while you speak. Applies straight away.",
+                // Not "applies straight away", which it never did: the daemon
+                // reads the chord once at startup because the thread watching
+                // it would have to be torn down and rebuilt. Saying otherwise
+                // sent people off pressing a combination that was never going
+                // to fire, and blaming their keyboard for it.
+                "Held down while you speak. Restart Flow for a change to take effect.",
                 row![
                     text(if self.capturing {
                         "press the chord…".to_string()
@@ -1007,6 +1019,18 @@ impl Console {
                     .font(Font::MONOSPACE)
                     .color(if self.capturing { ACCENT } else { MUTED }),
                     Space::new().width(12),
+                    // Reset earns its place only when the chord is not
+                    // already the default - offered next to a chord that is
+                    // the default, it is a button that does nothing.
+                    if !self.capturing && self.settings.hotkey != settings::DEFAULT_HOTKEY {
+                        row![
+                            action_msg("Reset", false, Message::ResetChord),
+                            Space::new().width(8)
+                        ]
+                        .into()
+                    } else {
+                        Element::from(Space::new().width(0))
+                    },
                     if self.capturing {
                         action_msg("Cancel", false, Message::CancelCapture)
                     } else if self.can_capture {

@@ -37,6 +37,14 @@ pub struct Settings {
     pub hotkey: String,
 }
 
+/// The chord a fresh install dictates with, and what Reset puts back.
+///
+/// Must stay in step with `hotkey::Chord::default` in the daemon: the console
+/// writes this string and the daemon is what parses it. `super` is the same
+/// physical key as cmd, meta and win - the daemon accepts all four spellings,
+/// and this is the one it writes back.
+pub const DEFAULT_HOTKEY: &str = "super+shift+d";
+
 impl Default for Settings {
     /// Matches the daemon's own defaults in src/config.rs. They have to agree:
     /// a file with no `duck` line means 50 to the daemon, so the window must
@@ -49,7 +57,7 @@ impl Default for Settings {
             denoise: false,
             duck: 50,
             gpu: None,
-            hotkey: "super+shift+d".to_string(),
+            hotkey: DEFAULT_HOTKEY.to_string(),
         }
     }
 }

@@ -109,6 +109,14 @@ pub fn total_bytes(assets: &[Asset]) -> u64 {
 pub enum Event<'a> {
     /// Everything that will be fetched, before any of it starts. Sent once.
     Planned { total: u64 },
+    /// One of the two models, and how many bytes it accounts for. Sent in the
+    /// order they are fetched, straight after `Planned`.
+    ///
+    /// The window draws a bar per model rather than one bar for the pair, and
+    /// this is what tells it where the boundary falls. It is sent rather than
+    /// hardcoded there because the sizes live here, next to the assets they
+    /// are the sum of.
+    Group { label: &'static str, bytes: u64 },
     /// Hashing - either checking what is already on disk, or verifying what
     /// just came down. A 2.4 GB file takes long enough that a bar which simply
     /// stops moving reads as a hang.
@@ -144,6 +152,9 @@ impl Terminal {
                 self.total = total;
                 eprintln!("  {} to fetch", size(total));
             }
+            // The terminal draws one running figure, so the split is only
+            // useful to it as a heading.
+            Event::Group { label, bytes } => eprintln!("  {label} ({})", size(bytes)),
             Event::Verifying { asset } => self.line(&format!("{} - checking…", asset.dest)),
             Event::Fetching { asset } => {
                 self.line(&format!("{} ({})", asset.dest, size(asset.bytes)));
@@ -179,6 +190,7 @@ impl Terminal {
 pub fn to_console(event: Event) {
     match event {
         Event::Planned { total } => println!("total {total}"),
+        Event::Group { label, bytes } => println!("group {label} {bytes}"),
         Event::Verifying { asset } => println!("verifying {}", asset.dest),
         Event::Fetching { asset } => println!("fetching {} {}", asset.dest, asset.bytes),
         Event::Progress { done } => println!("progress {done}"),
@@ -370,6 +382,10 @@ pub fn planned_bytes(speech_only: bool) -> u64 {
 pub fn run_reported(speech_only: bool, report: &mut dyn FnMut(Event)) -> Result<()> {
     let root = models_root();
     report(Event::Planned { total: planned_bytes(speech_only) });
+    report(Event::Group { label: "speech", bytes: total_bytes(SPEECH) });
+    if !speech_only {
+        report(Event::Group { label: "refine", bytes: total_bytes(REFINE) });
+    }
 
     let mut base = 0;
     fetch_all_from(SPEECH, &root, &mut base, report)?;
