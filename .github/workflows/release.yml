@@ -34,6 +34,7 @@ jobs:
             spirv-headers \
             glslc \
             libwayland-dev \
+            libxkbcommon-dev \
             libclang-dev \
             cmake \
             pkg-config
