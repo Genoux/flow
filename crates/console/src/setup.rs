@@ -220,9 +220,15 @@ pub struct State {
     /// True once the user has asked to stop after the speech model.
     pub skipped: bool,
     /// Reached deliberately from About rather than by having nothing installed.
-    /// Changes only what the screen says and whether finishing starts the
-    /// daemon - the work it does is identical either way.
+    /// Changes what the screen says and suppresses automatic daemon startup -
+    /// the model work it does is identical either way.
     pub rerun: bool,
+    /// Set after first-run setup starts the daemon. Finishing setup then only
+    /// opens the console; it must not issue the same start twice.
+    pub daemon_started: bool,
+    /// Starting the daemon is separate from installing models. Keep its error
+    /// here so setup can offer the right retry instead of downloading again.
+    pub start_error: Option<String>,
 }
 
 /// One model's slice of the progress bar.
@@ -231,11 +237,6 @@ pub struct State {
 /// is being worked on, and repeating it on the bar would be the same fact
 /// twice in one glance.
 pub struct Segment {
-    /// How much of the bar's width this model is worth, 0 to 1. Proportional
-    /// rather than equal halves: the refining model is nearly four times the
-    /// speech model, and two equal bars would imply the first was half the
-    /// wait when it is closer to a fifth.
-    pub share: f32,
     pub filled: f32,
 }
 
@@ -261,6 +262,8 @@ impl Default for State {
             handle: Handle::default(),
             skipped: false,
             rerun: false,
+            daemon_started: false,
+            start_error: None,
         }
     }
 }
@@ -309,8 +312,7 @@ impl State {
         self.shown += (target - self.shown) * (1.0 - (-seconds / CHASE).exp());
     }
 
-    /// One entry per model: its label, its share of the bar's width, and how
-    /// far along it is.
+    /// One entry per model, with how far along that model is.
     ///
     /// Derived from the single running byte count rather than tracked per file,
     /// which works because the installer always fetches the models in the order
@@ -331,7 +333,7 @@ impl State {
                 let bytes = *bytes as f32;
                 let filled = ((shown_bytes - offset) / bytes).clamp(0.0, 1.0);
                 offset += bytes;
-                Segment { share: bytes / self.total as f32, filled }
+                Segment { filled }
             })
             .collect()
     }
@@ -381,6 +383,10 @@ pub fn title(state: &State) -> &'static str {
 
 /// The line under the heading.
 pub fn blurb(state: &State) -> &'static str {
+    if state.phase == Phase::Done && !state.rerun && state.start_error.is_some() {
+        return "The models are installed, but Flow could not start.";
+    }
+
     match (state.phase == Phase::Done, state.rerun, state.skipped) {
         (true, true, _) => "Both models are present and match their published hashes.",
         // Says where to go back for the half that was skipped, and that going
@@ -443,32 +449,31 @@ pub fn view(state: &State) -> Element<'_, Message> {
 
 /// The way past the optional half, along the bottom edge.
 ///
-/// Two lines: what it does, and what it costs. The cost line is the one that
-/// matters - "skip" on its own sounds free, and the person reading it is being
-/// asked to give up the punctuation that makes dictation worth using.
+/// The action and its consequence share one line. Putting the consequence
+/// underneath made it look like detached footer copy rather than the cost of
+/// the control beside it.
 fn bail_out(state: &State) -> Element<'_, Message> {
     if !state.skippable() {
         return Space::new().height(0).into();
     }
 
-    column![
-        quiet_action("Skip refining model", Message::SkipRefine),
-        Space::new().height(2),
-        text("Flow still works without it — your words arrive raw, with no punctuation and the ums left in.")
+    row![
+        quiet_action("Skip refining", Message::SkipRefine),
+        Space::new().width(8),
+        text("Flow still works, but leaves punctuation and filler untouched.")
             .size(11)
             .color(FAINT)
-            .align_x(iced::alignment::Horizontal::Center),
     ]
-    .align_x(iced::alignment::Horizontal::Center)
+    .align_y(iced::alignment::Vertical::Center)
     .width(Length::Fixed(COLUMN))
     .into()
 }
 
 /// The bar, and the line under it that says what it is counting.
 fn progress_block(state: &State) -> Element<'_, Message> {
-    let (left, right) = match &state.phase {
-        Phase::Failed(why) => (why.clone(), String::new()),
-        _ => (
+    let (left, right) = match (&state.start_error, &state.phase) {
+        (Some(why), _) | (_, Phase::Failed(why)) => (why.clone(), String::new()),
+        (None, _) => (
             activity(state),
             if state.total == 0 {
                 String::new()
@@ -478,7 +483,7 @@ fn progress_block(state: &State) -> Element<'_, Message> {
         ),
     };
 
-    let failed = matches!(state.phase, Phase::Failed(_));
+    let failed = state.start_error.is_some() || matches!(state.phase, Phase::Failed(_));
 
     column![
         bars(state, failed),
@@ -497,12 +502,12 @@ fn progress_block(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-/// The bar, as one length per model.
+/// The bar, as one equal step per model.
 ///
 /// Two downloads shown as one bar hid which of them was running and made the
-/// speech model - a fifth of the bytes and the only required half - look like
-/// the same job as the refining model. Split, the first fills and stops, and
-/// the boundary is where the optional half begins.
+/// speech model - the only required half - look like the same job as the
+/// refining model. Equal steps make the two downloads explicit; each step's
+/// fill still reflects the bytes within that model.
 ///
 /// Falls back to a single bar whenever the split is not known: a `--speech-only`
 /// install has one model, and the first frames arrive before the installer has
@@ -515,11 +520,8 @@ fn bars(state: &State, failed: bool) -> Element<'_, Message> {
 
     let mut lengths = row![].spacing(SPLIT);
     for segment in segments {
-        // Widths in thousandths, so a 21/79 split survives integer portions.
-        let portion = (segment.share * 1000.0).round().max(1.0) as u16;
-        lengths = lengths.push(
-            container(meter(segment.filled, failed)).width(Length::FillPortion(portion)),
-        );
+        lengths =
+            lengths.push(container(meter(segment.filled, failed)).width(Length::FillPortion(1)));
     }
     lengths.into()
 }
@@ -592,7 +594,13 @@ fn activity(state: &State) -> String {
 fn actions(state: &State) -> Element<'_, Message> {
     let button = match &state.phase {
         Phase::Done => Some(crate::control::action_msg(
-            if state.rerun { "Back to settings" } else { "Start Flow" },
+            if state.rerun {
+                "Back to settings"
+            } else if state.start_error.is_some() {
+                "Try starting Flow"
+            } else {
+                "Open Flow"
+            },
             true,
             Message::FinishSetup,
         )),
@@ -714,6 +722,34 @@ mod tests {
         }
         assert!(state.shown > 0.99, "never arrived: {}", state.shown);
         assert!(!state.running());
+    }
+
+    #[test]
+    fn each_model_gets_its_own_progress() {
+        let mut state = State {
+            total: 100,
+            groups: vec![("speech".into(), 25), ("refine".into(), 75)],
+            shown: 0.5,
+            ..State::default()
+        };
+
+        let segments = state.segments();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].filled, 1.0);
+        assert!((segments[1].filled - 1.0 / 3.0).abs() < f32::EPSILON);
+
+        state.shown = 1.0;
+        assert!(state.segments().iter().all(|segment| segment.filled == 1.0));
+    }
+
+    #[test]
+    fn daemon_start_failure_has_a_focused_recovery() {
+        let state = State {
+            phase: Phase::Done,
+            start_error: Some("systemd user session is unavailable".into()),
+            ..State::default()
+        };
+        assert_eq!(blurb(&state), "The models are installed, but Flow could not start.");
     }
 
     /// A repair from About must not greet the user as though they had just

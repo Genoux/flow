@@ -182,12 +182,17 @@ pub(crate) fn action_msg(label: &str, primary: bool, on_press: Message) -> Eleme
     .padding([7, 14])
     .style(move |_theme, status| {
         let hovered = matches!(status, button::Status::Hovered);
+        let primary_fill = match status {
+            button::Status::Hovered => mix(ACCENT, FG, 0.12),
+            button::Status::Pressed => mix(ACCENT, ON_ACCENT, 0.16),
+            _ => ACCENT,
+        };
         button::Style {
-            background: primary.then_some(Background::Color(ACCENT)),
+            background: primary.then_some(Background::Color(primary_fill)),
             text_color: if primary { ON_ACCENT } else { FG },
             border: Border {
                 color: if primary {
-                    ACCENT
+                    primary_fill
                 } else if hovered {
                     FAINT
                 } else {

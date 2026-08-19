@@ -604,8 +604,27 @@ impl Console {
                 ]);
             }
             Message::SetupEvent(event) => {
-                if let Some(state) = self.setup.as_mut() {
+                let should_start = if let Some(state) = self.setup.as_mut() {
+                    let was_done = state.phase == setup::Phase::Done;
                     state.apply(event);
+                    !was_done && state.phase == setup::Phase::Done && !state.rerun
+                } else {
+                    false
+                };
+
+                // The download completing is the end of setup, so the daemon
+                // starts here rather than waiting for a navigation button.
+                if should_start {
+                    let result = system::service("start");
+                    if let Some(state) = self.setup.as_mut() {
+                        match result {
+                            Ok(()) => {
+                                state.daemon_started = true;
+                                state.start_error = None;
+                            }
+                            Err(err) => state.start_error = Some(err),
+                        }
+                    }
                 }
             }
             Message::Probed(hardware) => {
@@ -623,6 +642,29 @@ impl Console {
             }
             Message::FinishSetup => {
                 let first_run = self.setup.as_ref().is_some_and(|state| !state.rerun);
+
+                // Normally setup already started the daemon when the installer
+                // finished. This path is the focused retry when that start
+                // failed, and leaves setup visible if it still cannot start.
+                if first_run
+                    && self.setup.as_ref().is_some_and(|state| !state.daemon_started)
+                {
+                    match system::service("start") {
+                        Ok(()) => {
+                            if let Some(state) = self.setup.as_mut() {
+                                state.daemon_started = true;
+                                state.start_error = None;
+                            }
+                        }
+                        Err(err) => {
+                            if let Some(state) = self.setup.as_mut() {
+                                state.start_error = Some(err);
+                            }
+                            return Task::none();
+                        }
+                    }
+                }
+
                 self.setup = None;
                 // Everything the window reports on was unanswerable a moment
                 // ago: no models on disk, and a daemon that had nothing to
@@ -634,15 +676,9 @@ impl Console {
                 self.entries = history::recent();
                 self.autostart = system::autostart_enabled();
 
-                // Only on a real first run. Someone who stopped the daemon and
-                // then repaired a model from About did not ask for it back, and
-                // starting it anyway would undo a deliberate choice with a
-                // button that said nothing about doing so.
-                if first_run {
-                    if let Err(err) = system::service("start") {
-                        self.save_error = Some(err);
-                    }
-                } else {
+                // Someone who stopped the daemon and then repaired a model
+                // from About did not ask for it back.
+                if !first_run {
                     self.section = Section::About;
                 }
             }
