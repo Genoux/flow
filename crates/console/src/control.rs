@@ -203,6 +203,28 @@ pub(crate) fn action_msg(label: &str, primary: bool, on_press: Message) -> Eleme
     .into()
 }
 
+/// An action with no chrome at all - a label that brightens under the pointer.
+///
+/// For the one place a control has to be available without being offered:
+/// setup's skip. A bordered button there competes with the primary action and
+/// reads as a fork in the road, when the honest shape is "carry on, unless you
+/// would rather not".
+pub(crate) fn quiet_action(label: &str, on_press: Message) -> Element<'static, Message> {
+    button(text(label.to_string()).size(12).wrapping(text::Wrapping::None))
+        .padding([4, 6])
+        .style(|_theme, status| button::Style {
+            background: None,
+            text_color: match status {
+                button::Status::Hovered | button::Status::Pressed => FG,
+                _ => MUTED,
+            },
+            border: Border::default(),
+            ..Default::default()
+        })
+        .on_press(on_press)
+        .into()
+}
+
 /// Text that behaves like a link: no chrome at all, just the label.
 fn ghost(_theme: &Theme, _status: button::Status) -> button::Style {
     button::Style {
