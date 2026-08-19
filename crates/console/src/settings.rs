@@ -24,11 +24,11 @@ pub fn config_path() -> PathBuf {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub push_to_talk: bool,
-    pub cleanup: bool,
+    pub refine: bool,
     pub terminal: bool,
     pub denoise: bool,
     pub duck: u32,
-    /// Which GPU runs the cleanup model. `None` means the daemon picks, and is
+    /// Which GPU runs the refining model. `None` means the daemon picks, and is
     /// written as no line at all rather than a value - the daemon's default is
     /// "choose for me", and there is no number that spells that.
     pub gpu: Option<u32>,
@@ -44,7 +44,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             push_to_talk: true,
-            cleanup: true,
+            refine: true,
             terminal: false,
             denoise: false,
             duck: 50,
@@ -67,7 +67,7 @@ impl Settings {
         for (key, value) in pairs(text) {
             match key.as_str() {
                 "push_to_talk" => settings.push_to_talk = value == "true",
-                "cleanup" => settings.cleanup = value == "true",
+                "refine" => settings.refine = value == "true",
                 "terminal" => settings.terminal = value == "true",
                 "denoise" => settings.denoise = value == "true",
                 "duck" => {
@@ -100,7 +100,7 @@ impl Settings {
     fn render(&self, existing: &str) -> String {
         let wanted: [(&str, Option<String>); 7] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
-            ("cleanup", Some(self.cleanup.to_string())),
+            ("refine", Some(self.refine.to_string())),
             ("terminal", Some(self.terminal.to_string())),
             ("denoise", Some(self.denoise.to_string())),
             ("duck", Some(self.duck.to_string())),
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn commented_defaults_are_not_settings() {
         // The shipped template is almost entirely commented explanation.
-        let template = "# duck = 50\n# cleanup = true\n";
+        let template = "# duck = 50\n# refine = true\n";
         let parsed = Settings::parse(template);
         assert_eq!(parsed, Settings::default());
 
@@ -209,7 +209,7 @@ mod tests {
     fn a_saved_file_reads_back_the_same() {
         let settings = Settings {
             push_to_talk: false,
-            cleanup: false,
+            refine: false,
             terminal: true,
             denoise: true,
             duck: 0,

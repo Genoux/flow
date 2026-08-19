@@ -41,6 +41,30 @@ pub fn input() -> Option<String> {
     Some("Scarlett Solo USB Analog Stereo".to_string())
 }
 
+/// Whether to force the setup screen on or off, or `None` to let the models on
+/// disk decide as usual.
+///
+/// `FLOW_CONSOLE_DEMO=setup` is the only way to look at first run twice: the
+/// real thing happens once per machine and then deletes its own reason to
+/// exist. Every other demo value forces it *off*, so the sections stay
+/// reachable on a design machine that has no models at all.
+pub fn setup() -> Option<bool> {
+    let value = std::env::var("FLOW_CONSOLE_DEMO").ok()?;
+    Some(value.trim().eq_ignore_ascii_case("setup"))
+}
+
+/// An install part-way through the refining model - the state with the most on
+/// screen at once, and the only one where the skip control is live.
+pub fn setup_state() -> crate::setup::State {
+    crate::setup::State {
+        total: 3_167_800_824,
+        done: 1_402_000_000,
+        phase: crate::setup::Phase::Fetching("qwen3-4b-instruct-q4km.gguf".into()),
+        hardware: Some("NVIDIA GeForce RTX 3060 Ti".into()),
+        ..crate::setup::State::default()
+    }
+}
+
 /// Both models present and sized as the pinned releases actually are, so the
 /// Models screen can be laid out against the numbers it will really show.
 pub fn models() -> Vec<system::Model> {

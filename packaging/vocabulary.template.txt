@@ -11,7 +11,7 @@
 #   Domain jargon            idempotent, kanban, OAuth
 #
 # HOW IT WORKS
-# The terms are given to the cleanup model as context - they are not searched
+# The terms are given to the refining model as context - they are not searched
 # and replaced. That matters: "flow" and "Flow" are both real words, and only
 # the sentence around them says which one you meant, so the model decides.
 #

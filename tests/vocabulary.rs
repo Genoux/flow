@@ -13,16 +13,16 @@ const MANGLED: &[&str] = &[
 #[test]
 #[ignore]
 fn compare_with_and_without_vocabulary() {
-    let path = flow::cleanup::model_path();
+    let path = flow::refine::model_path();
     if !path.is_file() {
-        eprintln!("skipping: no cleanup model");
+        eprintln!("skipping: no refining model");
         return;
     }
 
-    let bare = flow::cleanup::Cleaner::load(&path, vec![], None).expect("load");
+    let bare = flow::refine::Refiner::load(&path, vec![], None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("no vocab:   {:?}", bare.clean_within(raw, std::time::Duration::from_secs(120)).expect("clean"));
+        eprintln!("no vocab:   {:?}", bare.refine_within(raw, std::time::Duration::from_secs(120)).expect("refine"));
     }
     drop(bare);
 
@@ -32,9 +32,9 @@ fn compare_with_and_without_vocabulary() {
         "Neovim".to_string(),
         "PipeWire".to_string(),
     ];
-    let informed = flow::cleanup::Cleaner::load(&path, terms, None).expect("load");
+    let informed = flow::refine::Refiner::load(&path, terms, None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("with vocab: {:?}", informed.clean_within(raw, std::time::Duration::from_secs(120)).expect("clean"));
+        eprintln!("with vocab: {:?}", informed.refine_within(raw, std::time::Duration::from_secs(120)).expect("refine"));
     }
 }

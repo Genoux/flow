@@ -13,7 +13,7 @@ pub struct Stt {
 
 impl Stt {
     /// Runs on CPU. Measured at ~23x realtime with the int8 TDT model on 16 cores,
-    /// which leaves the whole GPU free for the cleanup model. The `cuda` feature is
+    /// which leaves the whole GPU free for the refining model. The `cuda` feature is
     /// deliberately not enabled: ort falls back to CPU silently when the CUDA runtime
     /// is absent, so enabling it buys a misleading log line and a 3-5GB build dep.
     pub fn load(dir: &Path) -> Result<Self> {

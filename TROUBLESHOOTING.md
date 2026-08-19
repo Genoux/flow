@@ -11,7 +11,7 @@ flow logs -f       # watch it live while you reproduce the problem
 `flow retry` is the one people forget — and the one that needs turning on
 before it can help. Set `record_debug = true` in `~/.config/flow/config.toml`
 and Flow keeps each dictation's audio, so you can see exactly what the
-recogniser heard and what cleanup did to it rather than guessing from the text
+recogniser heard and what refining did to it rather than guessing from the text
 that landed. It is off by default because the files add up.
 
 For more detail than the journal normally carries, run the daemon by hand:
@@ -55,14 +55,14 @@ after that point is recoverable.
 | *Flow lost the microphone* | The device was unplugged or a Bluetooth headset dropped | Reconnect it, then `systemctl --user restart flow.service` |
 | Silence after a mic reconnect | The capture stream was torn down and rebuilt | Handled automatically. If it persists, restart the service. |
 | Names come out wrong | The recogniser has no idea what your project is called | Add the terms to `~/.config/flow/vocabulary.txt`, one per line |
-| Vocabulary changes nothing | Vocabulary is applied by the cleanup model | It has no effect with `cleanup = false` or `--raw` |
+| Vocabulary changes nothing | Vocabulary is applied by the refining model | It has no effect with `refine = false` or `--raw` |
 
 ## The text is unpunctuated
 
-Cleanup is off or its model is missing. `flow logs` says *cleanup disabled* at
+Refining is off or its model is missing. `flow logs` says *refining disabled* at
 startup. Run `flow install`.
 
-Short utterances are skipped on purpose — "Yeah." needs no cleanup and running
+Short utterances are skipped on purpose — "Yeah." needs no refining and running
 the model on it would only add latency.
 
 ## It's slow
@@ -70,8 +70,8 @@ the model on it would only add latency.
 | Symptom | Cause | Fix |
 |---|---|---|
 | ~13 s once, then fine | Vulkan recompiled its pipelines after the GPU choice changed | Expected. Don't chase it. |
-| Consistently 4–9 s | Cleanup landed on an integrated GPU | Set `gpu = <index>` in `config.toml`. `flow logs` prints the card it chose. |
-| Slower than the log claims | Cleanup exceeded its deadline and the raw transcript shipped | Working as designed — a rougher sentence beats a nine-second wait |
+| Consistently 4–9 s | Refining landed on an integrated GPU | Set `gpu = <index>` in `config.toml`. `flow logs` prints the card it chose. |
+| Slower than the log claims | Refining exceeded its deadline and the raw transcript shipped | Working as designed — a rougher sentence beats a nine-second wait |
 
 Check where the time actually goes rather than guessing: every dictation logs
 its own breakdown.
@@ -97,7 +97,7 @@ autostart instead of enabling the unit.
 
 ## I dictated French and got English
 
-That is a bug, not a setting — the detected language is named in the cleanup
+That is a bug, not a setting — the detected language is named in the refining
 prompt and a translated result is discarded so the raw transcript survives. If
 it still happens, `flow retry` shows which stage did it, and that output is
 worth an issue.

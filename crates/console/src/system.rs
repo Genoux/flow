@@ -156,12 +156,12 @@ pub struct Model {
 pub fn models() -> Vec<Model> {
     let root = flow_paths::models_dir();
 
-    // The speech model is a directory of onnx files; the cleanup model is a
+    // The speech model is a directory of onnx files; the refining model is a
     // single gguf beside it. Found by extension rather than by name so that
     // swapping the gguf for a different one does not turn this into a lie the
     // moment the daemon moves on.
     let speech = root.join("tdt");
-    let cleanup = largest_gguf(&root);
+    let refining = largest_gguf(&root);
 
     vec![
         Model {
@@ -171,18 +171,18 @@ pub fn models() -> Vec<Model> {
             installed: speech.is_dir(),
         },
         Model {
-            label: "Cleanup",
-            detail: cleanup
+            label: "Refining",
+            detail: refining
                 .as_ref()
                 .map(|path| describe(path))
                 .unwrap_or_else(|| "not installed".to_string()),
-            bytes: cleanup.as_deref().map(size_of).unwrap_or(0),
-            installed: cleanup.is_some(),
+            bytes: refining.as_deref().map(size_of).unwrap_or(0),
+            installed: refining.is_some(),
         },
     ]
 }
 
-/// The biggest `.gguf` in `root`, which is the cleanup model. Biggest rather
+/// The biggest `.gguf` in `root`, which is the refining model. Biggest rather
 /// than first so a leftover from an older, smaller model is not mistaken for
 /// the one in use.
 fn largest_gguf(root: &std::path::Path) -> Option<PathBuf> {
@@ -226,22 +226,6 @@ pub fn human_bytes(bytes: u64) -> String {
         }
     }
     format!("{bytes} B")
-}
-
-/// Fetch the models via `flow install`. No BUDGET like `run` uses - a few
-/// hundred megabytes over a home connection is minutes, not milliseconds, and
-/// this is expected to block whatever thread runs it.
-pub fn install_models() -> Result<(), String> {
-    let output = Command::new("flow")
-        .arg("install")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|err| format!("flow install did not start: {err}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() { "flow install failed".to_string() } else { reason })
 }
 
 /// Hand a path to the desktop's own handler. Used by the buttons that used to

@@ -4,7 +4,7 @@
 # file is also fine.
 #
 # Command-line flags win over this file, so `flow daemon --raw` still overrides
-# cleanup for a one-off comparison without editing anything.
+# refining for a one-off comparison without editing anything.
 #
 # Word fixes live next door in ~/.config/flow/vocabulary.txt, not here.
 
@@ -27,15 +27,15 @@
 # keeps the speakers out of the microphone; too low just mutes your music.
 # duck = 50
 
-# Pass the raw transcript through the local cleanup model. This is the point of
+# Pass the raw transcript through the local refining model. This is the point of
 # the tool, so off is only for comparing against what the recogniser heard.
-# cleanup = true
+# refine = true
 
 # Type the text out key by key instead of pasting it. Slower, but terminals that
 # ignore the clipboard need it.
 # terminal = false
 
-# Which GPU runs the cleanup model. Left unset, Flow picks the discrete card with
+# Which GPU runs the refining model. Left unset, Flow picks the discrete card with
 # the most free memory, and falls back to the CPU if none can hold the model.
 # Set an index only to override that; `flow daemon` logs the one it chose.
 # gpu = 0

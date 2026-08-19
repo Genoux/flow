@@ -4,7 +4,7 @@
 //! toggle that redraws instantly from its boolean has nowhere to put a
 //! position, and the travel is the part that acknowledges the click.
 
-use crate::theme::{mix, ACCENT, EDGE, FAINT, FG, LINE, MUTED, ON_ACCENT};
+use crate::theme::{mix, ACCENT, EDGE, ERR, FAINT, FG, LINE, MUTED, ON_ACCENT};
 use crate::Message;
 use iced::widget::{button, canvas, container, row, slider, text, Canvas, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Point, Size, Theme};
@@ -83,6 +83,45 @@ pub(crate) fn value_slider<'a>(
             .align_x(iced::alignment::Horizontal::Right),
     ]
     .align_y(iced::Center)
+    .into()
+}
+
+/// A filling bar, 0 to 1.
+///
+/// Built from two flexible spaces like the toggle's knob rather than from a
+/// measured width, so it fills whatever column it is given without anyone
+/// having to tell it how wide that is.
+///
+/// The fill keeps a minimum portion *while it is working*: at a genuine zero
+/// the rounded cap would collapse to nothing and the bar would read as a track
+/// that had not started, when in fact it has - the first bytes of a 3 GB file
+/// just do not show up as width yet. A stalled bar gets no such floor, because
+/// there the sliver would be claiming progress that is not happening.
+pub(crate) fn meter(fraction: f32, stalled: bool) -> Element<'static, Message> {
+    let filled = (fraction.clamp(0.0, 1.0) * 1000.0) as u16;
+    let filled = if stalled { filled } else { filled.max(6) };
+    let colour = if stalled { ERR } else { ACCENT };
+
+    container(
+        row![
+            container(Space::new().height(Fill))
+                .width(Length::FillPortion(filled))
+                .height(Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(colour)),
+                    border: Border { radius: 2.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            Space::new().width(Length::FillPortion((1000 - filled).max(1))),
+        ],
+    )
+    .width(Fill)
+    .height(Length::Fixed(4.0))
+    .style(|_| container::Style {
+        background: Some(Background::Color(LINE)),
+        border: Border { radius: 2.0.into(), ..Default::default() },
+        ..Default::default()
+    })
     .into()
 }
 

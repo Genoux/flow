@@ -1,4 +1,4 @@
-//! Behaviour tests for the cleanup prompt.
+//! Behaviour tests for the refining prompt.
 //!
 //! Assertions are properties, not exact strings: the prompt is edited often and
 //! a model swap would break literal expectations, but "must not answer the
@@ -11,7 +11,7 @@ struct Case {
     forbidden: &'static [&'static str],
     /// Case-insensitive substrings that must survive.
     required: &'static [&'static str],
-    /// Cleanup shortens; a big expansion means it started writing prose.
+    /// Refining shortens; a big expansion means it started writing prose.
     max_words: usize,
 }
 
@@ -31,7 +31,7 @@ const CASES: &[Case] = &[
         required: &["Mary", "invoice"],
         max_words: 15,
     },
-    // The failure every dictation cleanup hits at least once: the model helpfully
+    // The failure every dictation refining hits at least once: the model helpfully
     // answers instead of transcribing. Dictating a question must produce the
     // question as text.
     Case {
@@ -49,7 +49,7 @@ const CASES: &[Case] = &[
         required: &["delete", "downloads"],
         max_words: 14,
     },
-    // Guards against the opposite failure: a cleanup pass that rewrites healthy
+    // Guards against the opposite failure: a refining pass that rewrites healthy
     // sentences puts words in the speaker's mouth.
     Case {
         name: "already clean text is left alone",
@@ -58,7 +58,7 @@ const CASES: &[Case] = &[
         required: &["deployment", "nine"],
         max_words: 10,
     },
-    // The recogniser handles 25 languages, so cleanup must not quietly turn
+    // The recogniser handles 25 languages, so refining must not quietly turn
     // dictation into English. Also exercises multi-byte output: an accented
     // character can span two tokens and only survives if the decoder holds
     // state between them.
@@ -73,7 +73,7 @@ const CASES: &[Case] = &[
     // dictation, with a meaning a human can state but the words never do.
     //
     // Note what is NOT forbidden here. This sentence is *about* fillers, so a
-    // correct cleanup still quotes "um" and repeated words as content. Banning
+    // correct refining still quotes "um" and repeated words as content. Banning
     // them outright would fail the model for understanding the sentence, which
     // is the opposite of what this suite is meant to protect. Only structural
     // damage - the speaker's own stumbles - is forbidden.
@@ -91,51 +91,51 @@ const CASES: &[Case] = &[
     },
 ];
 
-fn load() -> Option<flow::cleanup::Cleaner> {
-    let path = flow::cleanup::model_path();
+fn load() -> Option<flow::refine::Refiner> {
+    let path = flow::refine::model_path();
     if !path.is_file() {
-        eprintln!("skipping: no cleanup model at {}", path.display());
+        eprintln!("skipping: no refining model at {}", path.display());
         return None;
     }
-    Some(flow::cleanup::Cleaner::load(&path, vec!["Flow".into(), "Hyprland".into()], None).expect("load"))
+    Some(flow::refine::Refiner::load(&path, vec!["Flow".into(), "Hyprland".into()], None).expect("load"))
 }
 
 /// One test, not several: cargo runs tests as parallel threads, and two
 /// concurrent model loads on the same Vulkan device segfault. Loading once is
 /// also how the daemon behaves.
 #[test]
-fn cleanup_behaves() {
-    let Some(cleaner) = load() else { return };
+fn refining_behaves() {
+    let Some(refiner) = load() else { return };
     let mut failures = Vec::new();
 
     for case in CASES {
         let started = std::time::Instant::now();
-        let cleaned = cleaner
-            .clean_within(case.raw, std::time::Duration::from_secs(120))
+        let refined = refiner
+            .refine_within(case.raw, std::time::Duration::from_secs(120))
             .expect("clean");
         let elapsed = started.elapsed();
-        let lowered = cleaned.to_lowercase();
+        let lowered = refined.to_lowercase();
 
-        eprintln!("\n[{}] {:?}\n  -> {:?}  ({elapsed:?})", case.name, case.raw, cleaned);
+        eprintln!("\n[{}] {:?}\n  -> {:?}  ({elapsed:?})", case.name, case.raw, refined);
 
         for bad in case.forbidden {
             if lowered.contains(&bad.to_lowercase()) {
-                failures.push(format!("[{}] still contains {bad:?}: {cleaned:?}", case.name));
+                failures.push(format!("[{}] still contains {bad:?}: {refined:?}", case.name));
             }
         }
         for good in case.required {
             if !lowered.contains(&good.to_lowercase()) {
-                failures.push(format!("[{}] lost {good:?}: {cleaned:?}", case.name));
+                failures.push(format!("[{}] lost {good:?}: {refined:?}", case.name));
             }
         }
-        let words = cleaned.split_whitespace().count();
+        let words = refined.split_whitespace().count();
         if words > case.max_words {
             failures.push(format!(
-                "[{}] grew to {words} words (max {}): {cleaned:?}",
+                "[{}] grew to {words} words (max {}): {refined:?}",
                 case.name, case.max_words
             ));
         }
-        if cleaned.trim().is_empty() {
+        if refined.trim().is_empty() {
             failures.push(format!("[{}] produced nothing", case.name));
         }
     }
@@ -143,18 +143,18 @@ fn cleanup_behaves() {
     // Greedy sampling is chosen so the same input always cleans the same way.
     // Without this the assertions above would be measuring noise.
     let repeated = "um so the the build is uh broken again";
-    let first = cleaner.clean_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
-    let second = cleaner.clean_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
+    let first = refiner.refine_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
+    let second = refiner.refine_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
     if first != second {
         failures.push(format!("not deterministic: {first:?} vs {second:?}"));
     }
 
     // Trivial input must not reach the model at all. Asserted through the real
-    // Cleaner because the gate lives inside `clean`, and a timing bound is the
+    // Refiner because the gate lives inside `clean`, and a timing bound is the
     // only thing that can tell "returned unchanged" apart from "skipped".
     let already_clean = "Yeah.";
     let started = std::time::Instant::now();
-    let skipped = cleaner.clean_within(already_clean, std::time::Duration::from_secs(120)).expect("clean");
+    let skipped = refiner.refine_within(already_clean, std::time::Duration::from_secs(120)).expect("clean");
     let elapsed = started.elapsed();
     eprintln!("\n[trivial] {already_clean:?} -> {skipped:?}  ({elapsed:?})");
     if skipped != already_clean {
@@ -169,11 +169,11 @@ fn cleanup_behaves() {
     // transcript - what must never happen is translated text reaching the user.
     let quebecois = "On copie-tu dimanche, je vais régler des chills le live, ok \
                      j'ai pas vraiment d'entête à ça, est-ce que dimanche c'est chill?";
-    match cleaner.clean_within(quebecois, std::time::Duration::from_secs(120)) {
+    match refiner.refine_within(quebecois, std::time::Duration::from_secs(120)) {
         Err(err) => eprintln!("\n[language] guard caught it: {err}"),
         Ok(text) => {
             eprintln!("\n[language] -> {text:?}");
-            if flow::cleanup::changed_language(&text, quebecois) {
+            if flow::refine::changed_language(&text, quebecois) {
                 failures.push(format!("translated french and the guard missed it: {text:?}"));
             }
             if text.to_lowercase().contains("sunday") {
@@ -187,7 +187,7 @@ fn cleanup_behaves() {
     // daemon never sends these now, but the guard has to hold if one slips
     // through, because pasting an invented word is the worst outcome here.
     for hesitation in ["Um", "Uh", "Er"] {
-        match cleaner.clean_within(hesitation, std::time::Duration::from_secs(120)) {
+        match refiner.refine_within(hesitation, std::time::Duration::from_secs(120)) {
             Err(err) => eprintln!("\n[filler] {hesitation:?} refused: {err}"),
             Ok(text) => {
                 eprintln!("\n[filler] {hesitation:?} -> {text:?}");
@@ -200,10 +200,10 @@ fn cleanup_behaves() {
     }
 
     // An impossible budget must fail rather than return half a sentence: main.rs
-    // treats the error as "use the raw transcript", and a truncated cleanup would
+    // treats the error as "use the raw transcript", and a truncated refining would
     // be worse than the transcript it replaced.
     let long = "um so i pushed the change and then uh the build broke again";
-    match cleaner.clean_within(long, std::time::Duration::from_millis(1)) {
+    match refiner.refine_within(long, std::time::Duration::from_millis(1)) {
         Err(err) => eprintln!("\n[budget] refused as expected: {err}"),
         Ok(text) => failures.push(format!("a 1ms budget still produced {text:?}")),
     }

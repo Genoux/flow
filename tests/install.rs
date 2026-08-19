@@ -5,7 +5,7 @@
 use flow::install;
 
 fn every_asset() -> Vec<&'static install::Asset> {
-    install::SPEECH.iter().chain(install::CLEANUP).collect()
+    install::SPEECH.iter().chain(install::REFINE).collect()
 }
 
 #[test]
@@ -48,12 +48,12 @@ fn destinations_are_unique() {
     assert_eq!(seen.len(), before, "duplicate destination in the manifest");
 }
 
-/// Speech is mandatory and cleanup is optional, which is the whole reason they
-/// are separate lists - a machine that skips cleanup must still dictate.
+/// Speech is mandatory and refining is optional, which is the whole reason they
+/// are separate lists - a machine that skips refining must still dictate.
 #[test]
-fn speech_and_cleanup_are_separate() {
+fn speech_and_refining_are_separate() {
     assert!(!install::SPEECH.is_empty());
-    assert!(!install::CLEANUP.is_empty());
+    assert!(!install::REFINE.is_empty());
     assert!(install::SPEECH.iter().all(|a| a.dest.starts_with("tdt/")));
 }
 
@@ -85,9 +85,9 @@ fn the_pins_match_the_speech_model_on_disk() {
 ///   cargo test --release --test install -- --ignored --nocapture
 #[test]
 #[ignore]
-fn the_pins_match_the_cleanup_model_on_disk() {
+fn the_pins_match_the_refining_model_on_disk() {
     let root = flow_paths::models_dir();
-    for asset in install::CLEANUP {
+    for asset in install::REFINE {
         let path = root.join(asset.dest);
         if !path.is_file() {
             eprintln!("skipping: {} not installed", asset.dest);
@@ -169,7 +169,7 @@ fn a_bad_hash_never_lands() {
 #[test]
 fn the_download_size_is_reported_in_gigabytes() {
     let speech = install::total_bytes(install::SPEECH);
-    let both = install::total_bytes(install::SPEECH) + install::total_bytes(install::CLEANUP);
+    let both = install::total_bytes(install::SPEECH) + install::total_bytes(install::REFINE);
     assert!(speech > 600_000_000, "speech should be ~670MB, got {speech}");
-    assert!(both > speech, "cleanup should add to the total");
+    assert!(both > speech, "refining should add to the total");
 }

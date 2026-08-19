@@ -45,13 +45,13 @@ const BAR_MAX: f32 = 26.0;
 const SETTLE: f32 = 0.80;
 const SETTLED: f32 = 0.02;
 
-/// How long cleanup has to be still running before the sweep replaces the bars.
+/// How long refining has to be still running before the sweep replaces the bars.
 ///
 /// Only ever started once recognition has found words - see [`Overlay::working`] -
 /// because time cannot answer the question the sweep implies. A cough on seven
 /// seconds of silence takes 280ms to recognise and comes back empty, so a delay
 /// alone showed a spinner for something that was never going to produce text. This
-/// only stops the other flash: a dictation short enough that cleanup returns
+/// only stops the other flash: a dictation short enough that refining returns
 /// before a spinner is worth drawing.
 const SWEEP_DELAY: Duration = Duration::from_millis(200);
 
@@ -529,7 +529,7 @@ impl Overlay {
         let _ = self.commands.send(Command::Queued);
     }
 
-    /// There are words. Cleanup takes long enough to be worth reporting.
+    /// There are words. Refining takes long enough to be worth reporting.
     pub fn working(&self) {
         let _ = self.commands.send(Command::Working);
     }
@@ -546,7 +546,7 @@ impl Overlay {
 /// Which dictation the island currently belongs to.
 ///
 /// The island must stay up until the text has actually landed, and "landed" is
-/// the end of a job that includes transcription, cleanup and the paste. Two ways
+/// the end of a job that includes transcription, refining and the paste. Two ways
 /// that guarantee used to break: a finish arriving for a dictation the user had
 /// already replaced with a new recording, and - because dictations queue - a
 /// finish for the first of two jobs hiding the island while the second was still
@@ -1159,7 +1159,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 lifecycle.transcribe();
             }
             // Words exist. Still held back by SWEEP_DELAY, because a short
-            // dictation can finish cleanup faster than a spinner is worth showing.
+            // dictation can finish refining faster than a spinner is worth showing.
             Ok(Command::Working) => waiting_to_sweep = Some(std::time::Instant::now()),
             // Nothing came of the recording and the island never appeared. Leaving
             // it unshown is the whole point of the delay.

@@ -2,7 +2,7 @@
 
 Hold a key, talk, let go. The text appears where your cursor already was.
 
-Flow is a voice dictation daemon for Linux. Speech recognition and cleanup both
+Flow is a voice dictation daemon for Linux. Speech recognition and refining both
 run on your machine — no account, no API key, no per-word cost, nothing leaves
 the computer. There is no window to focus and no button to press: the only
 interface is a key you hold and a small island that appears while you speak.
@@ -14,7 +14,7 @@ interface is a key you hold and a small island that appears while you speak.
 | Session | Wayland (wlroots — Hyprland, Sway) |
 | Audio | PipeWire or ALSA |
 | Disk | ~3 GB for the two models |
-| GPU | Optional. Vulkan is used for cleanup if a card can hold the model, CPU otherwise |
+| GPU | Optional. Vulkan is used for refining if a card can hold the model, CPU otherwise |
 | Access | Your user in the `input` group, and `/dev/uinput` writable |
 
 ## Install
@@ -26,19 +26,22 @@ git clone https://github.com/Genoux/flow && cd flow && ./packaging/install.sh
 Or download a release tarball, unpack it, and run the same `packaging/install.sh`
 from inside — it uses the binaries it finds there instead of building them.
 
-That builds both binaries into `~/.local/bin`, installs the systemd user unit
-and the desktop entry, and downloads the models. Nothing is written outside
-your home directory, and nothing runs as root — except one udev rule, which the
-script prints for you to run yourself rather than doing behind your back.
+That builds both binaries into `~/.local/bin` and installs the systemd user unit
+and the desktop entry. Nothing is written outside your home directory, and
+nothing runs as root — except one udev rule, which the script prints for you to
+run yourself rather than doing behind your back.
 
 The first build takes 10–15 minutes: llama.cpp is compiled from source.
 
-```bash
-systemctl --user start flow.service
-```
+Then open **Flow** from your launcher, or `flow-console` from a terminal. The
+first run is a setup screen: it downloads the two models, tells you which GPU it
+found for refining while it does, and starts the daemon at the end. The models
+are about 3 GB, and the refining half can be skipped and fetched later.
 
-Then hold **Super+Shift+D** and talk. The settings window is **Flow** in your
-application launcher, or `flow-console` from a terminal.
+Then hold **Super+Shift+D** and talk.
+
+Scripted installs that would rather not wait for a window can fetch the models
+up front with `./packaging/install.sh --models`, or `flow install` at any time.
 
 Updating is the same script — `git pull && ./packaging/install.sh` — which
 restarts the daemon onto the new build if it was already running.
@@ -56,6 +59,7 @@ the models alone, and prints how to delete those if you want them gone.
 | `flow logs` | What the daemon has been saying |
 | `flow retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
 | `flow start` / `flow stop` | Trigger dictation without the chord, for a compositor bind |
+| `flow probe` | Which GPU refining will run on, and why |
 | `flow help` | Every command and flag |
 
 ## Configuration
@@ -67,13 +71,13 @@ of them. The ones people actually change:
 ```toml
 hotkey = "super+shift+d"   # the combination to hold
 duck = 50                  # volume of other apps while recording, in percent
-cleanup = true             # run the transcript through the local cleanup model
+refine = true              # run the transcript through the local refining model
 terminal = false           # type key by key instead of pasting
 ```
 
 Word fixes go next door in `~/.config/flow/vocabulary.txt` — one term per line,
 for names the recogniser mishears. Note that vocabulary is applied *by the
-cleanup model*, so it does nothing when `cleanup = false`.
+refining model*, so it does nothing when `refine = false`.
 
 ## How it works
 
@@ -82,7 +86,7 @@ Two models, both local:
 - **Parakeet TDT 0.6B v3** (int8 ONNX, CPU) turns audio into text at roughly
   23× realtime. Running it on the CPU is deliberate — it keeps the GPU free.
 - **Qwen3 4B Instruct** (Q4_K_M via llama.cpp, Vulkan) punctuates and removes
-  filler. It is told the language it just heard, and a cleanup that comes back
+  filler. It is told the language it just heard, and a result that comes back
   in a different language is discarded, so speaking French gets French back.
 
 Long dictations are transcribed in pieces *during* the hold, split only inside
@@ -97,7 +101,7 @@ Start with [TROUBLESHOOTING.md](TROUBLESHOOTING.md). The short version:
 
 ```bash
 flow logs                      # the last 50 lines
-flow retry                     # what it heard, denoised, and cleaned
+flow retry                     # what it heard, denoised, and refined
 FLOW_DEBUG=1 flow daemon       # the chatty version, run in a terminal
 ```
 
