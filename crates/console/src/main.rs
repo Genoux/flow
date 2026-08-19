@@ -32,7 +32,10 @@ mod system;
 mod update;
 mod vocabulary;
 
-use iced::widget::{button, column, container, row, scrollable, slider, text, text_editor, Space};
+use iced::widget::{
+    button, column, container, responsive, row, scrollable, slider, text, text_editor, tooltip,
+    Space,
+};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 // ---------------------------------------------------------------------------
@@ -46,22 +49,61 @@ const FG: Color = Color { r: 0.925, g: 0.929, b: 0.937, a: 1.0 }; // #ECEDEF
 const MUTED: Color = Color { r: 0.486, g: 0.510, b: 0.549, a: 1.0 }; // #7C828C
 const FAINT: Color = Color { r: 0.306, g: 0.329, b: 0.361, a: 1.0 }; // #4E545C
 const LINE: Color = Color { r: 0.106, g: 0.118, b: 0.137, a: 1.0 }; // #1B1E23
-/// The lifted surface a rail item sits on when selected or hovered. One step
-/// off the ground, no more: the rail is chrome and should stay quiet.
+/// The lifted surface a card sits on. One step off the ground, no more.
 const RAISED: Color = Color { r: 0.102, g: 0.110, b: 0.125, a: 1.0 }; // #1A1C20
+/// What a rail item sits on when it is the current section. `RAISED` was doing
+/// this job too, and at card weight against the same ground the selected item
+/// was nearly invisible - a rail should stay quiet, but quiet still has to be
+/// legible.
+const RAIL_ON: Color = Color { r: 0.145, g: 0.157, b: 0.176, a: 1.0 }; // #25282D
+/// Any line drawn *on* a card - its border, and any rule inside it.
+///
+/// `LINE` is a page-ground colour and is one value off `RAISED`: a hairline in
+/// `LINE` on a card is invisible, which is worse than having no rule at all,
+/// because the space it was given to occupy stays behind and reads as two
+/// halves of a card drifting apart. The border already knew this; the rule did
+/// not, so both now come from here and cannot drift.
+const EDGE: Color = Color { r: 0.238, g: 0.248, b: 0.263, a: 1.0 }; // #3D3F43
 const ACCENT: Color = Color { r: 0.180, g: 0.835, b: 0.451, a: 1.0 }; // #2ED573
 const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
-/// The only green in the product, and it means exactly one thing: nothing to
-/// do. Muted to the same weight as ERR so a row of dots reads as one family.
-const OK: Color = Color { r: 0.549, g: 0.729, b: 0.478, a: 1.0 }; // #8CBA7A
+/// "Nothing to do" - and the same green as ACCENT, deliberately. It used to be
+/// a muted olive of its own, to sit at ERR's weight in a row of dots, and next
+/// to the accent it just read as a second, dirtier green. One green in the
+/// product, one meaning per colour: green is fine, red is not.
+const OK: Color = ACCENT;
 const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
 
 const RAIL_WIDTH: f32 = 176.0;
 
-/// How far back the Overview activity calendar looks. 26 weeks reads like a
-/// half-year at a glance without the grid outgrowing the pane.
-const CALENDAR_WEEKS: usize = 26;
+/// How far back the Overview keeps daily counts. Not the number of weeks on
+/// screen: the calendar draws as many weeks as the pane is wide, so this is
+/// the ceiling for a very wide window - two years, past which a dictation
+/// habit is better summarised than drawn.
+const CALENDAR_WEEKS: usize = 104;
 const CALENDAR_DAYS: usize = CALENDAR_WEEKS * 7;
+
+/// One calendar cell, and the gap between two of them. Fixed rather than
+/// stretched to the pane: a heat cell is read by colour, and colour on a
+/// square is easier to compare than colour on a rectangle that changes shape
+/// with the window. The pane's width buys more weeks instead.
+const CELL: f32 = 12.0;
+const CELL_GAP: f32 = 3.0;
+/// The Mon/Wed/Fri gutter down the left of the grid.
+const WEEKDAY_GUTTER: f32 = 28.0;
+
+/// How much of the transcript log the Overview repeats. Enough to recognise
+/// the last thing you said and no more - reading the log is History's job, and
+/// every extra line here is a line that pushes the page into scrolling.
+const RECENT_SHOWN: usize = 2;
+/// The one gap between everything on the Overview - between cards, and
+/// between the tiles in a row. A page of cards with three different gaps in it
+/// reads as a page of cards that were placed one at a time.
+const GAP: f32 = 12.0;
+
+/// Where a recent line is cut. Sized to the default window rather than
+/// measured: `Wrapping::None` already stops a long line becoming two, and this
+/// is what puts the ellipsis somewhere deliberate.
+const RECENT_CHARS: usize = 96;
 
 /// How long each motion takes. Only two things move - a toggle's knob and a
 /// rail item warming under the pointer - because those are the two that
@@ -255,8 +297,9 @@ struct Console {
     /// One read-only editor per entry, purely so its transcript can be mouse-
     /// selected and copied - iced has no plain selectable text widget.
     history_editors: Vec<text_editor::Content>,
-    /// Word counts for the Overview activity calendar, oldest day first.
-    daily_words: Vec<u32>,
+    /// Per-day rollup for the Overview's calendar and week numbers, oldest
+    /// day first.
+    days: Vec<history::Day>,
     /// Result of the last update check. Starts Unknown: opening a settings
     /// window should not put a network call in the path of flipping a switch.
     update: update::Status,
@@ -301,7 +344,7 @@ impl Console {
                 input: system::default_input(),
                 entries,
                 history_editors,
-                daily_words: history::daily_words(CALENDAR_DAYS),
+                days: history::daily(CALENDAR_DAYS),
                 update: update::Status::default(),
                 updating: false,
                 models: system::models(),
@@ -413,7 +456,7 @@ impl Console {
                 if self.daemon.words != before {
                     self.entries = history::recent();
                     self.history_editors = history_editors(&self.entries);
-                    self.daily_words = history::daily_words(CALENDAR_DAYS);
+                    self.days = history::daily(CALENDAR_DAYS);
                 }
             }
             Message::HistoryAction(index, action) => {
@@ -605,87 +648,254 @@ impl Console {
             Section::About => self.about_section(),
         };
 
+        // The Overview is one long scroll and pads itself, because a scroll
+        // viewport clips at the frame: with the breathing room outside the
+        // scrollable, the first and last card get sliced off at a hard edge
+        // 34px in, which reads as a broken layout rather than as more content.
+        // Inside, the padding scrolls with the cards and the ends look like
+        // ends. Every other section pins its own header and scrolls only the
+        // rows under it, so the frame is the right place for their padding.
+        let vertical = if self.section == Section::Overview { 0 } else { 34 };
+
         // Switching sections is deliberately instant. Motion here read as the
         // page arriving late rather than as polish - navigation should feel
         // like the content was already there.
         container(content)
             .width(Fill)
             .height(Fill)
-            .padding([34, 36])
+            .padding([vertical, 36])
             .into()
     }
 
-    /// The landing page: is Flow running, and the handful of numbers that say
-    /// whether it has been doing anything. Everything else in the rail is
-    /// either a log (History) or a setting - this is the one page that is
-    /// just a status report, laid out as a dashboard rather than a plain list
-    /// so the numbers that matter are legible at a glance.
+    /// The landing page, and the only one that is a report rather than a form.
+    ///
+    /// Laid out to answer three questions in the order they get asked: is Flow
+    /// working (the status card, with the three facts that decide it), has it
+    /// been used (a week of numbers, each against something to compare it to),
+    /// and is it any good (the calendar, then the last few things it actually
+    /// wrote). A bare number answers none of those on its own, which is why
+    /// every tile here carries a second line.
+    ///
+    /// The heading carries the status and its action, rather than the page
+    /// having a heading *and* a card whose whole top half is a heading of its
+    /// own. That was the shape that felt unfinished: two stacked title rows,
+    /// and a card left holding a status line and three facts that have nothing
+    /// to do with each other. What is left below the heading is one thing -
+    /// the settings that decide whether Flow can work - and it is also what
+    /// buys back the height the heading costs.
     fn overview_section(&self) -> Element<'_, Message> {
         let running = self.daemon.activity != daemon::Activity::Offline;
         let installed = self.models.iter().filter(|m| m.installed).count();
         let (label, dot) = activity_label(self.daemon.activity);
 
-        let status_row = row![
-            pip(dot),
-            Space::new().width(8),
-            text(label).size(13).color(FG),
+        let header = row![
+            text("Overview").size(22).color(FG),
             Space::new().width(Fill),
+            pip(dot),
+            Space::new().width(9),
+            text(label).size(13).color(MUTED),
+            Space::new().width(16),
             action_msg(
                 if running { "Restart" } else { "Start" },
-                false,
+                !running,
                 Message::Service(if running { "restart" } else { "start" }),
             ),
         ]
         .align_y(iced::Center);
 
-        let status: Element<Message> = match &self.daemon.problem {
-            Some(problem) => column![
-                status_row,
-                Space::new().height(8),
-                text(problem.clone()).size(12).color(ERR),
-            ]
-            .into(),
-            None => status_row.into(),
-        };
+        // The last two weeks, so every number on the KPI row has something to
+        // be measured against. The buffer is two years, so these always exist
+        // - a fresh install simply has zeros in them.
+        let total = self.days.len();
+        let this_week = &self.days[total - 7..];
+        let last_week = &self.days[total - 14..total - 7];
 
-        // However much of the calendar buffer is actually worth showing: a
-        // fresh install has one or two active days, and a fixed half-year
-        // grid would bury them in blank squares. Grows with real usage, up
-        // to the full buffer.
-        let oldest_at = self.entries.last().map_or(history::now(), |entry| entry.at);
-        let history_days = (history::now().saturating_sub(oldest_at) / 86_400 + 1) as usize;
-        let span = history_days.clamp(14, self.daily_words.len());
-        let counts = &self.daily_words[self.daily_words.len() - span..];
-        let total_words: u32 = counts.iter().sum();
+        let spoken: f32 = this_week.iter().map(|day| day.spoken).sum();
+        let dictations: u32 = this_week.iter().map(|day| day.dictations).sum();
+        let active = this_week.iter().filter(|day| day.dictations > 0).count();
+        let streak = current_streak(&self.days);
 
-        let kpis = column![
-            kpi_row(
-                stat_tile(self.entries.len().to_string(), "Dictations kept"),
-                stat_tile(total_words.to_string(), "Words dictated"),
-                stat_tile(active_days(counts).to_string(), "Active days"),
+        let kpis = row![
+            stat_tile(
+                "Words this week",
+                commas(history::words(this_week)),
+                trend(history::words(this_week), history::words(last_week)),
             ),
-            Space::new().height(16),
-            kpi_row(
-                stat_tile(plural_days(current_streak(counts)), "Current streak"),
-                stat_tile(plural_days(longest_streak(counts)), "Longest streak"),
-                stat_tile(format!("{installed}/{}", self.models.len()), "Models installed"),
+            Space::new().width(GAP),
+            stat_tile(
+                "Dictations",
+                dictations.to_string(),
+                (format!("{active} of 7 days active"), FAINT),
+            ),
+            Space::new().width(GAP),
+            stat_tile(
+                "Speaking time",
+                history::duration(spoken),
+                if dictations == 0 {
+                    ("nothing this week".to_string(), FAINT)
+                } else {
+                    (
+                        format!("{} average", history::duration(spoken / dictations as f32)),
+                        FAINT,
+                    )
+                },
+            ),
+            Space::new().width(GAP),
+            stat_tile(
+                "Current streak",
+                plural(streak as u32, "day"),
+                (
+                    format!("longest {}", plural(longest_streak(&self.days) as u32, "day")),
+                    FAINT,
+                ),
             ),
         ];
 
-        let calendar = calendar_card(counts);
-
-        column![
-            text("Overview").size(22).color(FG),
-            Space::new().height(10),
-            text("How Flow is doing right now.").size(13).color(MUTED),
-            Space::new().height(24),
-            status,
-            Space::new().height(20),
+        let body = column![
+            header,
+            Space::new().height(GAP),
+            self.setup_card(installed),
+            Space::new().height(GAP),
             kpis,
-            Space::new().height(16),
-            calendar,
-        ]
-        .into()
+            Space::new().height(GAP),
+            calendar_card(&self.days),
+            Space::new().height(GAP),
+            self.recent_card(),
+        ];
+
+        // Sized to fit the default window, so the common case does not scroll
+        // at all. Scrolled rather than compressed when it does not fit: a user
+        // who drags the window down to the minimum height should have to reach
+        // the last card rather than have every card shrink to meet them.
+        scroll(container(body).padding(
+            iced::Padding::default().top(28.0).bottom(28.0).right(14.0),
+        ))
+    }
+
+    /// The three settings that decide whether Flow can work at all, and
+    /// anything currently wrong above them.
+    ///
+    /// They are here rather than only in their own sections because "it isn't
+    /// typing anything" is nearly always one of the three being wrong, and
+    /// this is the page someone opens to find that out. Packed left with real
+    /// gaps rather than spread across equal columns: three short values in
+    /// three wide columns is mostly voids, and a row of voids is what makes a
+    /// card look unfinished.
+    fn setup_card(&self, installed: usize) -> Element<'_, Message> {
+        let facts = row![
+            fact(
+                "Chord",
+                if self.settings.push_to_talk {
+                    self.settings.hotkey.replace('+', " ")
+                } else {
+                    "push to talk is off".to_string()
+                },
+            ),
+            Space::new().width(44),
+            fact(
+                "Microphone",
+                clip(
+                    self.input.as_deref().unwrap_or("system default"),
+                    38,
+                ),
+            ),
+            Space::new().width(Fill),
+            fact("Models", format!("{installed} of {}", self.models.len())),
+        ];
+
+        let mut body = column![];
+        let notes = self.attention(installed);
+        for (colour, note) in &notes {
+            body = body.push(text(note.clone()).size(12).color(*colour));
+            body = body.push(Space::new().height(8));
+        }
+        if !notes.is_empty() {
+            body = body.push(card_rule());
+            body = body.push(Space::new().height(13));
+        }
+
+        panel(body.push(facts).into())
+    }
+
+    /// Everything on this page that is worth doing something about, in the
+    /// order it would bite. Empty when there is nothing to do, and the status
+    /// card then collapses to one line - a dashboard that always has a row of
+    /// warnings in it teaches people not to read the warnings.
+    fn attention(&self, installed: usize) -> Vec<(Color, String)> {
+        let mut notes = Vec::new();
+        if let Some(problem) = &self.daemon.problem {
+            notes.push((ERR, problem.clone()));
+        }
+        if installed < self.models.len() {
+            notes.push((
+                ERR,
+                "Models are missing - Flow cannot transcribe until they install.".to_string(),
+            ));
+        }
+        if let update::Status::Available(tag) = &self.update {
+            notes.push((ACCENT, format!("{tag} is available to install.")));
+        }
+        if self.saved {
+            notes.push((
+                MUTED,
+                "Settings changed - restart Flow for them to take effect.".to_string(),
+            ));
+        }
+        notes
+    }
+
+    /// The last few transcripts, because the fastest way to tell whether Flow
+    /// is doing a good job is to read what it wrote. Not selectable here on
+    /// purpose - this is a glance, and History is one click away for the copy.
+    fn recent_card(&self) -> Element<'_, Message> {
+        let now = history::now();
+
+        let mut list = column![];
+        if self.entries.is_empty() {
+            list = list.push(
+                text("Nothing yet. Hold the chord and say something.")
+                    .size(13)
+                    .color(FAINT),
+            );
+        } else {
+            for (index, entry) in self.entries.iter().take(RECENT_SHOWN).enumerate() {
+                if index > 0 {
+                    list = list.push(hairline());
+                }
+                list = list.push(
+                    container(
+                        row![
+                            text(one_line(&entry.text))
+                                .size(13)
+                                .color(FG)
+                                .wrapping(text::Wrapping::None)
+                                .width(Fill),
+                            Space::new().width(12),
+                            text(history::ago(entry.at, now)).size(11).color(FAINT),
+                        ]
+                        .align_y(iced::Center),
+                    )
+                    .padding([9, 0]),
+                );
+            }
+        }
+
+        panel(
+            column![
+                row![
+                    text("Recent dictations").size(12.5).color(MUTED),
+                    Space::new().width(Fill),
+                    button(text("All history").size(12).color(MUTED))
+                        .padding(0)
+                        .style(ghost)
+                        .on_press(Message::Select(Section::History)),
+                ]
+                .align_y(iced::Center),
+                Space::new().height(6),
+                list,
+            ]
+            .into(),
+        )
     }
 
     /// What was dictated, newest first.
@@ -968,11 +1178,17 @@ impl Console {
             "Both models run on this machine. Nothing you say leaves it.",
             rows,
             Some({
+                // The path takes what is left over, rather than a Fill space
+                // taking it: the path is the flexible half of this row and the
+                // button is the fixed half, and a wrapping text asked to
+                // shrink will happily claim the whole row first.
                 let mut footer = row![
-                    text(total).size(12)
+                    text(total)
+                        .size(12)
                         .font(Font::MONOSPACE)
-                        .color(FAINT),
-                    Space::new().width(Fill),
+                        .color(FAINT)
+                        .width(Fill),
+                    Space::new().width(12),
                 ];
                 if !all_installed {
                     footer = footer.push(action_msg(
@@ -1169,8 +1385,9 @@ fn section_shell<'a>(
 fn nav(section: Section, selected: bool, warmth: f32) -> Element<'static, Message> {
     let colour = if selected { FG } else { mix(MUTED, FG, warmth) };
     // Selected sits at full weight; hover approaches it without arriving, so
-    // the two never read as the same state.
-    let fill = if selected { 1.0 } else { warmth * 0.55 };
+    // the two never read as the same state. 0.7 rather than 0.55 because a
+    // hover you have to look for is a hover that is not doing its job.
+    let fill = if selected { 1.0 } else { warmth * 0.7 };
 
     iced::widget::mouse_area(
         button(text(section.label()).size(13).color(colour))
@@ -1179,7 +1396,7 @@ fn nav(section: Section, selected: bool, warmth: f32) -> Element<'static, Messag
             .style(move |_theme, _status| button::Style {
                 background: Some(Background::Color(mix(
                     Color::TRANSPARENT,
-                    RAISED,
+                    RAIL_ON,
                     fill,
                 ))),
                 text_color: colour,
@@ -1234,81 +1451,163 @@ fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
     }
 }
 
-/// A titled tile on a raised surface - the unit the Overview grid is built
-/// from, so a handful of related facts read as one glance rather than more
-/// rows in the same list.
+/// A raised surface with a hairline edge - the unit every Overview card is
+/// built from, so a handful of related facts read as one glance rather than
+/// more rows in the same list.
+fn panel<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
+    container(content)
+        .padding(14)
+        .width(Fill)
+        .style(|_theme| container::Style {
+            background: Some(Background::Color(RAISED)),
+            border: Border {
+                color: EDGE,
+                width: 1.0,
+                radius: 10.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color { a: 0.35, ..Color::BLACK },
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 10.0,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A panel with its subject named along the top.
 fn card<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
-    container(
+    panel(
         column![
             text(title).size(12.5).color(MUTED),
             Space::new().height(12),
             content,
         ]
+        .into(),
     )
-    .padding(16)
-    .width(Fill)
-    .style(|_theme| container::Style {
-        background: Some(Background::Color(RAISED)),
-        border: Border {
-            // A shade lighter than `LINE`: against the card's own colour a
-            // plain `LINE` edge all but disappears, and the card needs to
-            // read as a distinct surface, not a change of shade in the page.
-            color: mix(LINE, FG, 0.16),
-            width: 1.0,
-            radius: 10.0.into(),
-        },
-        shadow: iced::Shadow {
-            color: Color { a: 0.35, ..Color::BLACK },
-            offset: iced::Vector::new(0.0, 2.0),
-            blur_radius: 10.0,
-        },
-        ..Default::default()
-    })
-    .into()
 }
 
-/// A number and its label, big and coloured to draw the eye - the KPI row a
-/// dashboard opens with, rather than the same numbers sitting flat in a list.
-fn stat_tile(value: String, label: &'static str) -> Element<'static, Message> {
-    card(label, text(value).size(26).color(ACCENT).into())
+/// A number with what it is above it and what it means below it.
+///
+/// The second line is the whole point. "42" says nothing; "42, five of seven
+/// days active" says whether this was a busy week. The value is plain `FG`
+/// rather than the accent - four accent numbers in a row is a row of alarms,
+/// and the accent's one job in this product is "live".
+fn stat_tile(
+    label: &'static str,
+    value: String,
+    note: (String, Color),
+) -> Element<'static, Message> {
+    let (note, colour) = note;
+    panel(
+        column![
+            text(label).size(12).color(MUTED),
+            Space::new().height(9),
+            text(value).size(25).color(FG),
+            Space::new().height(5),
+            text(note).size(11).color(colour),
+        ]
+        .into(),
+    )
 }
 
-/// "1 day" / "3 days" - spelled out rather than "3d", so a streak tile reads
-/// as a sentence fragment and not an abbreviation to decode.
-fn plural_days(count: usize) -> String {
-    if count == 1 {
-        "1 day".to_string()
-    } else {
-        format!("{count} days")
+/// This week against last week, as the second line of a KPI tile.
+///
+/// A percentage needs something to be a percentage of, so a first week says so
+/// instead of dividing by zero. A rise takes the accent and a fall does not:
+/// dictating less in a week is not a fault to flag in red.
+fn trend(now: u32, before: u32) -> (String, Color) {
+    if before == 0 {
+        return if now == 0 {
+            ("nothing yet".to_string(), FAINT)
+        } else {
+            ("first week with words".to_string(), ACCENT)
+        };
+    }
+    let change = (now as i64 - before as i64) * 100 / before as i64;
+    match change {
+        0 => ("level with last week".to_string(), FAINT),
+        up if up > 0 => (format!("+{up}% vs last week"), ACCENT),
+        down => (format!("{down}% vs last week"), FAINT),
     }
 }
 
-/// Three tiles evenly spaced - one KPI row of the Overview's stat grid.
-fn kpi_row(
-    a: Element<'static, Message>,
-    b: Element<'static, Message>,
-    c: Element<'static, Message>,
-) -> Element<'static, Message> {
-    row![a, Space::new().width(16), b, Space::new().width(16), c].into()
+/// A small label with its value under it. Sized to its content: the row packs
+/// these left with deliberate gaps rather than stretching each to an equal
+/// share of the width.
+fn fact(label: &'static str, value: String) -> Element<'static, Message> {
+    column![
+        text(label).size(11).color(FAINT),
+        Space::new().height(4),
+        text(value)
+            .size(12.5)
+            .font(Font::MONOSPACE)
+            .color(MUTED)
+            .wrapping(text::Wrapping::None),
+    ]
+    .into()
 }
 
-/// How many of the calendar's days had at least one word dictated.
-fn active_days(counts: &[u32]) -> usize {
-    counts.iter().filter(|&&c| c > 0).count()
+/// `18402` -> `"18,402"`. Four figures of words dictated is a real number to
+/// reach, and it should not have to be counted digit by digit.
+fn commas(count: u32) -> String {
+    let digits = count.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
-/// Consecutive active days ending today, 0 if today is empty. `counts` is
-/// oldest-first, so today is the last entry.
-fn current_streak(counts: &[u32]) -> usize {
-    counts.iter().rev().take_while(|&&c| c > 0).count()
+/// Cut to `chars` with an ellipsis, so a long value says it continues rather
+/// than looking like it simply stopped. Used with `Wrapping::None`, which
+/// stops the line becoming two but says nothing about where it ends.
+fn clip(text: &str, chars: usize) -> String {
+    if text.chars().count() <= chars {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(chars).collect();
+    format!("{}…", cut.trim_end())
 }
 
-/// The longest run of consecutive active days anywhere in the calendar.
-fn longest_streak(counts: &[u32]) -> usize {
+/// One line of a transcript, for the Overview's recent list.
+fn one_line(text: &str) -> String {
+    clip(text.trim().replace('\n', " ").as_str(), RECENT_CHARS)
+}
+
+/// How many of these days had at least one word dictated.
+fn active_days(days: &[history::Day]) -> usize {
+    days.iter().filter(|day| day.words > 0).count()
+}
+
+/// Consecutive active days up to now. `days` is oldest-first, so today is the
+/// last entry.
+///
+/// An empty *today* does not end the streak: the console gets opened in the
+/// morning before anything has been dictated, and reporting a ten-day habit as
+/// "0 days" because it is 9am would be wrong in the only way that matters. Two
+/// empty days in a row does end it.
+fn current_streak(days: &[history::Day]) -> usize {
+    let ending_today = days.iter().rev().take_while(|day| day.words > 0).count();
+    if ending_today > 0 || days.len() < 2 {
+        return ending_today;
+    }
+    days[..days.len() - 1]
+        .iter()
+        .rev()
+        .take_while(|day| day.words > 0)
+        .count()
+}
+
+/// The longest run of consecutive active days anywhere in the buffer.
+fn longest_streak(days: &[history::Day]) -> usize {
     let mut longest = 0;
     let mut run = 0;
-    for &count in counts {
-        if count > 0 {
+    for day in days {
+        if day.words > 0 {
             run += 1;
             longest = longest.max(run);
         } else {
@@ -1318,23 +1617,39 @@ fn longest_streak(counts: &[u32]) -> usize {
     longest
 }
 
-/// A cell's colour for its word count, in five clear steps rather than a
-/// continuous fade - continuous blending through a muted gold reads as
-/// murky, and a calendar that is supposed to be scanned at a glance needs
-/// levels a glance can actually tell apart, the way GitHub's own graph does.
-fn heat_color(count: u32, max: u32) -> Color {
+/// The word count a cell has to reach to be drawn at full heat.
+///
+/// Not the busiest day: one afternoon spent dictating a document is several
+/// times a normal day, and scaling to it flattens every ordinary day to the
+/// palest step - a graph where nothing is distinguishable except the outlier.
+/// The 80th percentile of *active* days puts the top of the scale inside
+/// normal use and lets the exceptional days simply saturate.
+fn heat_ceiling(days: &[history::Day]) -> u32 {
+    let mut active: Vec<u32> = days.iter().map(|day| day.words).filter(|&w| w > 0).collect();
+    if active.is_empty() {
+        return 1;
+    }
+    active.sort_unstable();
+    active[(active.len() * 4 / 5).min(active.len() - 1)].max(1)
+}
+
+/// A cell's colour for its word count, in four clear steps rather than a
+/// continuous fade - continuous blending reads as murky, and a calendar that
+/// is supposed to be scanned at a glance needs levels a glance can actually
+/// tell apart, the way GitHub's own graph does.
+fn heat_color(count: u32, ceiling: u32) -> Color {
     if count == 0 {
         // Distinctly lighter than the card, not darker: a level-0 cell still
         // has to read as "a square in the grid", not as a hole in it.
         return mix(RAISED, FG, 0.12);
     }
-    let t = count as f32 / max as f32;
+    let t = (count as f32 / ceiling as f32).min(1.0);
     let step = if t > 0.75 {
         1.0
     } else if t > 0.5 {
-        0.75
+        0.72
     } else if t > 0.25 {
-        0.5
+        0.48
     } else {
         0.3
     };
@@ -1358,72 +1673,155 @@ fn heat_cell(colour: Color, size: f32) -> Element<'static, Message> {
         .into()
 }
 
+/// One day of the grid, with what it was on hover. The tooltip is what turns
+/// the graph from decoration into something you can read a date off.
+fn day_cell(day: history::Day, number: u64, ceiling: u32) -> Element<'static, Message> {
+    let when = history::short_date(number);
+    let what = match day.words {
+        0 => "nothing dictated".to_string(),
+        1 => "1 word".to_string(),
+        words => format!("{} words in {}", commas(words), plural(day.dictations, "dictation")),
+    };
+
+    tooltip(
+        heat_cell(heat_color(day.words, ceiling), CELL),
+        container(text(format!("{when} · {what}")).size(11.5).color(FG))
+            .padding([5, 8])
+            .style(|_theme| container::Style {
+                background: Some(Background::Color(BG)),
+                border: Border {
+                    color: mix(LINE, FG, 0.22),
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            }),
+        tooltip::Position::Top,
+    )
+    .gap(6)
+    .into()
+}
+
 /// The Overview's activity calendar: one cell per day, coloured by how many
-/// words were dictated that day, weeks as columns and weekdays as rows - the
-/// GitHub contribution graph shape, because it is the shape people already
-/// know how to read at a glance. `counts` is oldest-first and sized to
-/// however much history is actually worth showing - a brand new install
-/// should not open onto six blank months.
-fn calendar_card(counts: &[u32]) -> Element<'static, Message> {
-    const CELL: f32 = 13.0;
+/// words were dictated, weeks as columns and weekdays as rows - the GitHub
+/// contribution graph shape, because it is the shape people already know how
+/// to read at a glance.
+///
+/// How many weeks are drawn comes from how wide the pane is, not from how much
+/// history exists. A grid sized to the history is a grid that ends in the
+/// middle of its own card, which is what made this look broken rather than
+/// empty; a full grid with a quiet left half reads correctly as "before you
+/// started". `days` is oldest-first and holds the whole buffer.
+fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
+    // Month labels, then the grid. Both fixed, so the card does not need the
+    // responsive width to know how tall it is.
+    const MONTH_ROW: f32 = 15.0;
+    let grid_height = 7.0 * CELL + 6.0 * CELL_GAP;
 
-    let days = counts.len();
+    let ceiling = heat_ceiling(days);
     let today = history::now() / 86_400;
-    let first_day = today.saturating_sub(days as u64 - 1);
-    // 0 = Sunday, matching `history::daily_words`'s UTC day boundaries.
-    let lead = ((first_day + 4) % 7) as usize;
-    let columns = (lead + days).div_ceil(7);
-    let max = counts.iter().copied().max().unwrap_or(0).max(1);
 
-    let mut grid = row![].spacing(4);
-    for week in 0..columns {
-        let mut col = column![].spacing(4);
-        for weekday in 0..7 {
-            let slot = week * 7 + weekday;
-            let cell = if slot < lead || slot - lead >= days {
-                Space::new()
-                    .width(Length::Fixed(CELL))
-                    .height(Length::Fixed(CELL))
-                    .into()
-            } else {
-                heat_cell(heat_color(counts[slot - lead], max), CELL)
-            };
-            col = col.push(cell);
+    let grid = responsive(move |size| {
+        // Whole columns that fit beside the weekday gutter, capped by the
+        // buffer. The floor keeps a very narrow window from drawing a stub.
+        let pitch = CELL + CELL_GAP;
+        let columns = (((size.width - WEEKDAY_GUTTER + CELL_GAP) / pitch).floor() as usize)
+            .clamp(8, CALENDAR_WEEKS);
+
+        // The grid ends on today, so the last column is a partial week and
+        // every column before it is a full Sunday-to-Saturday one.
+        // 0 = Sunday, matching `history::daily`'s UTC day boundaries.
+        let last_weekday = ((today + 4) % 7) as usize;
+        let first_day = today + last_weekday as u64 + 1 - (columns as u64 * 7);
+
+        let mut weeks = row![].spacing(CELL_GAP);
+        for column in 0..columns {
+            let mut week = column![].spacing(CELL_GAP);
+            for weekday in 0..7 {
+                let number = first_day + (column * 7 + weekday) as u64;
+                // The buffer's oldest day, and tomorrow onward: both are
+                // frame rather than data, and drawn as a gap so the grid
+                // keeps its shape without inventing squares.
+                let index = (number + days.len() as u64).checked_sub(today + 1);
+                let cell = match index {
+                    Some(index) if number <= today && (index as usize) < days.len() => {
+                        day_cell(days[index as usize], number, ceiling)
+                    }
+                    _ => Space::new()
+                        .width(Length::Fixed(CELL))
+                        .height(Length::Fixed(CELL))
+                        .into(),
+                };
+                week = week.push(cell);
+            }
+            weeks = weeks.push(week);
         }
-        grid = grid.push(col);
-    }
 
-    let legend = row![
-        text("Less").size(11).color(FAINT),
-        Space::new().width(6),
-        heat_cell(heat_color(0, 4), 10.0),
-        heat_cell(heat_color(1, 4), 10.0),
-        heat_cell(heat_color(2, 4), 10.0),
-        heat_cell(heat_color(3, 4), 10.0),
-        heat_cell(heat_color(4, 4), 10.0),
-        Space::new().width(6),
-        text("More").size(11).color(FAINT),
-    ]
-    .spacing(4)
-    .align_y(iced::Center);
+        // One label per month, placed by giving it the exact width of its own
+        // run of columns - which is what keeps a label over the month it names
+        // however many weeks are on screen. A month with too little of itself
+        // showing keeps its space and loses its name rather than spilling over
+        // the next one.
+        let mut labels: Vec<Element<'static, Message>> = Vec::new();
+        let mut run = 0usize;
+        let mut current = history::civil(first_day).1;
+        let flush = |labels: &mut Vec<Element<'static, Message>>, run: usize, month: u32| {
+            if run == 0 {
+                return;
+            }
+            let name = if run >= 3 { month_name(month) } else { "" };
+            labels.push(
+                container(text(name).size(11).color(FAINT))
+                    .width(Length::Fixed(run as f32 * pitch - CELL_GAP))
+                    .into(),
+            );
+        };
+        for column in 0..columns {
+            let month = history::civil(first_day + (column * 7) as u64).1;
+            if month != current {
+                flush(&mut labels, run, current);
+                run = 0;
+                current = month;
+            }
+            run += 1;
+        }
+        flush(&mut labels, run, current);
+        let months = iced::widget::Row::with_children(labels).spacing(CELL_GAP);
 
-    let total: u32 = counts.iter().sum();
-    let active = active_days(counts);
+        column![
+            row![
+                Space::new().width(Length::Fixed(WEEKDAY_GUTTER)),
+                months,
+            ],
+            Space::new().height(MONTH_ROW - 11.0),
+            row![weekday_gutter(), weeks],
+        ]
+        .into()
+    })
+    .height(Length::Fixed(grid_height + MONTH_ROW + 4.0));
+
+    let words = history::words(days);
+    let active = active_days(days);
     let caption = if active == 0 {
         "Nothing dictated yet. Hold the chord and say something.".to_string()
     } else {
-        format!("{total} words across {active} of the last {days} days")
+        format!(
+            "{} words over {}, most recently {}",
+            commas(words),
+            plural(active as u32, "active day"),
+            history::short_date(latest_day(days, history::now() / 86_400)),
+        )
     };
 
     card(
         "Dictation activity",
         column![
-            scroll_x(grid),
-            Space::new().height(12),
+            grid,
+            Space::new().height(14),
             row![
                 text(caption).size(12).color(FAINT),
                 Space::new().width(Fill),
-                legend,
+                legend(),
             ]
             .align_y(iced::Center),
         ]
@@ -1431,37 +1829,69 @@ fn calendar_card(counts: &[u32]) -> Element<'static, Message> {
     )
 }
 
-/// A horizontal scrollable with the same thin, hover-only bar as `scroll`,
-/// for the calendar: it should fit most window widths, but must not clip
-/// silently on the narrowest ones.
-fn scroll_x<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    scrollable(content)
-        .direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::new()
-                .width(4)
-                .margin(2)
-                .scroller_width(4),
-        ))
-        .style(|theme, status| {
-            let base = scrollable::default(theme, status);
-            let scroller_colour = match status {
-                scrollable::Status::Active { .. } => Color::TRANSPARENT,
-                _ => FAINT,
-            };
-            scrollable::Style {
-                horizontal_rail: scrollable::Rail {
-                    background: None,
-                    scroller: scrollable::Scroller {
-                        background: scroller_colour.into(),
-                        ..base.horizontal_rail.scroller
-                    },
-                    ..base.horizontal_rail
-                },
-                ..base
-            }
-        })
-        .width(Fill)
-        .into()
+/// Mon/Wed/Fri only. Seven labels down a 13-pixel row pitch is a wall of text
+/// beside the thing it is labelling; three is enough to orient a reader who
+/// wants to know which row is which.
+fn weekday_gutter() -> Element<'static, Message> {
+    let mut gutter = column![].spacing(CELL_GAP);
+    for weekday in 0..7 {
+        let name = match weekday {
+            1 => "Mon",
+            3 => "Wed",
+            5 => "Fri",
+            _ => "",
+        };
+        gutter = gutter.push(
+            container(text(name).size(10).color(FAINT))
+                .width(Length::Fixed(WEEKDAY_GUTTER - CELL_GAP))
+                .height(Length::Fixed(CELL))
+                .align_y(iced::Center),
+        );
+    }
+    row![gutter, Space::new().width(CELL_GAP)].into()
+}
+
+/// Less-to-more swatches, in the same shape and steps as the grid.
+fn legend() -> Element<'static, Message> {
+    row![
+        text("Less").size(11).color(FAINT),
+        Space::new().width(5),
+        heat_cell(heat_color(0, 4), 10.0),
+        heat_cell(heat_color(1, 4), 10.0),
+        heat_cell(heat_color(2, 4), 10.0),
+        heat_cell(heat_color(3, 4), 10.0),
+        heat_cell(heat_color(4, 4), 10.0),
+        Space::new().width(5),
+        text("More").size(11).color(FAINT),
+    ]
+    .spacing(3)
+    .align_y(iced::Center)
+    .into()
+}
+
+/// The day number of the most recent active day, or today if there is none.
+fn latest_day(days: &[history::Day], today: u64) -> u64 {
+    days.iter()
+        .rposition(|day| day.words > 0)
+        .map(|index| today + index as u64 + 1 - days.len() as u64)
+        .unwrap_or(today)
+}
+
+fn month_name(month: u32) -> &'static str {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    MONTHS[((month - 1) % 12) as usize]
+}
+
+/// "1 dictation" / "4 dictations". Spelled out rather than abbreviated, so a
+/// caption reads as a sentence and not as something to decode.
+fn plural(count: u32, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
 }
 
 /// The dot's colour and the line beside it, for each thing an update check can
@@ -1514,7 +1944,7 @@ fn model_row(
                 row![
                     text(size.into()).size(12).font(Font::MONOSPACE).color(FAINT),
                     Space::new().width(14),
-                    pip(if installed { FAINT } else { ACCENT }),
+                    pip(if installed { OK } else { ERR }),
                     Space::new().width(7),
                     text(if installed { "Installed" } else { "Missing" })
                         .size(12)
@@ -1653,10 +2083,19 @@ fn vertical_hairline() -> Element<'static, Message> {
 }
 
 fn hairline() -> Element<'static, Message> {
+    rule(LINE)
+}
+
+/// The same rule, in the only colour that is visible on a card.
+fn card_rule() -> Element<'static, Message> {
+    rule(EDGE)
+}
+
+fn rule(colour: Color) -> Element<'static, Message> {
     container(Space::new().width(Fill))
         .height(Length::Fixed(1.0))
-        .style(|_| container::Style {
-            background: Some(Background::Color(LINE)),
+        .style(move |_| container::Style {
+            background: Some(Background::Color(colour)),
             ..Default::default()
         })
         .into()
@@ -1666,7 +2105,12 @@ fn action_msg(label: &str, primary: bool, on_press: Message) -> Element<'static,
     button(
         text(label.to_string())
             .size(13)
-            .color(if primary { ON_ACCENT } else { FG }),
+            .color(if primary { ON_ACCENT } else { FG })
+            // A button is as wide as its label, full stop. Left to wrap, an
+            // "Install models" beside a long path folded onto two lines and
+            // then clipped, because the row had already given the path every
+            // pixel it asked for.
+            .wrapping(text::Wrapping::None),
     )
     .padding([7, 14])
     .style(move |_theme, status| {
@@ -1710,7 +2154,59 @@ fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) 
 
 #[cfg(test)]
 mod tests {
-    use super::Section;
+    use super::{commas, current_streak, heat_ceiling, one_line, trend, Section, ACCENT, FAINT};
+
+    fn days(words: &[u32]) -> Vec<crate::history::Day> {
+        words
+            .iter()
+            .map(|&words| crate::history::Day {
+                words,
+                dictations: u32::from(words > 0),
+                spoken: 0.0,
+            })
+            .collect()
+    }
+
+    /// The streak tile is read first thing in the morning, before anything has
+    /// been dictated, and it must not call a live habit dead.
+    #[test]
+    fn an_empty_today_does_not_break_the_streak() {
+        assert_eq!(current_streak(&days(&[0, 4, 4, 4])), 3);
+        assert_eq!(current_streak(&days(&[4, 4, 4, 0])), 3);
+        assert_eq!(current_streak(&days(&[4, 4, 0, 0])), 0);
+        assert_eq!(current_streak(&days(&[0, 0, 0, 0])), 0);
+    }
+
+    /// One long dictating afternoon must not flatten every ordinary day to the
+    /// palest step, which is what scaling to the busiest day does.
+    #[test]
+    fn the_heat_scale_ignores_the_outlier_day() {
+        let ordinary = [40, 50, 60, 55, 45, 4_000];
+        assert!(heat_ceiling(&days(&ordinary)) <= 60);
+        // Empty days are not part of the distribution, and an empty history
+        // still needs a divisor.
+        assert_eq!(heat_ceiling(&days(&[0, 0, 0])), 1);
+        assert_eq!(heat_ceiling(&days(&[0, 7, 0])), 7);
+    }
+
+    #[test]
+    fn a_week_is_reported_against_the_one_before_it() {
+        assert_eq!(trend(120, 100).0, "+20% vs last week");
+        assert_eq!(trend(80, 100).0, "-20% vs last week");
+        assert_eq!(trend(100, 100), ("level with last week".to_string(), FAINT));
+        assert_eq!(trend(50, 0).1, ACCENT);
+        assert_eq!(trend(0, 0), ("nothing yet".to_string(), FAINT));
+    }
+
+    #[test]
+    fn long_numbers_and_long_lines_stay_readable() {
+        assert_eq!(commas(7), "7");
+        assert_eq!(commas(999), "999");
+        assert_eq!(commas(1_000), "1,000");
+        assert_eq!(commas(18_402), "18,402");
+        assert_eq!(one_line("  two\nlines  "), "two lines");
+        assert!(one_line(&"x".repeat(200)).ends_with('…'));
+    }
 
     /// The lookup reads the nav labels, so renaming a section would otherwise
     /// silently turn FLOW_SECTION into "open Overview" with nothing to say so.
