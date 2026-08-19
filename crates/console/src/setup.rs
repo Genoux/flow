@@ -226,6 +226,9 @@ pub struct State {
     /// Set after first-run setup starts the daemon. Finishing setup then only
     /// opens the console; it must not issue the same start twice.
     pub daemon_started: bool,
+    /// True while systemd is starting Flow. The completion action stays inert
+    /// until that result arrives, so a second click cannot race the first.
+    pub starting_daemon: bool,
     /// Starting the daemon is separate from installing models. Keep its error
     /// here so setup can offer the right retry instead of downloading again.
     pub start_error: Option<String>,
@@ -263,6 +266,7 @@ impl Default for State {
             skipped: false,
             rerun: false,
             daemon_started: false,
+            starting_daemon: false,
             start_error: None,
         }
     }
@@ -386,6 +390,9 @@ pub fn blurb(state: &State) -> &'static str {
     if state.phase == Phase::Done && !state.rerun && state.start_error.is_some() {
         return "The models are installed, but Flow could not start.";
     }
+    if state.phase == Phase::Done && !state.rerun && state.starting_daemon {
+        return "Both models are installed. Starting Flow…";
+    }
 
     match (state.phase == Phase::Done, state.rerun, state.skipped) {
         (true, true, _) => "Both models are present and match their published hashes.",
@@ -423,10 +430,8 @@ pub fn view(state: &State) -> Element<'_, Message> {
     .width(Length::Fixed(COLUMN));
 
     // Three bands: air, the work, air, and then the way out along the bottom
-    // edge. The skip is deliberately not in the column - sitting under the bar
-    // it read as the next step in the sequence, which is the opposite of what
-    // it is. Down here it is available without being offered, and the eye
-    // finishes on the download rather than on the way to avoid it.
+    // edge. The skip stays visually separate from the download, with its
+    // consequence first so the choice is understood before the action.
     //
     // Centred horizontally because this is the only screen with no rail beside
     // it, and a column pinned to the left of a 1040px window would read as the
@@ -449,22 +454,22 @@ pub fn view(state: &State) -> Element<'_, Message> {
 
 /// The way past the optional half, along the bottom edge.
 ///
-/// The action and its consequence share one line. Putting the consequence
-/// underneath made it look like detached footer copy rather than the cost of
-/// the control beside it.
+/// The consequence comes first on one line, with the optional action beneath
+/// it. This keeps the copy readable without making Skip the next step.
 fn bail_out(state: &State) -> Element<'_, Message> {
     if !state.skippable() {
         return Space::new().height(0).into();
     }
 
-    row![
-        quiet_action("Skip refining", Message::SkipRefine),
-        Space::new().width(8),
-        text("Flow still works, but leaves punctuation and filler untouched.")
+    column![
+        text("Without refining, Flow keeps filler and raw punctuation.")
             .size(11)
             .color(FAINT)
+            .wrapping(text::Wrapping::None),
+        Space::new().height(6),
+        quiet_action("Skip refining", Message::SkipRefine),
     ]
-    .align_y(iced::alignment::Vertical::Center)
+    .align_x(iced::alignment::Horizontal::Center)
     .width(Length::Fixed(COLUMN))
     .into()
 }
@@ -592,6 +597,13 @@ fn activity(state: &State) -> String {
 /// not already given by being launched. Skipping is not here - it lives at the
 /// bottom of the window, where a way out belongs (see `bail_out`).
 fn actions(state: &State) -> Element<'_, Message> {
+    if state.starting_daemon {
+        return container(text("Starting Flow…").size(13).color(MUTED))
+            .width(Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .into();
+    }
+
     let button = match &state.phase {
         Phase::Done => Some(crate::control::action_msg(
             if state.rerun {

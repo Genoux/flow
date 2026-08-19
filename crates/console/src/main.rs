@@ -174,6 +174,8 @@ enum Message {
     OpenPath(std::path::PathBuf),
     /// systemctl --user <verb> flow.service
     Service(&'static str),
+    /// A service command finished away from the UI thread.
+    ServiceFinished(&'static str, Result<(), String>),
     /// Start listening for the next chord the user presses.
     CaptureChord,
     /// A key arrived while capturing.
@@ -207,6 +209,8 @@ enum Message {
     SkipRefine,
     /// Leave setup for the console proper.
     FinishSetup,
+    /// Automatic startup, or a retry from setup, finished.
+    SetupStarted(Result<(), String>, bool),
     CheckUpdate,
     UpdateChecked(update::Status),
     InstallUpdate,
@@ -220,6 +224,12 @@ struct Console {
     /// Set when a save fails, so a read-only config or a full disk is visible
     /// rather than a control that silently springs back.
     save_error: Option<String>,
+    /// A service failure belongs on Overview, beside the control that caused
+    /// it, instead of in the settings-only save status.
+    service_error: Option<String>,
+    /// The service verb currently running. Kept separate from daemon activity:
+    /// the socket may still report Offline while systemd is starting it.
+    service_pending: Option<&'static str>,
     /// True once anything has been written. The daemon only reads its config at
     /// startup, so the window has to say so rather than imply a live change.
     saved: bool,
@@ -301,6 +311,8 @@ impl Console {
                 daemon: pretend.map_or_else(daemon::State::default, demo::daemon_state),
                 settings: settings::Settings::load(),
                 save_error: None,
+                service_error: None,
+                service_pending: None,
                 saved: false,
                 autostart: system::autostart_enabled(),
                 input: match pretend {
@@ -389,6 +401,37 @@ impl Console {
                 self.saved = true;
             }
             Err(err) => self.save_error = Some(err.to_string()),
+        }
+    }
+
+    fn start_setup_daemon(&mut self, close_when_started: bool) -> Task<Message> {
+        let Some(state) = self.setup.as_mut() else {
+            return Task::none();
+        };
+        if state.starting_daemon {
+            return Task::none();
+        }
+
+        state.starting_daemon = true;
+        state.start_error = None;
+        Task::perform(async { system::service("start") }, move |result| {
+            Message::SetupStarted(result, close_when_started)
+        })
+    }
+
+    fn leave_setup(&mut self) {
+        let rerun = self.setup.as_ref().is_some_and(|state| state.rerun);
+        self.setup = None;
+        self.models = system::models();
+        self.partial = system::partial_bytes();
+        self.input = system::default_input();
+        self.entries = history::recent();
+        self.autostart = system::autostart_enabled();
+
+        // Someone who stopped the daemon and then repaired a model did not ask
+        // for it back.
+        if rerun {
+            self.section = Section::About;
         }
     }
 
@@ -539,8 +582,33 @@ impl Console {
                 }
             }
             Message::Service(verb) => {
-                if let Err(err) = system::service(verb) {
-                    self.save_error = Some(err);
+                if self.service_pending.is_some() {
+                    return Task::none();
+                }
+                self.service_pending = Some(verb);
+                self.service_error = None;
+                if matches!(verb, "start" | "restart") {
+                    self.daemon.activity = daemon::Activity::Starting;
+                }
+                return Task::perform(async move { system::service(verb) }, move |result| {
+                    Message::ServiceFinished(verb, result)
+                });
+            }
+            Message::ServiceFinished(verb, result) => {
+                self.service_pending = None;
+                match result {
+                    Ok(()) => {
+                        self.service_error = None;
+                        if verb == "stop" {
+                            self.daemon = daemon::State::default();
+                        }
+                    }
+                    Err(err) => {
+                        self.service_error = Some(err);
+                        if matches!(verb, "start" | "restart") {
+                            self.daemon = daemon::State::default();
+                        }
+                    }
                 }
             }
             Message::OpenConfig => {
@@ -615,16 +683,7 @@ impl Console {
                 // The download completing is the end of setup, so the daemon
                 // starts here rather than waiting for a navigation button.
                 if should_start {
-                    let result = system::service("start");
-                    if let Some(state) = self.setup.as_mut() {
-                        match result {
-                            Ok(()) => {
-                                state.daemon_started = true;
-                                state.start_error = None;
-                            }
-                            Err(err) => state.start_error = Some(err),
-                        }
-                    }
+                    return self.start_setup_daemon(false);
                 }
             }
             Message::Probed(hardware) => {
@@ -640,46 +699,36 @@ impl Console {
                     state.handle.stop();
                 }
             }
-            Message::FinishSetup => {
-                let first_run = self.setup.as_ref().is_some_and(|state| !state.rerun);
-
-                // Normally setup already started the daemon when the installer
-                // finished. This path is the focused retry when that start
-                // failed, and leaves setup visible if it still cannot start.
-                if first_run
-                    && self.setup.as_ref().is_some_and(|state| !state.daemon_started)
-                {
-                    match system::service("start") {
+            Message::SetupStarted(result, close_when_started) => {
+                let started = result.is_ok();
+                if let Some(state) = self.setup.as_mut() {
+                    state.starting_daemon = false;
+                    match result {
                         Ok(()) => {
-                            if let Some(state) = self.setup.as_mut() {
-                                state.daemon_started = true;
-                                state.start_error = None;
-                            }
+                            state.daemon_started = true;
+                            state.start_error = None;
                         }
-                        Err(err) => {
-                            if let Some(state) = self.setup.as_mut() {
-                                state.start_error = Some(err);
-                            }
-                            return Task::none();
-                        }
+                        Err(err) => state.start_error = Some(err),
                     }
                 }
 
-                self.setup = None;
-                // Everything the window reports on was unanswerable a moment
-                // ago: no models on disk, and a daemon that had nothing to
-                // load. Re-read it rather than opening the console on the
-                // emptiness setup just finished fixing.
-                self.models = system::models();
-                self.partial = system::partial_bytes();
-                self.input = system::default_input();
-                self.entries = history::recent();
-                self.autostart = system::autostart_enabled();
-
-                // Someone who stopped the daemon and then repaired a model
-                // from About did not ask for it back.
-                if !first_run {
-                    self.section = Section::About;
+                if started {
+                    self.daemon.activity = daemon::Activity::Starting;
+                    if close_when_started {
+                        self.leave_setup();
+                    }
+                }
+            }
+            Message::FinishSetup => {
+                let ready_to_leave =
+                    self.setup.as_ref().is_some_and(|state| state.rerun || state.daemon_started);
+                if ready_to_leave {
+                    self.leave_setup();
+                } else {
+                    // Automatic startup may have failed. The completion button
+                    // is the focused retry and only leaves setup after systemd
+                    // confirms that Flow stayed running.
+                    return self.start_setup_daemon(true);
                 }
             }
         }
@@ -807,6 +856,22 @@ impl Console {
         let running = self.daemon.activity != daemon::Activity::Offline;
         let installed = self.models.iter().filter(|m| m.installed).count();
         let (label, dot) = activity_label(self.daemon.activity);
+        let service_action: Element<'_, Message> = match self.service_pending {
+            Some("start") => container(text("Starting…").size(13).color(MUTED))
+                .padding([7, 14])
+                .into(),
+            Some("restart") => container(text("Restarting…").size(13).color(MUTED))
+                .padding([7, 14])
+                .into(),
+            Some(_) => container(text("Working…").size(13).color(MUTED))
+                .padding([7, 14])
+                .into(),
+            None => action_msg(
+                if running { "Restart" } else { "Start" },
+                !running,
+                Message::Service(if running { "restart" } else { "start" }),
+            ),
+        };
 
         let header = row![
             text("Overview").size(22).color(FG),
@@ -815,11 +880,7 @@ impl Console {
             Space::new().width(9),
             text(label).size(13).color(MUTED),
             Space::new().width(16),
-            action_msg(
-                if running { "Restart" } else { "Start" },
-                !running,
-                Message::Service(if running { "restart" } else { "start" }),
-            ),
+            service_action,
         ]
         .align_y(iced::Center);
 
@@ -982,6 +1043,9 @@ impl Console {
     /// warnings in it teaches people not to read the warnings.
     fn attention(&self, installed: usize) -> Vec<(Color, String)> {
         let mut notes = Vec::new();
+        if let Some(problem) = &self.service_error {
+            notes.push((ERR, problem.clone()));
+        }
         if let Some(problem) = &self.daemon.problem {
             notes.push((ERR, problem.clone()));
         }
