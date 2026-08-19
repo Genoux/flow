@@ -457,21 +457,27 @@ pub fn view(state: &State) -> Element<'_, Message> {
 /// The consequence comes first on one line, with the optional action beneath
 /// it. This keeps the copy readable without making Skip the next step.
 fn bail_out(state: &State) -> Element<'_, Message> {
-    if !state.skippable() {
-        return Space::new().height(0).into();
-    }
+    let content: Element<'_, Message> = if state.skippable() {
+        column![
+            text("Without refining, Flow keeps filler and raw punctuation.")
+                .size(11)
+                .color(FAINT)
+                .wrapping(text::Wrapping::None),
+            Space::new().height(6),
+            quiet_action("Skip refining", Message::SkipRefine),
+        ]
+        .align_x(iced::alignment::Horizontal::Center)
+        .width(Length::Fixed(COLUMN))
+        .into()
+    } else {
+        Space::new().height(0).into()
+    };
 
-    column![
-        text("Without refining, Flow keeps filler and raw punctuation.")
-            .size(11)
-            .color(FAINT)
-            .wrapping(text::Wrapping::None),
-        Space::new().height(6),
-        quiet_action("Skip refining", Message::SkipRefine),
-    ]
-    .align_x(iced::alignment::Horizontal::Center)
-    .width(Length::Fixed(COLUMN))
-    .into()
+    container(content)
+        .width(Length::Fixed(COLUMN))
+        .height(Length::Fixed(48.0))
+        .align_y(iced::alignment::Vertical::Bottom)
+        .into()
 }
 
 /// The bar, and the line under it that says what it is counting.
@@ -561,10 +567,15 @@ fn hardware_line(state: &State) -> Option<String> {
 }
 
 fn hardware(state: &State) -> Element<'_, Message> {
-    match hardware_line(state) {
+    let content: Element<'_, Message> = match hardware_line(state) {
         Some(line) => text(line).size(11).color(FAINT).into(),
         None => Space::new().height(0).into(),
-    }
+    };
+
+    container(content)
+        .height(Length::Fixed(16.0))
+        .align_y(iced::alignment::Vertical::Center)
+        .into()
 }
 
 /// What the installer is doing, in the product's own words rather than a
@@ -801,6 +812,29 @@ mod tests {
             hardware_line(&State { hardware: Some("CPU".into()), ..State::default() }),
             None
         );
+
+        let empty = State::default();
+        let empty_slot = hardware(&empty);
+        let named_slot = hardware(&named);
+        assert_eq!(empty_slot.as_widget().size().height, named_slot.as_widget().size().height);
+        assert_eq!(empty_slot.as_widget().size().height, Length::Fixed(16.0));
+    }
+
+    #[test]
+    fn refining_controls_do_not_move_the_setup_content() {
+        let speech = State {
+            phase: Phase::Fetching("tdt/encoder-model.int8.onnx".into()),
+            ..State::default()
+        };
+        let refining = State {
+            phase: Phase::Fetching("qwen3-4b-instruct-q4km.gguf".into()),
+            ..State::default()
+        };
+
+        let quiet_slot = bail_out(&speech);
+        let refining_slot = bail_out(&refining);
+        assert_eq!(quiet_slot.as_widget().size().height, refining_slot.as_widget().size().height);
+        assert_eq!(quiet_slot.as_widget().size().height, Length::Fixed(48.0));
     }
 
     #[test]
