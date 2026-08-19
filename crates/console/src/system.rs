@@ -78,11 +78,39 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
 pub fn service(verb: &str) -> Result<(), String> {
     let output = run("systemctl", &["--user", verb, "flow.service"])
         .ok_or_else(|| "systemctl did not respond".to_string())?;
-    if output.status.success() {
-        return Ok(());
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if reason.is_empty() { format!("systemctl {verb} failed") } else { reason });
     }
-    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() { format!("systemctl {verb} failed") } else { reason })
+
+    if matches!(verb, "start" | "restart") {
+        ensure_running()
+    } else {
+        Ok(())
+    }
+}
+
+/// `systemctl start` can succeed before a short-lived daemon exits. Confirm the
+/// unit survives startup so the UI never reports Flow as running when it has
+/// already failed.
+fn ensure_running() -> Result<(), String> {
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(100));
+        let output = run("systemctl", &["--user", "is-active", "flow.service"])
+            .ok_or_else(|| "systemctl did not respond".to_string())?;
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        match state.as_str() {
+            "active" => return Ok(()),
+            "activating" => continue,
+            _ => {
+                return Err(format!(
+                    "Flow stopped during startup (systemd reports {state}). Run `flow logs` for details."
+                ));
+            }
+        }
+    }
+
+    Err("Flow did not finish starting. Run `flow logs` for details.".into())
 }
 
 /// The description of the default PipeWire source, which is the microphone

@@ -92,18 +92,18 @@ pub(crate) fn value_slider<'a>(
 /// measured width, so it fills whatever column it is given without anyone
 /// having to tell it how wide that is.
 ///
-/// The fill keeps a minimum portion *while it is working*: at a genuine zero
-/// the rounded cap would collapse to nothing and the bar would read as a track
-/// that had not started, when in fact it has - the first bytes of a 3 GB file
-/// just do not show up as width yet. A stalled bar gets no such floor, because
-/// there the sliver would be claiming progress that is not happening.
+/// Once bytes arrive, the fill keeps a minimum visible portion so the first
+/// few bytes of a 3 GB file do not disappear into rounding. A genuine zero has
+/// no fill: showing green before the download starts claims progress that has
+/// not happened. A stalled bar gets no floor for the same reason.
 pub(crate) fn meter(fraction: f32, stalled: bool) -> Element<'static, Message> {
     let filled = (fraction.clamp(0.0, 1.0) * 1000.0) as u16;
-    let filled = if stalled { filled } else { filled.max(6) };
+    let filled = if stalled || filled == 0 { filled } else { filled.max(6) };
     let colour = if stalled { ERR } else { ACCENT };
 
-    container(
-        row![
+    let mut fill = row![];
+    if filled > 0 {
+        fill = fill.push(
             container(Space::new().height(Fill))
                 .width(Length::FillPortion(filled))
                 .height(Fill)
@@ -112,9 +112,11 @@ pub(crate) fn meter(fraction: f32, stalled: bool) -> Element<'static, Message> {
                     border: Border { radius: 2.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
-            Space::new().width(Length::FillPortion((1000 - filled).max(1))),
-        ],
-    )
+        );
+    }
+    fill = fill.push(Space::new().width(Length::FillPortion((1000 - filled).max(1))));
+
+    container(fill)
     .width(Fill)
     .height(Length::Fixed(4.0))
     .style(|_| container::Style {
