@@ -11,7 +11,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
@@ -38,7 +38,7 @@ say "Installing the service, desktop entry and icon"
 mkdir -p "$units" "$apps" "$icons"
 install -m644 "$repo/packaging/flow.service" "$units/flow.service"
 install -m644 "$repo/packaging/flow-console.desktop" "$apps/flow-console.desktop"
-install -m644 "$repo/packaging/flow-console.svg" "$icons/flow-console.svg"
+install -m644 "$repo/packaging/flow-console.png" "$icons/flow-console.png"
 systemctl --user daemon-reload
 
 # Without these the launcher shows the entry only after the next login, which

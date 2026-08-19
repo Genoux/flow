@@ -8,7 +8,7 @@ Comment=History and settings for Flow push-to-talk dictation
 Exec=flow-console
 # ponytail: a stock theme name, so the icon comes from whatever theme the user
 # already runs and is a full app icon rather than a device glyph. Flow's own is
-# shipped and installed as hicolor/scalable/apps/flow-console.svg, but
+# shipped and installed as hicolor/512x512/apps/flow-console.png, but
 # ~/.local/share/icons/hicolor has no index.theme on a normal desktop, so strict
 # loaders skip that directory and the entry renders as a missing texture. Point
 # this at flow-console once install.sh seeds that index.theme.
