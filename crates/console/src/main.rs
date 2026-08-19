@@ -169,6 +169,26 @@ impl Section {
         Section::About,
     ];
 
+    /// Which section to open on, from `FLOW_SECTION`.
+    ///
+    /// For iterating on one screen: the window restarts on every rebuild, and
+    /// landing on Overview each time costs a click back to whatever is being
+    /// worked on. Matched against the nav labels rather than a second list of
+    /// names, which would drift the first time a section is renamed. An unset
+    /// or unrecognised value opens Overview, same as always.
+    fn initial() -> Self {
+        std::env::var("FLOW_SECTION")
+            .ok()
+            .and_then(|wanted| Self::from_label(&wanted))
+            .unwrap_or(Section::Overview)
+    }
+
+    fn from_label(name: &str) -> Option<Self> {
+        Section::ALL
+            .into_iter()
+            .find(|section| section.label().eq_ignore_ascii_case(name.trim()))
+    }
+
     fn label(self) -> &'static str {
         match self {
             Section::Overview => "Overview",
@@ -272,7 +292,7 @@ impl Console {
         let history_editors = history_editors(&entries);
         (
             Self {
-                section: Section::Overview,
+                section: Section::initial(),
                 daemon: daemon::State::default(),
                 settings: settings::Settings::load(),
                 save_error: None,
@@ -1686,4 +1706,31 @@ fn ghost(_theme: &Theme, _status: button::Status) -> button::Style {
 /// gives us. Split out so the async block above stays a one-liner.
 fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<String> {
     chord::capture(&|| cancelled.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Section;
+
+    /// The lookup reads the nav labels, so renaming a section would otherwise
+    /// silently turn FLOW_SECTION into "open Overview" with nothing to say so.
+    #[test]
+    fn every_section_can_be_named() {
+        for section in Section::ALL {
+            assert_eq!(
+                Section::from_label(section.label()),
+                Some(section),
+                "{} cannot be reached by name",
+                section.label()
+            );
+        }
+    }
+
+    #[test]
+    fn the_name_is_forgiving_but_not_a_guess() {
+        assert_eq!(Section::from_label("  audio "), Some(Section::Audio));
+        assert_eq!(Section::from_label("AUDIO"), Some(Section::Audio));
+        assert_eq!(Section::from_label("aud"), None);
+        assert_eq!(Section::from_label(""), None);
+    }
 }
