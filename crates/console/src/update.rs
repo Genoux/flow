@@ -175,7 +175,7 @@ fn parse(version: &str) -> (Vec<u64>, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{newer, parse, tag_of};
+    use super::{newer, parse, tag_of, Status};
 
     #[test]
     fn later_versions_are_newer() {
@@ -213,5 +213,23 @@ mod tests {
         );
         assert_eq!(tag_of("not json"), None);
         assert_eq!(tag_of(r#"{"message":"Not Found"}"#), None);
+    }
+
+    /// The unit tests above all feed `newer` and `tag_of` strings this file
+    /// wrote itself. Only GitHub can say whether the URL, the header and the
+    /// shape of the answer are still right, and a wrong answer here is silent:
+    /// the window would simply never offer an update.
+    ///
+    /// Network, no side effects:
+    ///   cargo test --manifest-path crates/console/Cargo.toml -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn github_answers_the_check() {
+        let status = super::latest();
+        eprintln!("running {}, GitHub says {status:?}", super::running());
+        assert!(
+            matches!(status, Status::Current | Status::Available(_)),
+            "the check did not resolve against the real repo: {status:?}"
+        );
     }
 }
