@@ -15,16 +15,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # llama-cpp-2 compiles llama.cpp from source and needs the Vulkan headers
-      # and glslc even though nothing here runs a shader: the feature is on in
-      # Cargo.toml, so the build wants them whether or not a GPU exists. cpal
-      # wants ALSA, wayland-client wants libwayland.
+      # llama-cpp-2 compiles llama.cpp from source and needs the Vulkan headers,
+      # glslc and the SPIRV headers even though nothing here runs a shader: the
+      # feature is on in Cargo.toml, so the build wants them whether or not a GPU
+      # exists. cpal wants ALSA, wayland-client wants libwayland.
       - name: System dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev \
             libvulkan-dev \
+            spirv-headers \
             glslc \
             libwayland-dev \
             libclang-dev \
