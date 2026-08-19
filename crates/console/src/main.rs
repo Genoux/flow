@@ -83,7 +83,7 @@ fn main() -> iced::Result {
         .theme(theme)
         .subscription(subscription)
         .window(iced::window::Settings {
-            size: iced::Size::new(880.0, 580.0),
+            size: iced::Size::new(1040.0, 680.0),
             position: iced::window::Position::Centered,
             min_size: Some(iced::Size::new(640.0, 460.0)),
             // Without this the Wayland app_id is empty, so compositor window
