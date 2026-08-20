@@ -165,7 +165,12 @@ pub fn capture(cancel: &dyn Fn() -> bool) -> Option<String> {
                     continue; // a bare key is not a chord to hold
                 }
 
-                let trigger = trigger_word(key)?;
+                // Skip keys the daemon cannot spell rather than ending capture:
+                // a stray brace while holding Super+Shift used to look like
+                // Cancel, with no explanation on the chord row.
+                let Some(trigger) = trigger_word(key) else {
+                    continue;
+                };
                 return Some(format!("{}+{trigger}", words.join("+")));
             }
         }

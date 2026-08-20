@@ -191,9 +191,8 @@ fn main() -> Result<()> {
                 None
             };
             // Shared so the file watcher can swap in new values while the
-            // daemon runs. The chord and push_to_talk are read once below:
-            // both own a thread that would have to be torn down and rebuilt,
-            // which is a restart's job.
+            // daemon runs. Push-to-talk is still startup-only (it owns the
+            // reader thread); the chord itself is watched and updated live.
             let live = std::sync::Arc::new(std::sync::Mutex::new(settings.clone()));
             config::watch(std::sync::Arc::clone(&live));
             daemon(

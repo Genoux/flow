@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 /// Whether this machine still needs setting up.
 ///
 /// The speech model alone decides it. Refining is optional by design - the
-/// daemon degrades to the raw transcript without it - so a install that
+/// daemon degrades to the raw transcript without it - so an install that
 /// deliberately skipped it must not be dragged back through setup every time
 /// the window opens.
 pub fn needed() -> bool {
@@ -401,7 +401,7 @@ pub fn blurb(state: &State) -> &'static str {
         // before the skip is not paid for twice. Both halves of that matter at
         // the one moment the decision is still fresh enough to change.
         (true, false, true) => {
-            "Speech recognition is installed and the daemon is running. Models can add refining later, picking up where this left off."
+            "Speech recognition is installed and the daemon is running. You can add refining later from Models; a partial download will resume."
         }
         // What just happened, not how to use it. A finished install is a
         // report: the chord is on the next screen, in the Dictation section,
@@ -793,6 +793,19 @@ mod tests {
         assert_eq!(title(&first_run), "Flow is ready");
         assert!(blurb(&first_run).contains("installed"));
         assert!(!blurb(&first_run).contains("Super+Shift+D"));
+    }
+
+    #[test]
+    fn a_skipped_refine_points_at_models_not_the_models_themselves() {
+        let state = State {
+            phase: Phase::Done,
+            skipped: true,
+            ..State::default()
+        };
+        let line = blurb(&state);
+        assert!(line.contains("from Models"));
+        assert!(line.contains("resume"));
+        assert!(!line.starts_with("Models can"));
     }
 
     /// The line is a reassurance about the machine, so it appears only when

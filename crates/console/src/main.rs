@@ -199,7 +199,7 @@ enum Message {
     Copy(usize),
     /// Start, or restart after a failure, the first-run install.
     BeginSetup,
-    /// Go back through setup deliberately, from About.
+    /// Go back through setup deliberately, from About or Models.
     RerunSetup,
     /// One line from `flow install --porcelain`.
     SetupEvent(setup::Event),
@@ -230,8 +230,8 @@ struct Console {
     /// The service verb currently running. Kept separate from daemon activity:
     /// the socket may still report Offline while systemd is starting it.
     service_pending: Option<&'static str>,
-    /// True once anything has been written. The daemon only reads its config at
-    /// startup, so the window has to say so rather than imply a live change.
+    /// True once anything has been written. The footer confirms the save;
+    /// settings that still need a restart say so on their own row.
     saved: bool,
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
@@ -257,6 +257,9 @@ struct Console {
     /// Some until the models are on disk. While it is set the window is the
     /// setup screen and nothing else - no rail, no sections. See `setup`.
     setup: Option<setup::State>,
+    /// Where to land after a deliberate setup rerun (Models, About, …). First
+    /// run leaves `section` alone so Overview stays the entry point.
+    setup_return: Section,
     session: String,
     terms: Vec<String>,
     typing: String,
@@ -330,6 +333,7 @@ impl Console {
                 },
                 setup: first_run.then(setup::State::default),
                 partial: system::partial_bytes(),
+                setup_return: Section::About,
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
@@ -429,9 +433,10 @@ impl Console {
         self.autostart = system::autostart_enabled();
 
         // Someone who stopped the daemon and then repaired a model did not ask
-        // for it back.
+        // for it back. Land on the section that started the rerun - Models
+        // install should not dump you on About.
         if rerun {
-            self.section = Section::About;
+            self.section = self.setup_return;
         }
     }
 
@@ -651,6 +656,9 @@ impl Console {
             // it is about to show again.
             Message::BeginSetup | Message::RerunSetup => {
                 let rerun = matches!(message, Message::RerunSetup);
+                if rerun {
+                    self.setup_return = self.section;
+                }
 
                 // Demo mode never spawns the installer: the point of it is to
                 // lay this screen out on a machine that has no `flow` binary
@@ -740,7 +748,7 @@ impl Console {
     /// themselves on their own row rather than making every screen apologise.
     fn save_note(&self) -> Element<'_, Message> {
         match (&self.save_error, self.saved) {
-            (Some(err), _) => text(format!("Couldn't save: {err}")).size(12).color(ERR),
+            (Some(err), _) => text(err.as_str()).size(12).color(ERR),
             (None, true) => text("Saved. Applies to your next dictation.").size(12).color(FAINT),
             (None, false) => text(settings::config_path().display().to_string())
                 .size(12)
@@ -748,6 +756,12 @@ impl Console {
                 .color(FAINT),
         }
         .into()
+    }
+
+    /// Error-only footer for screens that do not own the config path. Absent
+    /// when nothing failed, so the pane does not grow a blank status strip.
+    fn error_note(&self) -> Option<Element<'_, Message>> {
+        self.save_error.as_ref().map(|err| text(err.as_str()).size(12).color(ERR).into())
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -959,7 +973,7 @@ impl Console {
                 },
             ),
             Space::new().width(44),
-            fact("Microphone", clip(self.input.as_deref().unwrap_or("system default"), 38,),),
+            fact("Microphone", clip(self.input.as_deref().unwrap_or("not detected"), 38,),),
             Space::new().width(Fill),
             fact("Models", format!("{installed} of {}", self.models.len())),
         ];
@@ -1026,7 +1040,7 @@ impl Console {
                 .size(12.5)
                 .color(mix(MUTED, FG, 0.55))
                 .wrapping(text::Wrapping::None),
-            None => text("nothing yet - hold the chord and say something").size(12.5).color(FAINT),
+            None => text("Nothing yet. Hold the chord and say something.").size(12.5).color(FAINT),
         };
 
         column![heading, Space::new().height(5), line].into()
@@ -1036,7 +1050,7 @@ impl Console {
     /// order it would bite. Empty when there is nothing to do, and the status
     /// card then collapses to one line - a dashboard that always has a row of
     /// warnings in it teaches people not to read the warnings.
-    fn attention(&self, installed: usize) -> Vec<(Color, String)> {
+    fn attention(&self, _installed: usize) -> Vec<(Color, String)> {
         let mut notes = Vec::new();
         if let Some(problem) = &self.service_error {
             notes.push((ERR, problem.clone()));
@@ -1044,20 +1058,28 @@ impl Console {
         if let Some(problem) = &self.daemon.problem {
             notes.push((ERR, problem.clone()));
         }
-        if installed < self.models.len() {
+        // Speech is required; refining is optional. Treating either missing
+        // model as "cannot transcribe" alarms after a deliberate speech-only
+        // setup, which is a successful path.
+        let speech_missing =
+            self.models.iter().any(|model| model.label == "Speech" && !model.installed);
+        let refining_missing =
+            self.models.iter().any(|model| model.label == "Refining" && !model.installed);
+        if speech_missing {
             notes.push((
                 ERR,
-                "Models are missing - Flow cannot transcribe until they install.".to_string(),
+                "Speech model is missing - Flow cannot transcribe until you install it."
+                    .to_string(),
+            ));
+        } else if refining_missing {
+            notes.push((
+                MUTED,
+                "Refining model is missing - install it from Models when you want punctuation cleanup."
+                    .to_string(),
             ));
         }
         if let update::Status::Available(tag) = &self.update {
             notes.push((ACCENT, format!("{tag} is available to install.")));
-        }
-        if self.saved {
-            notes.push((
-                MUTED,
-                "Settings changed - restart Flow for them to take effect.".to_string(),
-            ));
         }
         notes
     }
@@ -1112,12 +1134,10 @@ impl Console {
             ),
             setting(
                 "Chord",
-                // Not "applies straight away", which it never did: the daemon
-                // reads the chord once at startup because the thread watching
-                // it would have to be torn down and rebuilt. Saying otherwise
-                // sent people off pressing a combination that was never going
-                // to fire, and blaming their keyboard for it.
-                "Held down while you speak. Restart Flow for a change to take effect.",
+                // The daemon watches the config file and swaps the chord in
+                // without a restart. Push-to-talk on/off still needs one,
+                // because that decision owns the reader thread itself.
+                "Held down while you speak. A change applies on the next hold.",
                 row![
                     text(if self.capturing {
                         "press the chord…".to_string()
@@ -1233,7 +1253,7 @@ impl Console {
             "Audio",
             "What Flow listens to, and what it does to the room first.",
             rows,
-            None,
+            Some(self.save_note()),
         )
     }
 
@@ -1349,13 +1369,17 @@ impl Console {
             flow_paths::models_dir().display()
         );
         let all_installed = self.models.iter().all(|model| model.installed);
+        let note: Element<'_, Message> = match &self.save_error {
+            Some(err) => text(err.as_str()).size(12).color(ERR).into(),
+            None => text(total).size(12).font(Font::MONOSPACE).color(FAINT).into(),
+        };
 
         section_shell(
             "Models",
             "Both models run on this machine. Nothing you say leaves it.",
             rows,
             Some(path_cta(
-                text(total).size(12).font(Font::MONOSPACE).color(FAINT).into(),
+                note,
                 (!all_installed).then(|| {
                     action_msg(
                         "Install models",
@@ -1426,7 +1450,7 @@ impl Console {
             "Flow",
             "Push-to-talk dictation that runs entirely on your own machine.",
             rows,
-            None,
+            self.error_note(),
         )
     }
 
