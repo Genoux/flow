@@ -231,7 +231,7 @@ pub(crate) fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
     let words = history::words(days);
     let active = active_days(days);
     let caption = if active == 0 {
-        "Nothing dictated yet. Hold the chord and say something.".to_string()
+        "Nothing yet. Hold the chord and say something.".to_string()
     } else {
         format!(
             "{} words over {}, most recently {}",
