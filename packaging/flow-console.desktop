@@ -6,12 +6,12 @@ Comment=History and settings for Flow push-to-talk dictation
 # Resolved from PATH so the same file works for a system install and a
 # ~/.local/bin one.
 Exec=flow-console
-# ponytail: a stock theme name, so the icon comes from whatever theme the user
-# already runs and is a full app icon rather than a device glyph. Flow's own is
-# shipped and installed as hicolor/512x512/apps/flow-console.png, but
-# ~/.local/share/icons/hicolor has no index.theme on a normal desktop, so strict
-# loaders skip that directory and the entry renders as a missing texture. Point
-# this at flow-console once install.sh seeds that index.theme.
+# A fallback only: install.sh rewrites this to the absolute path of the icon it
+# installs. A theme name is resolved through whatever icon theme the user runs,
+# so it is Flow's icon on a desktop that carries the name and a blank tile on
+# one that does not - and `flow-console` as a bare name fares worse, since
+# ~/.local/share/icons/hicolor has no index.theme and strict loaders skip the
+# directory entirely. Only a path is read the same way by every loader.
 Icon=preferences-desktop-text-to-speech
 Terminal=false
 # One main category on purpose: Utility, Settings and AudioVideo are all
