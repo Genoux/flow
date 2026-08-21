@@ -4,7 +4,7 @@
 //! toggle that redraws instantly from its boolean has nowhere to put a
 //! position, and the travel is the part that acknowledges the click.
 
-use crate::theme::{mix, ACCENT, EDGE, ERR, FAINT, FG, LINE, MUTED, ON_ACCENT};
+use crate::theme::{mix, ACCENT, BG, EDGE, FAINT, FG, LINE, MUTED, ON_ACCENT};
 use crate::Message;
 use iced::widget::{button, canvas, container, row, slider, text, Canvas, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Point, Size, Theme};
@@ -86,46 +86,6 @@ pub(crate) fn value_slider<'a>(
     .into()
 }
 
-/// A filling bar, 0 to 1.
-///
-/// Built from two flexible spaces like the toggle's knob rather than from a
-/// measured width, so it fills whatever column it is given without anyone
-/// having to tell it how wide that is.
-///
-/// Once bytes arrive, the fill keeps a minimum visible portion so the first
-/// few bytes of a 3 GB file do not disappear into rounding. A genuine zero has
-/// no fill: showing green before the download starts claims progress that has
-/// not happened. A stalled bar gets no floor for the same reason.
-pub(crate) fn meter(fraction: f32, stalled: bool) -> Element<'static, Message> {
-    let filled = (fraction.clamp(0.0, 1.0) * 1000.0) as u16;
-    let filled = if stalled || filled == 0 { filled } else { filled.max(6) };
-    let colour = if stalled { ERR } else { ACCENT };
-
-    let mut fill = row![];
-    if filled > 0 {
-        fill = fill.push(
-            container(Space::new().height(Fill))
-                .width(Length::FillPortion(filled))
-                .height(Fill)
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(colour)),
-                    border: Border { radius: 2.0.into(), ..Default::default() },
-                    ..Default::default()
-                }),
-        );
-    }
-    fill = fill.push(Space::new().width(Length::FillPortion((1000 - filled).max(1))));
-
-    container(fill)
-    .width(Fill)
-    .height(Length::Fixed(4.0))
-    .style(|_| container::Style {
-        background: Some(Background::Color(LINE)),
-        border: Border { radius: 2.0.into(), ..Default::default() },
-        ..Default::default()
-    })
-    .into()
-}
 
 /// A 7px dot. The only place the accent appears besides a primary button.
 pub(crate) fn pip(colour: Color) -> Element<'static, Message> {
@@ -170,35 +130,70 @@ fn rule(colour: Color) -> Element<'static, Message> {
         .into()
 }
 
-pub(crate) fn action_msg(label: &str, primary: bool, on_press: Message) -> Element<'static, Message> {
+pub(crate) fn action_msg(
+    label: &str,
+    primary: bool,
+    on_press: impl Into<Option<Message>>,
+) -> Element<'static, Message> {
+    action_faded(label, primary, 1.0, on_press)
+}
+
+pub(crate) fn action_faded(
+    label: &str,
+    primary: bool,
+    fade: f32,
+    on_press: impl Into<Option<Message>>,
+) -> Element<'static, Message> {
+    let on_press = on_press.into();
+    let ink = if on_press.is_none() {
+        FAINT
+    } else if primary {
+        ON_ACCENT
+    } else {
+        FG
+    };
     button(
         text(label.to_string())
             .size(13)
-            .color(if primary { ON_ACCENT } else { FG })
-            // A button is as wide as its label, full stop. Left to wrap, an
-            // "Install models" beside a long path folded onto two lines and
-            // then clipped, because the row had already given the path every
-            // pixel it asked for.
+            .color(crate::theme::emerge(ink, fade))
+            // A button is as wide as its label, full stop. Left to wrap, a
+            // "Download" beside a long path folded onto two lines and then
+            // clipped, because the row had already given the path every pixel
+            // it asked for.
             .wrapping(text::Wrapping::None),
     )
     .padding([7, 14])
     .style(move |_theme, status| {
+        let paint = |colour: Color| crate::theme::emerge(colour, fade);
+        if matches!(status, button::Status::Disabled) {
+            let fill = paint(mix(ACCENT, BG, 0.62));
+            return button::Style {
+                background: primary.then_some(Background::Color(fill)),
+                text_color: paint(FAINT),
+                border: Border {
+                    color: if primary { fill } else { paint(LINE) },
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            };
+        }
         let hovered = matches!(status, button::Status::Hovered);
-        let primary_fill = match status {
+        let primary_fill = paint(match status {
             button::Status::Hovered => mix(ACCENT, FG, 0.12),
             button::Status::Pressed => mix(ACCENT, ON_ACCENT, 0.16),
             _ => ACCENT,
-        };
+        });
         button::Style {
             background: primary.then_some(Background::Color(primary_fill)),
-            text_color: if primary { ON_ACCENT } else { FG },
+            text_color: paint(if primary { ON_ACCENT } else { FG }),
             border: Border {
                 color: if primary {
                     primary_fill
                 } else if hovered {
-                    FAINT
+                    paint(FAINT)
                 } else {
-                    LINE
+                    paint(LINE)
                 },
                 width: 1.0,
                 radius: 6.0.into(),
@@ -206,31 +201,10 @@ pub(crate) fn action_msg(label: &str, primary: bool, on_press: Message) -> Eleme
             ..Default::default()
         }
     })
-    .on_press(on_press)
+    .on_press_maybe(if fade > 0.5 { on_press } else { None })
     .into()
 }
 
-/// An action with no chrome at all - a label that brightens under the pointer.
-///
-/// For the one place a control has to be available without being offered:
-/// setup's skip. A bordered button there competes with the primary action and
-/// reads as a fork in the road, when the honest shape is "carry on, unless you
-/// would rather not".
-pub(crate) fn quiet_action(label: &str, on_press: Message) -> Element<'static, Message> {
-    button(text(label.to_string()).size(12).wrapping(text::Wrapping::None))
-        .padding([4, 6])
-        .style(|_theme, status| button::Style {
-            background: None,
-            text_color: match status {
-                button::Status::Hovered | button::Status::Pressed => FG,
-                _ => MUTED,
-            },
-            border: Border::default(),
-            ..Default::default()
-        })
-        .on_press(on_press)
-        .into()
-}
 
 /// Text that behaves like a link: no chrome at all, just the label.
 fn ghost(_theme: &Theme, _status: button::Status) -> button::Style {

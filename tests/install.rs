@@ -58,6 +58,22 @@ fn speech_and_refining_are_separate() {
 }
 
 #[test]
+fn install_flags_pick_which_models() {
+    let args = |flags: &[&str]| flags.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(install::Want::from_args(&args(&["install"])), install::Want::All);
+    assert_eq!(
+        install::Want::from_args(&args(&["install", "--speech-only"])),
+        install::Want::Speech
+    );
+    assert_eq!(
+        install::Want::from_args(&args(&["install", "--refine-only"])),
+        install::Want::Refine
+    );
+    assert_eq!(install::planned_bytes(install::Want::Speech), install::total_bytes(install::SPEECH));
+    assert_eq!(install::planned_bytes(install::Want::Refine), install::total_bytes(install::REFINE));
+}
+
+#[test]
 fn the_pins_match_the_speech_model_on_disk() {
     let root = flow_paths::models_dir();
     for asset in install::SPEECH {
@@ -158,11 +174,36 @@ fn a_bad_hash_never_lands() {
     }];
 
     let err = install::fetch_all(&tampered, &root).expect_err("should reject");
-    assert!(err.to_string().contains("sha256 mismatch"), "{err}");
+    assert!(err.to_string().contains("arrived damaged"), "{err}");
     assert!(
         !root.join(tampered[0].dest).exists(),
         "unverified content landed at the real path"
     );
+    // And it takes the part file with it. Left behind, the bytes that just
+    // failed verification are what the next run resumes from.
+    assert!(
+        !root.join(tampered[0].dest).with_extension("part").exists(),
+        "the rejected download was left for the next run to resume"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// An oversized part file is wreckage - two writers shared it - and curl will
+/// not resume past the end of a file: it calls the download already complete,
+/// transfers nothing and exits 0. Left in place, that length fails verification
+/// on every run for ever, so it has to be discarded rather than resumed from.
+#[test]
+fn an_oversized_part_is_discarded() {
+    let root = scratch("oversize");
+    let asset = install::SPEECH[4];
+    let part = root.join(asset.dest).with_extension("part");
+    std::fs::create_dir_all(part.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&part, vec![0u8; asset.bytes as usize + 4_096]).expect("write");
+
+    // Offline this fails at curl and online it fetches the real file; either
+    // way the length that could never be resumed from must not survive.
+    let _ = install::fetch_all(&[asset], &root);
+    assert!(!part.exists(), "the oversized part was left to poison every retry");
     std::fs::remove_dir_all(&root).ok();
 }
 

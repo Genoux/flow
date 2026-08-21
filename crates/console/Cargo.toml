@@ -10,7 +10,7 @@ description = "Status and settings window for the Flow dictation daemon"
 [workspace]
 
 [dependencies]
-iced = { version = "0.14", features = ["canvas"] }
+iced = { version = "0.14", features = ["canvas", "advanced"] }
 serde_json = "1.0"
 flow-paths = { path = "../flow-paths" }
 

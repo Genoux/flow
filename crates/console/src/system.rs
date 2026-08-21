@@ -172,10 +172,22 @@ pub fn session() -> String {
 
 /// A model directory as the window reports it: present or not, and how big.
 pub struct Model {
-    pub label: &'static str,
-    pub detail: String,
+    pub detail: &'static str,
     pub bytes: u64,
     pub installed: bool,
+}
+
+impl Model {
+    /// What About says about this engine: which model it is, and how much of it
+    /// is on disk. Absent is stated rather than implied - naming a model that
+    /// is not there reads as a model that is.
+    pub fn fact(&self) -> String {
+        if self.installed {
+            format!("{} · {}", self.detail, human_bytes(self.bytes))
+        } else {
+            format!("{} · not installed", self.detail)
+        }
+    }
 }
 
 /// Measure what is actually on disk. The sizes used to be written into the
@@ -193,71 +205,35 @@ pub fn models() -> Vec<Model> {
 
     vec![
         Model {
-            label: "Speech",
-            detail: describe(&speech),
+            detail: "Parakeet TDT 0.6B v3 · int8 ONNX",
             bytes: size_of(&speech),
             installed: speech.is_dir(),
         },
         Model {
-            label: "Refining",
-            detail: refining
-                .as_ref()
-                .map(|path| describe(path))
-                .unwrap_or_else(|| "not installed".to_string()),
+            detail: "Qwen3 4B Instruct 2507 · Q4_K_M",
             bytes: refining.as_deref().map(size_of).unwrap_or(0),
             installed: refining.is_some(),
         },
     ]
 }
 
-/// Every unfinished download under the models directory, and what they weigh.
+
+/// Throw away everything setup downloaded, so it has something to do again.
 ///
-/// An interrupted or skipped install leaves its `.part` file behind on purpose:
-/// curl resumes from it, so coming back later costs only the bytes that never
-/// arrived. That is the right default for "not now" and the wrong one for
-/// "never" - somebody who skips at 60% of a 2.5 GB file and never wants it has
-/// 1.5 GB of nothing, and nothing on screen ever mentions it.
+/// The whole directory, in one call, rather than the two model paths named
+/// individually: that also takes any `.part` left by an interrupted run, and a
+/// part file at the full size is one the installer would hash and rename
+/// instead of fetching - a "run setup again" that finished in two seconds
+/// without downloading anything is not the thing that was asked for.
 ///
-/// So the window counts them and offers to let them go. Listed rather than
-/// summed blindly: `discard` deletes exactly what this returns, and a function
-/// that decides what to delete separately from what it showed is a function
-/// that will eventually delete something else.
-pub fn partial_downloads() -> Vec<PathBuf> {
-    parts_in(&flow_paths::models_dir())
-}
-
-/// Split from `partial_downloads` so the rule can be tested against a real
-/// directory without moving the whole models tree. What it must never do is
-/// return anything that is not a `.part` file - the caller deletes these.
-fn parts_in(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
-    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
-        if path.is_dir() {
-            found.extend(parts_in(&path));
-        } else if path.extension().is_some_and(|ext| ext == "part") {
-            found.push(path);
-        }
+/// Only ever the models directory, which holds nothing else.
+pub fn remove_models() -> Result<(), String> {
+    let dir = flow_paths::models_dir();
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("could not clear {}: {err}", dir.display())),
     }
-    found
-}
-
-pub fn partial_bytes() -> u64 {
-    partial_downloads().iter().map(|path| size_of(path)).sum()
-}
-
-/// Delete the unfinished downloads. Only ever files this same module just
-/// listed, and only ever ones named `.part` under the models directory - a
-/// finished model has already been renamed off that extension, so there is no
-/// path where this can take one.
-pub fn discard_partials() -> Result<(), String> {
-    for path in partial_downloads() {
-        std::fs::remove_file(&path)
-            .map_err(|err| format!("could not delete {}: {err}", path.display()))?;
-    }
-    Ok(())
 }
 
 /// The biggest `.gguf` in `root`, which is the refining model. Biggest rather
@@ -274,12 +250,6 @@ fn largest_gguf(root: &std::path::Path) -> Option<PathBuf> {
 
 /// The file or directory name, which is what identifies a model to a person -
 /// the full path is already shown once at the bottom of the screen.
-fn describe(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
-}
-
 /// Bytes on disk, counting a directory's contents recursively.
 fn size_of(path: &std::path::Path) -> u64 {
     let Ok(meta) = std::fs::metadata(path) else {
@@ -345,34 +315,6 @@ const OPENER: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" }
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The delete path's one rule. A finished model has been renamed off the
-    /// `.part` extension, so nothing here may ever pick one up.
-    #[test]
-    fn only_part_files_are_ever_collected() {
-        let root = std::env::temp_dir().join(format!("flow-parts-{}", std::process::id()));
-        let nested = root.join("tdt");
-        std::fs::create_dir_all(&nested).expect("temp dir");
-
-        for (path, name) in [
-            (&root, "qwen3-4b-instruct-q4km.part"),
-            (&root, "qwen3-4b-instruct-q4km.gguf"),
-            (&nested, "encoder-model.int8.part"),
-            (&nested, "encoder-model.int8.onnx"),
-            (&nested, "vocab.txt"),
-        ] {
-            std::fs::write(path.join(name), b"x").expect("write");
-        }
-
-        let mut found: Vec<String> = parts_in(&root)
-            .iter()
-            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        found.sort();
-
-        assert_eq!(found, ["encoder-model.int8.part", "qwen3-4b-instruct-q4km.part"]);
-        std::fs::remove_dir_all(&root).ok();
-    }
 
     #[test]
     fn bytes_read_the_way_a_person_would() {

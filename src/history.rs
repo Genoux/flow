@@ -26,18 +26,26 @@ pub fn path() -> PathBuf {
 /// Append one dictation. Best effort in every direction: a full disk or a
 /// read-only home must never cost the user the text that is already on its way
 /// to their cursor.
-pub fn append(text: &str, spoken: f32, paste_ms: u128, at: u64) {
+///
+/// `raw` is the transcript before cleanup, and is what makes undoing an edit
+/// possible after the fact. It is omitted when cleanup changed nothing, so the
+/// key's presence means exactly "the model rewrote this" - a reader wanting the
+/// original reads `raw` and falls back to `text`.
+pub fn append(text: &str, raw: &str, spoken: f32, paste_ms: u128, at: u64) {
     let path = path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let line = json!({
+    let mut line = json!({
         "at": at,
         "text": text,
         "spoken": spoken,
         "paste_ms": paste_ms,
     });
+    if raw != text {
+        line["raw"] = json!(raw);
+    }
 
     let appended = std::fs::OpenOptions::new()
         .create(true)

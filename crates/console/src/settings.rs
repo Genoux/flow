@@ -19,12 +19,73 @@ pub fn config_path() -> PathBuf {
     flow_paths::config_file()
 }
 
+/// How much the refining model may change what you said.
+///
+/// A mirror of `refine::Cleanup` in the daemon, spelled out again because this
+/// window is its own workspace on purpose - depending on the daemon crate would
+/// drag llama.cpp and Vulkan into a settings window. The strings are the
+/// contract between the two, so they must match the daemon's `Cleanup::parse`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cleanup {
+    None,
+    #[default]
+    Light,
+    Medium,
+    Hard,
+}
+
+impl Cleanup {
+    pub const ALL: [Self; 4] = [Self::None, Self::Light, Self::Medium, Self::Hard];
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "light" => Some(Self::Light),
+            "medium" => Some(Self::Medium),
+            "hard" => Some(Self::Hard),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Light => "light",
+            Self::Medium => "medium",
+            Self::Hard => "hard",
+        }
+    }
+
+    /// Card title, and the one line under it. Written for someone choosing,
+    /// not for someone who already knows what the levels do.
+    pub fn describe(self) -> (&'static str, &'static str) {
+        match self {
+            Self::None => ("None", "Types exactly what you said, mistakes and all"),
+            Self::Light => ("Light", "Removes filler words, keeps your wording"),
+            Self::Medium => ("Medium", "Fixes grammar and tightens for clarity"),
+            Self::Hard => ("Hard", "Rewrites into the way you would have typed it"),
+        }
+    }
+
+    /// The same sentence at each level, so the cards show the difference rather
+    /// than describing it. Wispr's own screen does this and it is the reason
+    /// their levels are legible at a glance.
+    pub fn example(self) -> &'static str {
+        match self {
+            Self::None => "um so me and him was gonna ship the the feature friday you know",
+            Self::Light => "so me and him was gonna ship the feature friday",
+            Self::Medium => "Me and him were gonna ship the feature Friday.",
+            Self::Hard => "He and I were going to ship the feature on Friday.",
+        }
+    }
+}
+
 /// The subset of Flow's config the window can change. Anything else in the
 /// file is passed through untouched.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub push_to_talk: bool,
-    pub refine: bool,
+    pub cleanup: Cleanup,
     pub terminal: bool,
     pub denoise: bool,
     pub duck: u32,
@@ -52,7 +113,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             push_to_talk: true,
-            refine: true,
+            cleanup: Cleanup::default(),
             terminal: false,
             denoise: false,
             duck: 50,
@@ -75,7 +136,17 @@ impl Settings {
         for (key, value) in pairs(text) {
             match key.as_str() {
                 "push_to_talk" => settings.push_to_talk = value == "true",
-                "refine" => settings.refine = value == "true",
+                "cleanup" => {
+                    if let Some(level) = Cleanup::parse(&value) {
+                        settings.cleanup = level;
+                    }
+                }
+                // The key this replaced. Still read so a config written before
+                // levels existed opens on the level it meant.
+                "refine" => {
+                    settings.cleanup =
+                        if value == "true" { Cleanup::default() } else { Cleanup::None }
+                }
                 "terminal" => settings.terminal = value == "true",
                 "denoise" => settings.denoise = value == "true",
                 "duck" => {
@@ -106,9 +177,14 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 7] = [
+        let wanted: [(&str, Option<String>); 8] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
-            ("refine", Some(self.refine.to_string())),
+            ("cleanup", Some(self.cleanup.as_str().to_string())),
+            // Deleted rather than left alone. The daemon still understands
+            // `refine`, and applies keys in file order - so a stale `refine`
+            // line sitting below `cleanup` would silently undo the level the
+            // user just picked.
+            ("refine", None),
             ("terminal", Some(self.terminal.to_string())),
             ("denoise", Some(self.denoise.to_string())),
             ("duck", Some(self.duck.to_string())),
@@ -217,7 +293,7 @@ mod tests {
     fn a_saved_file_reads_back_the_same() {
         let settings = Settings {
             push_to_talk: false,
-            refine: false,
+            cleanup: Cleanup::Medium,
             terminal: true,
             denoise: true,
             duck: 0,
@@ -225,6 +301,25 @@ mod tests {
             hotkey: "ctrl+alt+space".to_string(),
         };
         assert_eq!(Settings::parse(&settings.render("")), settings);
+    }
+
+    /// The daemon applies keys in file order, so a `refine` line left below the
+    /// `cleanup` line would undo the level the user just picked. Saving has to
+    /// take the old key out, not just stop writing it.
+    #[test]
+    fn saving_removes_the_key_cleanup_replaced() {
+        let existing = "cleanup = none\nrefine = true\n";
+        let out = Settings { cleanup: Cleanup::None, ..Settings::default() }.render(existing);
+
+        assert!(!out.contains("refine"), "stale refine line survived:\n{out}");
+        assert_eq!(Settings::parse(&out).cleanup, Cleanup::None);
+    }
+
+    /// A config written before levels existed must open on the level it meant.
+    #[test]
+    fn the_old_refine_key_still_reads() {
+        assert_eq!(Settings::parse("refine = false\n").cleanup, Cleanup::None);
+        assert_eq!(Settings::parse("refine = true\n").cleanup, Cleanup::Light);
     }
 
     #[test]

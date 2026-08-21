@@ -24,8 +24,8 @@ const TIMEOUT_SECONDS: &str = "10";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Status {
-    /// Nothing asked yet. Checking on open would put a network call in the path
-    /// of a window whose whole job is usually to flip one switch.
+    /// Nothing asked yet. Only ever seen for a moment now that the window
+    /// checks on open, or for good in demo mode, which never asks.
     #[default]
     Unknown,
     Checking,
@@ -42,6 +42,35 @@ pub enum Status {
 
 pub fn running() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// How a build that is not a release says which build it is.
+///
+/// `cargo run` and an installed release both report the same version, which is
+/// no help at all when the thing being tested is a working tree: bumping the
+/// version by hand only distinguishes the bumps, not the rebuilds between
+/// them, and a commit cannot identify a build whose whole point is that it is
+/// not committed yet. The binary's own modification time can, it changes on
+/// every rebuild, and it costs one stat.
+///
+/// None for a release build, where the version is the whole truth.
+pub fn dev_note() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+
+    let built = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+
+    Some(match built {
+        Some(built) => {
+            format!("dev, built {}", crate::history::ago(built.as_secs(), crate::history::now()))
+        }
+        None => "dev".to_string(),
+    })
 }
 
 /// Blocking. Call it off the UI thread.

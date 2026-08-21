@@ -10,7 +10,10 @@ pub struct Config {
     /// Percentage of its current volume each other app is held at while
     /// recording. 0 disables ducking.
     pub duck: u32,
-    pub refine: bool,
+    /// How much the refining model may change what you said. `Light` is the
+    /// default: every speaker wants their fillers gone, not every speaker wants
+    /// their sentences rewritten.
+    pub cleanup: super::refine::Cleanup,
     pub terminal: bool,
     /// Key combination held to dictate. Only consulted when `push_to_talk` is on.
     pub chord: super::hotkey::Chord,
@@ -36,7 +39,7 @@ impl Default for Config {
         Self {
             push_to_talk: true,
             duck: 50,
-            refine: true,
+            cleanup: super::refine::Cleanup::default(),
             terminal: false,
             chord: super::hotkey::Chord::default(),
             gpu: None,
@@ -83,7 +86,21 @@ impl Config {
 
             match key {
                 "push_to_talk" => config.push_to_talk = boolean(&at, key, value)?,
-                "refine" => config.refine = boolean(&at, key, value)?,
+                "cleanup" => {
+                    config.cleanup = super::refine::Cleanup::parse(value).ok_or_else(|| {
+                        anyhow::anyhow!("{at}: cleanup wants none, light, or medium, found {value:?}")
+                    })?
+                }
+                // Accepted so an existing config keeps working across the rename.
+                // `refine = false` was the only way to turn polish off before
+                // levels existed, and it means exactly `cleanup = none`.
+                "refine" => {
+                    config.cleanup = if boolean(&at, key, value)? {
+                        super::refine::Cleanup::default()
+                    } else {
+                        super::refine::Cleanup::None
+                    }
+                }
                 "terminal" => config.terminal = boolean(&at, key, value)?,
                 "denoise" => config.denoise = boolean(&at, key, value)?,
                 "record_debug" => config.record_debug = boolean(&at, key, value)?,
@@ -117,7 +134,12 @@ impl Config {
         let present = |flag: &str| args.iter().any(|arg| arg == flag);
 
         self.push_to_talk &= !present("--no-ptt");
-        self.refine &= !present("--raw");
+        if present("--raw") {
+            self.cleanup = super::refine::Cleanup::None;
+        }
+        if let Some(level) = flag_str(args, "--cleanup").and_then(super::refine::Cleanup::parse) {
+            self.cleanup = level;
+        }
         self.terminal |= present("--terminal");
         self.denoise |= present("--denoise");
         self.denoise &= !present("--no-denoise");
@@ -143,8 +165,13 @@ impl Config {
 
 /// Value following `name`, e.g. `--duck 20`.
 fn flag_value(args: &[String], name: &str) -> Option<u32> {
+    flag_str(args, name)?.parse().ok()
+}
+
+/// Value following `name` left as text, e.g. `--cleanup light`.
+fn flag_str<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     let at = args.iter().position(|arg| arg == name)?;
-    args.get(at + 1)?.parse().ok()
+    args.get(at + 1).map(String::as_str)
 }
 
 fn boolean(at: &str, key: &str, value: &str) -> Result<bool> {

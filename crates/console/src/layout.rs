@@ -5,10 +5,10 @@
 //! a row that knows its own padding is a row that cannot be indented by
 //! half a step on one screen and not the next.
 
-use crate::control::{copy_btn, hairline, pip};
+use crate::control::{copy_btn, hairline};
 use crate::format::{clip_tail, display_path};
 use crate::theme::{
-    mix, CONTENT_RIGHT, ENTRY_INSET, ERR, FAINT, FG, FOOT_PAD, MUTED, OK, PAGE_TOP, RAIL_ON,
+    mix, BG, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, FOOT_PAD, LABEL_GAP, MUTED, PAGE_TOP, RAIL_ON,
     ROW_PAD, SCROLL_PAD,
 };
 use crate::{history, Message, Section};
@@ -202,18 +202,6 @@ pub(crate) fn section_shell<'a>(
     }
 }
 
-/// Path (or save note) on the left, optional action on the right. The path
-/// is the flexible half so a long directory cannot shove the button off.
-pub(crate) fn path_cta<'a>(
-    note: Element<'a, Message>,
-    action: Option<Element<'a, Message>>,
-) -> Element<'a, Message> {
-    let mut footer = row![container(note).width(Fill)];
-    if let Some(action) = action {
-        footer = footer.push(Space::new().width(12)).push(action);
-    }
-    footer.align_y(iced::Center).into()
-}
 
 /// A rail item behaves like a button, because it is one: the whole row lights,
 /// not just its label. Selection holds a permanent muted background so the
@@ -222,7 +210,28 @@ pub(crate) fn path_cta<'a>(
 /// would happen if you clicked.
 ///
 /// `warmth` is how far into the hover this row is, 0 to 1.
-pub(crate) fn nav(section: Section, selected: bool, warmth: f32) -> Element<'static, Message> {
+pub(crate) fn nav(
+    section: Section,
+    selected: bool,
+    warmth: f32,
+    enabled: bool,
+) -> Element<'static, Message> {
+    // Disabled sits below rest, not above it: the point is that there is
+    // nothing here yet, and a greyed item that lights up on hover is an item
+    // still promising something.
+    if !enabled {
+        return button(text(section.label()).size(13).color(mix(BG, MUTED, 0.45)))
+            .width(Fill)
+            .padding([6, 9])
+            .style(|_theme, _status| button::Style {
+                background: None,
+                text_color: mix(BG, MUTED, 0.45),
+                border: Border { radius: 6.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into();
+    }
+
     let colour = if selected { FG } else { mix(MUTED, FG, warmth) };
     // Selected sits at full weight; hover approaches it without arriving, so
     // the two never read as the same state. 0.7 rather than 0.55 because a
@@ -256,7 +265,7 @@ pub(crate) fn setting<'a>(
         row![
             column![
                 text(label).size(13.5).color(FG),
-                Space::new().height(3),
+                Space::new().height(LABEL_GAP),
                 text(description).size(12).color(FAINT),
             ]
             .width(Length::FillPortion(3)),
@@ -327,36 +336,146 @@ fn path_link(path: std::path::PathBuf, shown: String) -> Element<'static, Messag
         .into()
 }
 
-pub(crate) fn model_row(
-    label: &'static str,
-    detail: impl Into<String>,
-    size: impl Into<String>,
-    installed: bool,
-) -> Element<'static, Message> {
-    container(
-        row![
-            column![
-                text(label).size(13.5).color(FG),
-                Space::new().height(3),
-                text(detail.into()).size(12).font(Font::MONOSPACE).color(FAINT),
-            ]
-            .width(Length::FillPortion(3)),
-            Space::new().width(20),
-            container(
-                row![
-                    text(size.into()).size(12).font(Font::MONOSPACE).color(FAINT),
-                    Space::new().width(14),
-                    pip(if installed { OK } else { ERR }),
-                    Space::new().width(7),
-                    text(if installed { "Installed" } else { "Missing" }).size(12).color(MUTED),
-                ]
-                .align_y(iced::Center),
-            )
-            .width(Length::FillPortion(2))
-            .align_x(iced::alignment::Horizontal::Right),
-        ]
-        .align_y(iced::Center),
-    )
-    .padding([ROW_PAD, 0.0])
-    .into()
+
+
+/// A layer the pointer cannot reach.
+///
+/// `stack!` paints the setup overlay above the console, but iced keeps routing
+/// the pointer to everything underneath it. Two things showed through: the rail
+/// lit its rows under the veil, and the calendar's tooltip - an overlay, so
+/// raised above the veil rather than hidden behind it - appeared over a screen
+/// the console was not even showing.
+///
+/// iced's own `opaque` is the wrong tool for it. That captures button presses
+/// and forwards everything else, including `overlay`, so it stops the clicks
+/// and leaves the hover - and hover is the half that was visible.
+///
+/// So this swallows mouse events instead of forwarding them, draws and measures
+/// its content as though the pointer were off the window entirely, and raises no
+/// overlay of its own. Keyboard and window events still pass, because a layer
+/// that cannot be clicked is not the same as one that has stopped existing.
+pub(crate) fn inert<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    use iced::advanced::widget::{tree, Operation, Tree};
+    use iced::advanced::{layout, mouse, overlay, renderer, Clipboard, Layout, Shell, Widget};
+    use iced::{Event, Rectangle, Size, Vector};
+
+    struct Inert<'a> {
+        content: Element<'a, Message>,
+    }
+
+    impl Widget<Message, iced::Theme, iced::Renderer> for Inert<'_> {
+        fn tag(&self) -> tree::Tag {
+            self.content.as_widget().tag()
+        }
+
+        fn state(&self) -> tree::State {
+            self.content.as_widget().state()
+        }
+
+        fn children(&self) -> Vec<Tree> {
+            self.content.as_widget().children()
+        }
+
+        fn diff(&self, tree: &mut Tree) {
+            self.content.as_widget().diff(tree);
+        }
+
+        fn size(&self) -> Size<Length> {
+            self.content.as_widget().size()
+        }
+
+        fn size_hint(&self) -> Size<Length> {
+            self.content.as_widget().size_hint()
+        }
+
+        fn layout(
+            &mut self,
+            tree: &mut Tree,
+            renderer: &iced::Renderer,
+            limits: &layout::Limits,
+        ) -> layout::Node {
+            self.content.as_widget_mut().layout(tree, renderer, limits)
+        }
+
+        fn draw(
+            &self,
+            tree: &Tree,
+            renderer: &mut iced::Renderer,
+            theme: &iced::Theme,
+            style: &renderer::Style,
+            layout: Layout<'_>,
+            _cursor: mouse::Cursor,
+            viewport: &Rectangle,
+        ) {
+            self.content.as_widget().draw(
+                tree,
+                renderer,
+                theme,
+                style,
+                layout,
+                mouse::Cursor::Unavailable,
+                viewport,
+            );
+        }
+
+        fn operate(
+            &mut self,
+            tree: &mut Tree,
+            layout: Layout<'_>,
+            renderer: &iced::Renderer,
+            operation: &mut dyn Operation,
+        ) {
+            self.content.as_widget_mut().operate(tree, layout, renderer, operation);
+        }
+
+        fn update(
+            &mut self,
+            tree: &mut Tree,
+            event: &Event,
+            layout: Layout<'_>,
+            _cursor: mouse::Cursor,
+            renderer: &iced::Renderer,
+            clipboard: &mut dyn Clipboard,
+            shell: &mut Shell<'_, Message>,
+            viewport: &Rectangle,
+        ) {
+            if matches!(event, Event::Mouse(_) | Event::Touch(_)) {
+                return;
+            }
+            self.content.as_widget_mut().update(
+                tree,
+                event,
+                layout,
+                mouse::Cursor::Unavailable,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
+            );
+        }
+
+        fn mouse_interaction(
+            &self,
+            _tree: &Tree,
+            _layout: Layout<'_>,
+            _cursor: mouse::Cursor,
+            _viewport: &Rectangle,
+            _renderer: &iced::Renderer,
+        ) -> mouse::Interaction {
+            mouse::Interaction::None
+        }
+
+        fn overlay<'b>(
+            &'b mut self,
+            _tree: &'b mut Tree,
+            _layout: Layout<'b>,
+            _renderer: &iced::Renderer,
+            _viewport: &Rectangle,
+            _translation: Vector,
+        ) -> Option<overlay::Element<'b, Message, iced::Theme, iced::Renderer>> {
+            None
+        }
+    }
+
+    Element::new(Inert { content: content.into() })
 }

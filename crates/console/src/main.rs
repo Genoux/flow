@@ -43,18 +43,22 @@ mod vocabulary;
 use crate::calendar::{calendar_card, current_streak, longest_streak};
 use crate::card::{fact, panel, stat_tile};
 use crate::control::{
-    action_msg, card_rule, hairline, pip, toggle, value_slider, vertical_hairline,
+    action_msg, card_rule, hairline, pip, toggle, value_slider,
+    vertical_hairline,
 };
 use crate::format::{clip, commas, plural, trend};
 use crate::layout::{
-    entry_list, entry_row, fact_path, fact_row, heading, model_row, nav, path_cta, scroll,
+    entry_list, entry_row, fact_path, fact_row, heading, inert, nav, scroll,
     scroll_inset, section_shell, setting,
 };
 use crate::theme::{
-    mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE, FAINT,
-    FG, GAP, KNOB, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD, SCROLL_PAD, STARTING,
+    mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE,
+    FAINT, FG, GAP, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH,
+    ROW_PAD,
+    SCROLL_PAD,
+    STARTING,
 };
-use iced::widget::{column, container, row, text, Space};
+use iced::widget::{column, container, row, stack, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
 
 fn main() -> iced::Result {
@@ -103,6 +107,12 @@ fn subscription(state: &Console) -> Subscription<Message> {
     Subscription::batch([daemon, iced::window::frames().map(Message::Tick)])
 }
 
+/// The longest step any animation may be advanced by in one frame, in seconds.
+/// Two frames at 30Hz - long enough that a slow compositor still eases at real
+/// time, short enough that the idle gap before an animation starts cannot be
+/// spent all at once. See `Message::Tick`.
+const FRAME_CAP: f32 = 1.0 / 30.0;
+
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
@@ -114,7 +124,10 @@ enum Section {
     Dictation,
     Audio,
     Vocabulary,
-    Models,
+    /// What used to be Models. Both models now arrive with the install, so the
+    /// screen that asked which to fetch has no question left on it - what it
+    /// has instead is the one choice that changes what Flow writes.
+    Style,
     About,
 }
 
@@ -125,7 +138,7 @@ impl Section {
         Section::Dictation,
         Section::Audio,
         Section::Vocabulary,
-        Section::Models,
+        Section::Style,
         Section::About,
     ];
 
@@ -147,6 +160,22 @@ impl Section {
         Section::ALL.into_iter().find(|section| section.label().eq_ignore_ascii_case(name.trim()))
     }
 
+    /// Whether this screen still means something when Flow cannot run.
+    ///
+    /// Both models are required, so a machine missing either has no daemon at
+    /// all - not a daemon doing less. That makes every screen that tunes
+    /// dictation a screen tuning nothing: Dictation, Audio, Vocabulary and
+    /// Style all describe behaviour that has no process to belong to.
+    ///
+    /// Overview survives because it is where the way out is, and About because
+    /// a version and a path are true whether or not anything is running.
+    ///
+    /// Disabled rather than hidden. A nav that grows items when a download
+    /// finishes is a nav that was lying about what the product is.
+    fn works_without_models(self) -> bool {
+        matches!(self, Section::Overview | Section::About)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Section::Overview => "Overview",
@@ -154,7 +183,7 @@ impl Section {
             Section::Dictation => "Dictation",
             Section::Audio => "Audio",
             Section::Vocabulary => "Vocabulary",
-            Section::Models => "Models",
+            Section::Style => "Style",
             Section::About => "About",
         }
     }
@@ -164,7 +193,9 @@ impl Section {
 enum Message {
     Select(Section),
     PushToTalk(bool),
-    Refine(bool),
+    /// A cleanup card on the Style screen. Picking a level is the whole of that
+    /// screen, so it saves immediately rather than behind a confirm.
+    SetCleanup(settings::Cleanup),
     Terminal(bool),
     Denoise(bool),
     Autostart(bool),
@@ -184,7 +215,6 @@ enum Message {
     /// Put the chord back to what a fresh install uses.
     ResetChord,
     /// Delete the `.part` files a stopped install left behind.
-    DiscardPartial,
     TypingTerm(String),
     AddTerm,
     RemoveTerm(usize),
@@ -199,18 +229,14 @@ enum Message {
     Copy(usize),
     /// Start, or restart after a failure, the first-run install.
     BeginSetup,
-    /// Go back through setup deliberately, from About.
+    /// Throw the models away and run setup again from nothing.
     RerunSetup,
+    /// Stop the download that is running and throw away what it had.
+    StopDownload,
     /// One line from `flow install --porcelain`.
     SetupEvent(setup::Event),
-    /// `flow probe` came back with where refining will run.
-    Probed(Option<String>),
-    /// Stop after the speech model and get on with it.
-    SkipRefine,
-    /// Leave setup for the console proper.
-    FinishSetup,
     /// Automatic startup, or a retry from setup, finished.
-    SetupStarted(Result<(), String>, bool),
+    SetupStarted(Result<(), String>),
     CheckUpdate,
     UpdateChecked(update::Status),
     InstallUpdate,
@@ -230,9 +256,18 @@ struct Console {
     /// The service verb currently running. Kept separate from daemon activity:
     /// the socket may still report Offline while systemd is starting it.
     service_pending: Option<&'static str>,
-    /// True once anything has been written. The daemon only reads its config at
-    /// startup, so the window has to say so rather than imply a live change.
+    /// True once anything has been written, which is what the footer's "Saved"
+    /// note is for.
     saved: bool,
+    /// Push-to-talk as the running daemon has it, which is only what it read at
+    /// startup. Every other setting is picked up live - the config watcher
+    /// swaps new values in, and the chord is compared on each key - but this one
+    /// decides whether the thread watching `/dev/input` exists at all, so
+    /// changing it means restarting.
+    applied_ptt: bool,
+    /// A restart owed to the setting above, waiting for the daemon to be idle.
+    /// Restarting mid-dictation would throw away the words being transcribed.
+    restart_pending: bool,
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
     autostart: Option<bool>,
@@ -251,12 +286,15 @@ struct Console {
     /// True while the release tarball is downloading and installing.
     updating: bool,
     models: Vec<system::Model>,
-    /// Bytes sitting in unfinished `.part` downloads. Zero on a clean install,
-    /// and then the Models screen says nothing about them.
-    partial: u64,
-    /// Some until the models are on disk. While it is set the window is the
-    /// setup screen and nothing else - no rail, no sections. See `setup`.
-    setup: Option<setup::State>,
+    /// The one model download that can be in flight, whether it is first
+    /// run's or one started from a row on the Models screen.
+    download: Option<setup::State>,
+    /// True while the setup screen owns the whole window - no rail, no
+    /// sections.
+    showing_setup: bool,
+    /// Seconds into setup dissolving away, once its work is done. `None` the
+    /// rest of the time.
+    fading: Option<f32>,
     session: String,
     terms: Vec<String>,
     typing: String,
@@ -305,15 +343,22 @@ impl Console {
             None => setup::needed(),
         };
 
+        // Whatever is on disk now is what a running daemon read at startup, so
+        // it is also the baseline `applied_ptt` measures against.
+        let settings = settings::Settings::load();
+        let applied_ptt = settings.push_to_talk;
+
         (
             Self {
                 section: Section::initial(),
                 daemon: pretend.map_or_else(daemon::State::default, demo::daemon_state),
-                settings: settings::Settings::load(),
+                settings,
                 save_error: None,
                 service_error: None,
                 service_pending: None,
                 saved: false,
+                applied_ptt,
+                restart_pending: false,
                 autostart: system::autostart_enabled(),
                 input: match pretend {
                     Some(_) => demo::input(),
@@ -322,14 +367,22 @@ impl Console {
                 entries,
                 copied: None,
                 days: history::daily(CALENDAR_DAYS),
-                update: update::Status::default(),
+                // Already checking, because it is: the check goes out with
+                // this window. Left at Unknown, About would read "not checked
+                // yet" while a check was in flight and its button would fire a
+                // second one.
+                update: match pretend {
+                    Some(_) => update::Status::Unknown,
+                    None => update::Status::Checking,
+                },
                 updating: false,
                 models: match pretend {
                     Some(_) => demo::models(),
                     None => system::models(),
                 },
-                setup: first_run.then(setup::State::default),
-                partial: system::partial_bytes(),
+                download: None,
+                showing_setup: first_run,
+                fading: None,
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
@@ -349,7 +402,23 @@ impl Console {
             // Setup starts itself. Launching Flow with nothing installed is
             // already the request; a Begin button in front of it would only be
             // asking the same question twice.
-            if first_run { Task::done(Message::BeginSetup) } else { Task::none() },
+            Task::batch([
+                if first_run { Task::done(Message::BeginSetup) } else { Task::none() },
+                // Whether there is a newer Flow, asked without being asked.
+                // A release nobody knows about is a release nobody installs,
+                // and the answer belongs on screen before the question occurs
+                // to anyone - the Overview names an available version among
+                // its notes, so opening the window is enough to hear about it.
+                //
+                // Quiet when it goes wrong: a check that fails says so on the
+                // About screen and nowhere else, so a laptop with no network
+                // opens on exactly the window it opened on before.
+                if pretend.is_some() {
+                    Task::none()
+                } else {
+                    Task::perform(async { update::latest() }, Message::UpdateChecked)
+                },
+            ]),
         )
     }
 
@@ -369,10 +438,11 @@ impl Console {
             || running(self.entry_hover_at, FADE)
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
             || self.toggled_at.values().any(|at| running(*at, KNOB))
+            || self.fading.is_some()
             // The only motion in the product driven by something outside it:
-            // the bar is chasing a download, so it moves until it catches up
+            // the ring is chasing a download, so it moves until it catches up
             // rather than for a fixed duration.
-            || self.setup.as_ref().is_some_and(setup::State::running)
+            || self.download.as_ref().is_some_and(setup::State::running)
     }
 
     /// True while this row's copy button should still be saying so.
@@ -404,8 +474,55 @@ impl Console {
         }
     }
 
-    fn start_setup_daemon(&mut self, close_when_started: bool) -> Task<Message> {
-        let Some(state) = self.setup.as_mut() else {
+    /// Carry a push-to-talk change into the running daemon, by restarting it.
+    ///
+    /// The console used to print "Settings changed - restart Flow for them to
+    /// take effect" after *any* save, which was wrong twice over. Almost
+    /// nothing needs a restart: the daemon watches its own config file, and the
+    /// chord is re-read on every key press. And where one is genuinely needed,
+    /// stopping to tell someone to go and do it by hand is handing them a chore
+    /// the window is perfectly able to do itself.
+    ///
+    /// Push-to-talk is the exception that is real. It decides whether the thread
+    /// reading `/dev/input` is spawned at all, so it is read once at startup and
+    /// no amount of config watching can apply it.
+    ///
+    /// Deferred while the daemon is listening or transcribing: a restart there
+    /// would throw away the dictation in flight, and no setting is worth a lost
+    /// sentence. `Message::Service` owns the actual verb, including the guard
+    /// against two at once.
+    fn apply_push_to_talk(&mut self) -> Task<Message> {
+        if self.demo || self.settings.push_to_talk == self.applied_ptt {
+            return Task::none();
+        }
+        self.applied_ptt = self.settings.push_to_talk;
+
+        // Nothing to carry it into. Whatever starts next reads the file.
+        if self.daemon.activity == daemon::Activity::Offline {
+            self.restart_pending = false;
+            return Task::none();
+        }
+
+        self.restart_pending = true;
+        self.restart_when_idle()
+    }
+
+    /// Fire the owed restart if the daemon is in a state where losing its
+    /// current work costs nothing.
+    fn restart_when_idle(&mut self) -> Task<Message> {
+        let busy = matches!(
+            self.daemon.activity,
+            daemon::Activity::Listening | daemon::Activity::Working | daemon::Activity::Starting
+        );
+        if !self.restart_pending || busy || self.service_pending.is_some() {
+            return Task::none();
+        }
+        self.restart_pending = false;
+        Task::done(Message::Service("restart"))
+    }
+
+    fn start_setup_daemon(&mut self) -> Task<Message> {
+        let Some(state) = self.download.as_mut() else {
             return Task::none();
         };
         if state.starting_daemon {
@@ -414,25 +531,77 @@ impl Console {
 
         state.starting_daemon = true;
         state.start_error = None;
-        Task::perform(async { system::service("start") }, move |result| {
-            Message::SetupStarted(result, close_when_started)
-        })
+        // `restart`, not `start`. Two reasons, and both are the same reason.
+        //
+        // A daemon that was already up started before these models existed, so
+        // it is running without the one setup just fetched - `start` on an
+        // active unit does nothing at all, and leaves it that way.
+        //
+        // And because it does nothing, the socket never drops, so the console
+        // never reconnects and never gets the fresh snapshot that would correct
+        // the "Starting…" it just set on itself. It sat there until something
+        // else restarted the daemon. `restart` on an inactive unit simply
+        // starts it, so this is right whether or not one was running.
+        Task::perform(async { system::service("restart") }, Message::SetupStarted)
     }
 
+    /// Spawn `flow install` once the intro has landed. Hashing during the
+    /// fade is what made the motion hitch.
+    fn launch_install(&mut self) -> Task<Message> {
+        let Some(state) = self.download.as_mut() else {
+            return Task::none();
+        };
+        if self.demo || state.spawned || state.stopped || !state.intro_over() {
+            return Task::none();
+        }
+        state.spawned = true;
+        let (events, handle) = setup::install();
+        state.handle = handle;
+        Task::run(events, Message::SetupEvent)
+    }
+
+    /// The speech model is on disk, so Flow can dictate: start the daemon.
+    ///
+    /// There is no button for this and nothing to confirm. Called from
+    /// everything that can move setup forward, because what it is waiting on
+    /// last is sometimes only `FLOOR`.
+    fn setup_usable(&mut self) -> Task<Message> {
+        let ready = !self.demo
+            && self.showing_setup
+            && self.download.as_ref().is_some_and(|state| {
+                state.finished()
+                    && !state.daemon_started
+                    && !state.starting_daemon
+                    && state.start_error.is_none()
+            });
+
+        if ready {
+            self.start_setup_daemon()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// Whether an install is missing a model it needs.
+    ///
+    /// Reachable only by stopping setup: `setup::needed` sends a half-installed
+    /// machine back through it, so the one way to sit here is to have said no.
+    /// That makes this a deferred choice rather than a fault - the window says
+    /// what is missing and offers to finish, and nothing starts in the
+    /// meantime.
+    fn incomplete(&self) -> bool {
+        !self.models.iter().all(|model| model.installed)
+    }
+
+    /// Setup is over: the window becomes the console it was standing in for.
     fn leave_setup(&mut self) {
-        let rerun = self.setup.as_ref().is_some_and(|state| state.rerun);
-        self.setup = None;
+        self.showing_setup = false;
+        self.fading = None;
+        self.download = None;
         self.models = system::models();
-        self.partial = system::partial_bytes();
         self.input = system::default_input();
         self.entries = history::recent();
         self.autostart = system::autostart_enabled();
-
-        // Someone who stopped the daemon and then repaired a model did not ask
-        // for it back.
-        if rerun {
-            self.section = Section::About;
-        }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -444,16 +613,32 @@ impl Console {
         }
 
         match message {
-            Message::Select(section) => self.section = section,
+            Message::Select(section) => {
+                self.section = section;
+            }
             Message::Tick(now) => {
                 // The gap since the last frame, which is what the bar's easing
                 // needs: a fraction-per-frame chase would settle at a different
                 // speed on a 60Hz screen than on a 144Hz one.
-                let elapsed = now.saturating_duration_since(self.now).as_secs_f32();
+                //
+                // Capped, because `self.now` only moves on a frame and frames
+                // are only asked for while something is animating. A compositor
+                // hitch, or the first tick after the window maps, can be much
+                // longer than a frame; a chase given that as one step arrives
+                // inside it, which is the snap the speed limit exists to prevent.
+                let elapsed =
+                    now.saturating_duration_since(self.now).as_secs_f32().min(FRAME_CAP);
                 self.now = now;
-                if let Some(state) = self.setup.as_mut() {
+                if let Some(state) = self.download.as_mut() {
                     state.advance(elapsed);
                 }
+                if let Some(fading) = self.fading.as_mut() {
+                    *fading += elapsed;
+                    if *fading >= setup::FADE {
+                        self.leave_setup();
+                    }
+                }
+                return Task::batch([self.launch_install(), self.setup_usable()]);
             }
             Message::Hover(section) => {
                 if self.hovered != section {
@@ -471,10 +656,11 @@ impl Console {
                 self.settings.push_to_talk = on;
                 self.toggled_at.insert("push_to_talk", std::time::Instant::now());
                 self.persist();
+                return self.apply_push_to_talk();
             }
-            Message::Refine(on) => {
-                self.settings.refine = on;
-                self.toggled_at.insert("refine", std::time::Instant::now());
+            Message::SetCleanup(level) => {
+                self.settings.cleanup = level;
+                self.toggled_at.insert("cleanup", std::time::Instant::now());
                 self.persist();
             }
             Message::Terminal(on) => {
@@ -513,6 +699,9 @@ impl Console {
                     self.entries = history::recent();
                     self.days = history::daily(CALENDAR_DAYS);
                 }
+                // A restart deferred because the daemon was mid-dictation goes
+                // the moment it is done with it.
+                return self.restart_when_idle();
             }
             Message::Copy(index) => {
                 if let Some(text) = self.entries.get(index).map(|entry| entry.text.clone()) {
@@ -520,7 +709,11 @@ impl Console {
                     return iced::clipboard::write(text);
                 }
             }
-            Message::Daemon(daemon::Event::Disconnected) => self.daemon = daemon::State::default(),
+            Message::Daemon(daemon::Event::Disconnected) => {
+                if believe_disconnect(self.daemon.activity) {
+                    self.daemon = daemon::State::default();
+                }
+            }
             Message::TypingTerm(text) => {
                 self.typing = text;
                 self.term_error = None;
@@ -556,13 +749,6 @@ impl Console {
                     Message::Captured,
                 );
             }
-            Message::DiscardPartial => {
-                match system::discard_partials() {
-                    Ok(()) => self.save_error = None,
-                    Err(err) => self.save_error = Some(err),
-                }
-                self.partial = system::partial_bytes();
-            }
             Message::ResetChord => {
                 self.settings.hotkey = settings::DEFAULT_HOTKEY.to_string();
                 self.chord_error = None;
@@ -587,7 +773,7 @@ impl Console {
                 }
                 self.service_pending = Some(verb);
                 self.service_error = None;
-                if matches!(verb, "start" | "restart") {
+                if verb == "start" {
                     self.daemon.activity = daemon::Activity::Starting;
                 }
                 return Task::perform(async move { system::service(verb) }, move |result| {
@@ -605,7 +791,7 @@ impl Console {
                     }
                     Err(err) => {
                         self.service_error = Some(err);
-                        if matches!(verb, "start" | "restart") {
+                        if verb == "start" {
                             self.daemon = daemon::State::default();
                         }
                     }
@@ -646,62 +832,98 @@ impl Console {
                     Err(err) => self.save_error = Some(err),
                 }
             }
-            // A rerun keeps whatever the screen already knew about the machine,
-            // so pressing Run setup from About does not blank the hardware line
-            // it is about to show again.
-            Message::BeginSetup | Message::RerunSetup => {
-                let rerun = matches!(message, Message::RerunSetup);
-
+            Message::RerunSetup => {
+                // Stop first: the daemon holds both models open, and the point
+                // of this is to watch setup fetch them rather than to leave a
+                // process running on files that no longer exist.
+                let _ = system::service("stop");
+                match system::remove_models() {
+                    Ok(()) => {
+                        self.models = system::models();
+                        self.daemon = daemon::State::default();
+                        return Task::done(Message::BeginSetup);
+                    }
+                    Err(err) => self.service_error = Some(err),
+                }
+            }
+            Message::BeginSetup => {
                 // Demo mode never spawns the installer: the point of it is to
                 // lay this screen out on a machine that has no `flow` binary
                 // at all, and a failure line is not the state worth looking at.
                 if self.demo {
-                    self.setup = Some(setup::State { rerun, ..demo::setup_state() });
+                    self.download = Some(demo::setup_state());
+                    self.showing_setup = true;
                     return Task::none();
                 }
 
-                let (events, handle) = setup::install(false);
-                self.setup = Some(setup::State { handle, rerun, ..setup::State::default() });
-                return Task::batch([
-                    Task::run(events, Message::SetupEvent),
-                    // Asked once, alongside the download rather than before it:
-                    // `flow probe` initialises Vulkan to enumerate cards, and
-                    // nothing should stand between launching Flow and the first
-                    // byte arriving.
-                    Task::perform(async { setup::probe() }, Message::Probed),
-                ]);
+                // Already on setup (a failed fetch, Try again): the veil is
+                // up, so skip the intro and start fetching.
+                let skip = self.showing_setup && self.download.is_some();
+                let mut state = setup::State::new(setup::Handle::default());
+                if skip {
+                    state.skip_intro();
+                }
+                self.download = Some(state);
+                self.showing_setup = true;
+                return Task::none();
+            }
+            Message::StopDownload => {
+                if let Some(state) = self.download.as_mut() {
+                    state.stopped = true;
+                    state.handle.stop();
+                    // Stopped before the installer was even spawned, so no
+                    // `Failed` line is coming to carry the handover. Nothing was
+                    // fetched this run either - and a part file here belongs to
+                    // an earlier one, which is exactly what a resume is for.
+                    if !state.spawned {
+                        self.leave_setup();
+                    }
+                }
             }
             Message::SetupEvent(event) => {
-                let should_start = if let Some(state) = self.setup.as_mut() {
-                    let was_done = state.phase == setup::Phase::Done;
+                if let Some(state) = self.download.as_mut() {
                     state.apply(event);
-                    !was_done && state.phase == setup::Phase::Done && !state.rerun
-                } else {
-                    false
-                };
+                }
 
-                // The download completing is the end of setup, so the daemon
-                // starts here rather than waiting for a navigation button.
-                if should_start {
-                    return self.start_setup_daemon(false);
+                let over = !self.download.as_ref().is_some_and(setup::State::downloading);
+                let stopped =
+                    over && self.download.as_ref().is_some_and(|state| state.stopped);
+
+                // What was downloaded stays downloaded. Stopping used to delete
+                // the part file, on the reasoning that bytes of a model someone
+                // had decided against would sit there with nothing on screen
+                // ever mentioning them - but neither half of that is true any
+                // more. Flow needs both models, so there is no deciding against
+                // one; and Overview carries a banner saying setup is unfinished
+                // with the button that finishes it. The bytes are accounted for.
+                //
+                // What is left is a 2.4 GB download where Stop threw away
+                // everything already fetched. `curl -C -` resumes, so keeping
+                // the file makes Stop mean "not now" instead of "start again".
+                //
+                // It still hands the window over rather than holding them on a
+                // ring that failed: the console opens, incomplete, saying what
+                // is missing and offering to finish. Treating a stop as a
+                // failure would put a Try again in front of the one person who
+                // has already said no.
+                if stopped {
+                    self.leave_setup();
+                    return Task::none();
                 }
-            }
-            Message::Probed(hardware) => {
-                if let Some(state) = self.setup.as_mut() {
-                    state.hardware = hardware;
+
+                // Setup keeps its state until it has faded out; anything else
+                // is done with the moment it stops, and what is on disk has
+                // just changed.
+                if over && !self.showing_setup {
+                    self.download = None;
+                    self.models = system::models();
                 }
+
+                return self.setup_usable();
             }
-            Message::SkipRefine => {
-                if let Some(state) = self.setup.as_mut() {
-                    // Marked before the kill, so the failure the reader is
-                    // about to report is read as the skip it is.
-                    state.skipped = true;
-                    state.handle.stop();
-                }
-            }
-            Message::SetupStarted(result, close_when_started) => {
+            Message::SetupStarted(result) => {
                 let started = result.is_ok();
-                if let Some(state) = self.setup.as_mut() {
+                if let Some(state) = self.download.as_mut() {
                     state.starting_daemon = false;
                     match result {
                         Ok(()) => {
@@ -714,21 +936,16 @@ impl Console {
 
                 if started {
                     self.daemon.activity = daemon::Activity::Starting;
-                    if close_when_started {
-                        self.leave_setup();
-                    }
-                }
-            }
-            Message::FinishSetup => {
-                let ready_to_leave =
-                    self.setup.as_ref().is_some_and(|state| state.rerun || state.daemon_started);
-                if ready_to_leave {
-                    self.leave_setup();
-                } else {
-                    // Automatic startup may have failed. The completion button
-                    // is the focused retry and only leaves setup after systemd
-                    // confirms that Flow stayed running.
-                    return self.start_setup_daemon(true);
+                    // What the veil is about to reveal has to be true before it
+                    // starts moving, not after. `models` was refreshed only in
+                    // `leave_setup`, which runs when the fade ends - so Overview
+                    // spent the whole dissolve showing the "setup isn't
+                    // finished" banner for the setup that had just finished,
+                    // then dropped it as the veil landed.
+                    self.models = system::models();
+                    // Setup's whole job is done, so it dissolves rather than
+                    // waiting to be dismissed. There is nothing on it to read.
+                    self.fading = Some(0.0);
                 }
             }
         }
@@ -755,13 +972,23 @@ impl Console {
         // move between seven screens that have nothing on them yet, and
         // offering it here would be offering the user seven ways to watch the
         // same download from somewhere it cannot be seen.
-        if let Some(state) = &self.setup {
-            return setup::view(state);
-        }
-
         // The rail/pane divider is its own element: a container border applies
         // to all four sides, and only this edge should be drawn.
-        row![self.rail(), vertical_hairline(), self.pane()].into()
+        let console = row![self.rail(), vertical_hairline(), self.pane()];
+
+        let Some(state) = self.download.as_ref().filter(|_| self.showing_setup) else {
+            return console.into();
+        };
+
+        // Setup dissolves into the console rather than being replaced by it.
+        // The console sits underneath so the veil has something to fade over -
+        // to be looked at, and nothing else. `inert` is what stops the pointer
+        // reaching a page that is behind a full-screen overlay.
+        let fade = match self.fading {
+            Some(elapsed) => 1.0 - (elapsed / setup::FADE).clamp(0.0, 1.0),
+            None => 1.0,
+        };
+        stack![inert(console), setup::view(state, fade)].into()
     }
 
     // -- rail ---------------------------------------------------------------
@@ -780,16 +1007,23 @@ impl Console {
             } else {
                 0.0
             };
-            items = items.push(nav(section, selected, warmth));
+            let enabled = !self.incomplete() || section.works_without_models();
+            items = items.push(nav(section, selected, warmth, enabled));
         }
 
         container(
             column![
                 items,
                 Space::new().height(Fill),
-                container(
-                    text(env!("CARGO_PKG_VERSION")).size(11).font(Font::MONOSPACE).color(FAINT)
-                )
+                // A debug build says so, and says when it was made. See
+                // `update::dev_note`.
+                container(column![
+                    text(update::running()).size(11).font(Font::MONOSPACE).color(FAINT),
+                    text(update::dev_note().unwrap_or_default())
+                        .size(10)
+                        .font(Font::MONOSPACE)
+                        .color(FAINT),
+                ])
                 .padding([0, 9]),
             ]
             .spacing(0),
@@ -803,13 +1037,23 @@ impl Console {
     // -- pane ---------------------------------------------------------------
 
     fn pane(&self) -> Element<'_, Message> {
-        let content = match self.section {
+        // A disabled nav item cannot be clicked, but `FLOW_SECTION` can open
+        // one directly and a section can be disabled while it is already open -
+        // stopping setup from Style would leave it on screen with a nav that
+        // says it is unavailable. Overview is where the way out is.
+        let section = if self.incomplete() && !self.section.works_without_models() {
+            Section::Overview
+        } else {
+            self.section
+        };
+
+        let content = match section {
             Section::Overview => self.overview_section(),
             Section::History => self.history_section(),
             Section::Dictation => self.dictation_section(),
             Section::Audio => self.audio_section(),
             Section::Vocabulary => self.vocabulary_section(),
-            Section::Models => self.models_section(),
+            Section::Style => self.style_section(),
             Section::About => self.about_section(),
         };
 
@@ -823,7 +1067,7 @@ impl Console {
         // where every other app puts one - flush against the edge it scrolls.
         // `scroll_pad` owns the right side, on the content, so the bar can
         // sit at the edge while the text keeps its own margin from it.
-        let left = if matches!(self.section, Section::History) {
+        let left = if matches!(self.section, Section::History | Section::Style) {
             PANE_INSET - ENTRY_INSET
         } else {
             PANE_INSET
@@ -853,31 +1097,57 @@ impl Console {
     /// the settings that decide whether Flow can work - and it is also what
     /// buys back the height the heading costs.
     fn overview_section(&self) -> Element<'_, Message> {
-        let running = self.daemon.activity != daemon::Activity::Offline;
+        // Three states, and the first one rules out the other two:
+        //
+        //   Not running · needs setup   (no action - the banner owns the way out)
+        //   Running                     [Stop]
+        //   Not running                 [Start]
+        //
+        // An unfinished setup is reported as its own state rather than as the
+        // daemon's, because the daemon's answer cannot be trusted there: a
+        // process left over from before the models went missing still answers
+        // the socket, and "Flow is running" over a half-installed product is
+        // the one sentence this page must never say.
+        let status = status_of(self.incomplete(), self.daemon.activity);
+        let needs_setup = status == Status::NeedsSetup;
+        let running = status == Status::Running;
         let installed = self.models.iter().filter(|m| m.installed).count();
-        let (label, dot) = activity_label(self.daemon.activity);
-        let service_action: Element<'_, Message> = match service_action_label(
-            self.service_pending,
-            running,
-        ) {
-            Some(action) => action_msg(
-                action,
-                !running,
-                Message::Service(if running { "restart" } else { "start" }),
-            ),
-            None => Space::new().height(0).into(),
+        // Red, not grey. Grey reads as a resting state, and this is not one:
+        // the product cannot dictate until it is dealt with. It is the same
+        // severity as the missing-model notes below it, and the two saying it
+        // in different colours would make one of them look optional.
+        let (label, dot) = if needs_setup {
+            ("Not running, needs setup", ERR)
+        } else {
+            activity_label(self.daemon.activity)
         };
-
-        let header = row![
+        let verb = if running { "stop" } else { "start" };
+        // Always in the row, even while systemd is mid-verb. Pulling it out
+        // used to let the Fill space eat its width, so the status walked right
+        // on every start and stop. Disabled is how a second press is refused.
+        //
+        // Gone entirely while setup is unfinished, though, rather than greyed:
+        // a disabled Start still says that starting is the answer and that
+        // something is stopping you. Nothing is - the models are not there, and
+        // the only move is Finish setup in the banner below. Two controls
+        // offering the way forward is one control too many.
+        let mut header = row![
             text("Overview").size(22).color(FG),
             Space::new().width(Fill),
             pip(dot),
             Space::new().width(9),
-            text(label).size(13).color(MUTED),
-            Space::new().width(16),
-            service_action,
+            text(label).size(13).color(dot).wrapping(text::Wrapping::None),
         ]
         .align_y(iced::Center);
+
+        if !needs_setup {
+            header = header.push(Space::new().width(16));
+            header = header.push(action_msg(
+                service_action_label(running),
+                !running,
+                self.service_pending.is_none().then_some(Message::Service(verb)),
+            ));
+        }
 
         // The last two weeks, so every number on the KPI row has something to
         // be measured against. The buffer is two years, so these always exist
@@ -928,7 +1198,16 @@ impl Console {
         // heading is in the scroll, same as every other page: a window this
         // short has to give the cards the room, not keep a title parked over
         // them.
-        scroll(column![
+        let mut page = column![];
+        // Above everything, because an unfinished install is not a fact about
+        // this page - it is a fact about the product, and the way out of it is
+        // the only thing on screen worth pressing.
+        if let Some(banner) = self.finish_setup_banner() {
+            page = page.push(banner);
+            page = page.push(Space::new().height(GAP));
+        }
+
+        scroll(page.push(column![
             header,
             Space::new().height(SCROLL_PAD),
             self.setup_card(installed),
@@ -936,7 +1215,41 @@ impl Console {
             kpis,
             Space::new().height(GAP),
             calendar_card(&self.days),
-        ])
+        ]))
+    }
+
+
+    /// The way out of a stopped setup.
+    ///
+    /// Only reachable by having pressed Stop, so it is worded as the resumption
+    /// of something started rather than as an offer of something extra - and it
+    /// does not say what the download costs, because that was on screen when
+    /// the decision was made.
+    fn finish_setup_banner(&self) -> Option<Element<'_, Message>> {
+        if !self.incomplete() {
+            return None;
+        }
+
+        Some(
+            container(
+                row![
+                    text("Setup isn't finished, so Flow isn't running yet.")
+                        .size(12.5)
+                        .color(ACCENT),
+                    Space::new().width(Fill),
+                    action_msg("Finish setup", true, Message::BeginSetup),
+                ]
+                .align_y(iced::Center),
+            )
+            .padding([10, 12])
+            .width(Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(mix(BG, ACCENT, 0.055))),
+                border: Border { radius: 8.0.into(), width: 1.0, color: mix(BG, ACCENT, 0.22) },
+                ..Default::default()
+            })
+            .into(),
+        )
     }
 
     /// The three settings that decide whether Flow can work at all, and
@@ -965,7 +1278,7 @@ impl Console {
         ];
 
         let mut body = column![];
-        let notes = self.attention(installed);
+        let notes = self.attention();
         // Notes sit close together - they are one list of problems - and the
         // rule under them takes `ROW_PAD` on both sides, the same as every
         // other divider in the console. Borrowing a tighter gap above it and
@@ -1036,7 +1349,7 @@ impl Console {
     /// order it would bite. Empty when there is nothing to do, and the status
     /// card then collapses to one line - a dashboard that always has a row of
     /// warnings in it teaches people not to read the warnings.
-    fn attention(&self, installed: usize) -> Vec<(Color, String)> {
+    fn attention(&self) -> Vec<(Color, String)> {
         let mut notes = Vec::new();
         if let Some(problem) = &self.service_error {
             notes.push((ERR, problem.clone()));
@@ -1044,19 +1357,23 @@ impl Console {
         if let Some(problem) = &self.daemon.problem {
             notes.push((ERR, problem.clone()));
         }
-        if installed < self.models.len() {
-            notes.push((
-                ERR,
-                "Models are missing - Flow cannot transcribe until they install.".to_string(),
-            ));
-        }
+        // A missing model is not listed here. The banner above this card
+        // already says setup is unfinished and carries the button that fixes
+        // it, and the Models fact below counts what arrived - a third line
+        // saying the same thing only splits one answer into three.
         if let update::Status::Available(tag) = &self.update {
             notes.push((ACCENT, format!("{tag} is available to install.")));
         }
-        if self.saved {
+        // Only push-to-talk ever needs saying, and only while it is waiting.
+        // Everything else this window writes is picked up by the running daemon
+        // on its own, so a line after every save was telling people to go and
+        // do a chore that did not exist - and never naming which setting, since
+        // it did not know either.
+        if self.restart_pending {
             notes.push((
                 MUTED,
-                "Settings changed - restart Flow for them to take effect.".to_string(),
+                "Push to talk changed - Flow will restart itself as soon as it is idle."
+                    .to_string(),
             ));
         }
         notes
@@ -1107,17 +1424,17 @@ impl Console {
         let mut rows: Vec<Element<Message>> = vec![
             setting(
                 "Push to talk",
-                "Flow watches the chord itself, so no compositor binding is needed. Turning it on needs a restart.",
+                "Flow watches the chord itself, so no compositor binding is needed. Changing this restarts Flow.",
                 toggle(self.settings.push_to_talk, self.travel("push_to_talk"), Message::PushToTalk),
             ),
             setting(
                 "Chord",
-                // Not "applies straight away", which it never did: the daemon
-                // reads the chord once at startup because the thread watching
-                // it would have to be torn down and rebuilt. Saying otherwise
-                // sent people off pressing a combination that was never going
-                // to fire, and blaming their keyboard for it.
-                "Held down while you speak. Restart Flow for a change to take effect.",
+                // This did once need a restart, and the note saying so outlived
+                // the reason: the chord is shared with the config watcher now
+                // and `hotkey::spawn` compares it on every key, so a rebinding
+                // is live by the next press. The stale line was sending people
+                // off to restart for nothing.
+                "Held down while you speak. Takes effect straight away.",
                 row![
                     text(if self.capturing {
                         "press the chord…".to_string()
@@ -1152,11 +1469,6 @@ impl Console {
                 ]
                 .align_y(iced::Center)
                 .into(),
-            ),
-            setting(
-                "Refine transcript",
-                "Removes filler and fixes punctuation with the local model. Turning it back on needs a restart.",
-                toggle(self.settings.refine, self.travel("refine"), Message::Refine),
             ),
             setting(
                 "Terminal paste chord",
@@ -1322,104 +1634,109 @@ impl Console {
         ])
     }
 
-    fn models_section(&self) -> Element<'_, Message> {
-        // Bound so the borrows in the rows outlive their construction.
-        let sizes: Vec<String> =
-            self.models.iter().map(|model| system::human_bytes(model.bytes)).collect();
-
-        let rows: Vec<Element<Message>> = self
-            .models
-            .iter()
-            .zip(&sizes)
-            .map(|(model, size)| {
-                model_row(model.label, model.detail.clone(), size.clone(), model.installed)
-            })
-            .collect();
-
-        // Only when there is something stranded. A row explaining that you
-        // have no unfinished downloads would be a row about nothing.
-        let mut rows = rows;
-        if self.partial > 0 {
-            rows.push(self.partial_row());
+    /// How much Flow is allowed to change what you said.
+    ///
+    /// Four rows rather than a slider or a dropdown: the levels differ by what
+    /// they are permitted to touch, which is a difference you can only judge by
+    /// reading an example of each. A dropdown shows one option at a time and
+    /// makes you remember the rest.
+    ///
+    /// The example under each title is the same sentence at every level, so the
+    /// page demonstrates the difference instead of asserting it.
+    fn style_section(&self) -> Element<'_, Message> {
+        // Cards, not settings rows: each already carries its own border and
+        // tint, so a hairline between them would double the line. A small
+        // gap does the separating instead, same as History's entries.
+        let mut list = column![];
+        for (index, level) in settings::Cleanup::ALL.into_iter().enumerate() {
+            if index > 0 {
+                list = list.push(Space::new().height(4));
+            }
+            list = list.push(self.cleanup_row(level));
         }
 
-        let total = format!(
-            "{} in {}",
-            system::human_bytes(self.models.iter().map(|m| m.bytes).sum()),
-            flow_paths::models_dir().display()
-        );
-        let all_installed = self.models.iter().all(|model| model.installed);
-
-        section_shell(
-            "Models",
-            "Both models run on this machine. Nothing you say leaves it.",
-            rows,
-            Some(path_cta(
-                text(total).size(12).font(Font::MONOSPACE).color(FAINT).into(),
-                (!all_installed).then(|| {
-                    action_msg(
-                        "Install models",
-                        true,
-                        // The same screen the first run uses, so a download
-                        // here gets the same progress bar rather than a button
-                        // that says "Installing…" for twenty minutes.
-                        Message::RerunSetup,
-                    )
-                }),
-            )),
+        scroll_inset(
+            column![
+                container(heading(
+                    "Style",
+                    "How much Flow may change what you said. It never leaves this machine.",
+                ))
+                .padding([0.0, ENTRY_INSET])
+                .width(Fill),
+                list,
+            ],
+            PAGE_TOP,
+            CONTENT_RIGHT - ENTRY_INSET,
         )
     }
 
-    /// What a skipped or interrupted download left behind, and the way to be
-    /// rid of it.
-    ///
-    /// Kept by default because curl resumes from it, so changing your mind
-    /// costs only the bytes that never arrived. This row exists for the other
-    /// case: deciding you never wanted the model at all, which the file itself
-    /// has no way of knowing.
-    fn partial_row(&self) -> Element<'_, Message> {
-        container(
+    /// One selectable level. The whole row is the target, because a row with a
+    /// radio at one end trains you to aim at the radio.
+    fn cleanup_row(&self, level: settings::Cleanup) -> Element<'_, Message> {
+        let (title, blurb) = level.describe();
+        let chosen = self.settings.cleanup == level;
+
+        // Struck through at None, because that row's example is the one thing
+        // on the page that is not an improvement - it is what you actually said.
+        let example = text(level.example())
+            .size(12)
+            .font(Font::MONOSPACE)
+            .color(if chosen { MUTED } else { FAINT });
+
+        let body = column![
             row![
-                column![
-                    text("Unfinished download").size(13.5).color(FG),
-                    Space::new().height(3),
-                    text(
-                        "From an install that stopped early. Installing again resumes from it \
-                         instead of starting over.",
-                    )
-                    .size(12)
-                    .color(FAINT),
-                ]
-                .width(Length::FillPortion(3)),
-                Space::new().width(20),
-                container(
-                    row![
-                        text(system::human_bytes(self.partial))
-                            .size(12)
-                            .font(Font::MONOSPACE)
-                            .color(FAINT),
-                        Space::new().width(14),
-                        action_msg("Discard", false, Message::DiscardPartial),
-                    ]
-                    .align_y(iced::Center),
-                )
-                .width(Length::FillPortion(2))
-                .align_x(iced::alignment::Horizontal::Right),
+                text(title).size(13.5).color(if chosen { FG } else { MUTED }),
+                Space::new().width(Fill),
+                pip(if chosen { OK } else { mix(BG, FG, 0.18) }),
             ]
             .align_y(iced::Center),
-        )
-        .padding([ROW_PAD, 0.0])
-        .into()
+            Space::new().height(LABEL_GAP),
+            text(blurb).size(12).color(MUTED),
+            Space::new().height(6),
+            example,
+        ];
+
+        let tint = if chosen { mix(BG, OK, 0.05) } else { Color::TRANSPARENT };
+        iced::widget::button(container(body).padding([10, 12]).width(Fill))
+            .padding(0)
+            .on_press(Message::SetCleanup(level))
+            .style(move |_, status| iced::widget::button::Style {
+                background: Some(Background::Color(match status {
+                    iced::widget::button::Status::Hovered if !chosen => mix(BG, FG, 0.04),
+                    _ => tint,
+                })),
+                border: Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: if chosen { mix(BG, OK, 0.3) } else { Color::TRANSPARENT },
+                },
+                ..Default::default()
+            })
+            .into()
     }
+
+
 
     fn about_section(&self) -> Element<'_, Message> {
         // Bound so the borrows outlive the rows built from them.
+        // Which engines these are is a fact about the build, not a choice -
+        // the same class of thing as the version. They stopped being a screen
+        // of their own when the install began fetching both.
         let rows: Vec<Element<Message>> = vec![
             self.version_row(),
-            self.setup_row(),
+            fact_row("Speech", self.model_fact(0)),
+            fact_row("Cleanup", self.model_fact(1)),
             fact_row("Session", self.session.clone()),
             fact_path("Config", &settings::config_path()),
             fact_path("History", &history::path()),
+            // The way back to a clean install. Here rather than on Overview
+            // because it belongs with the two model rows above it - it is the
+            // thing you do when one of them is wrong.
+            setting(
+                "Run setup again",
+                "Deletes both models and fetches them from scratch. About 3 GB.",
+                action_msg("Run setup", false, Message::RerunSetup),
+            ),
         ];
 
         section_shell(
@@ -1430,39 +1747,10 @@ impl Console {
         )
     }
 
-    /// The way back to the first-run screen.
-    ///
-    /// It is not only for a machine that never finished: the installer verifies
-    /// every file against its pinned hash, so running it again repairs a model
-    /// that was interrupted, truncated or deleted, and re-reads which card the
-    /// refining will use. That makes it the honest answer to "something is
-    /// wrong with my models" as well as to "I skipped that, I want it now".
-    fn setup_row(&self) -> Element<'_, Message> {
-        container(
-            row![
-                column![
-                    text("Setup").size(13.5).color(FG),
-                    Space::new().height(3),
-                    text("Check both models against their hashes, and fetch whatever is missing.")
-                        .size(12)
-                        .color(FAINT),
-                ]
-                .width(Length::FillPortion(3)),
-                Space::new().width(20),
-                container(action_msg("Run setup", false, Message::RerunSetup))
-                    .width(Length::FillPortion(2))
-                    .align_x(iced::alignment::Horizontal::Right),
-            ]
-            .align_y(iced::Center),
-        )
-        .padding([ROW_PAD, 0.0])
-        .into()
+    fn model_fact(&self, index: usize) -> String {
+        self.models.get(index).map(system::Model::fact).unwrap_or_else(|| "unknown".into())
     }
 
-    /// What is running, whether anything newer exists, and the one button that
-    /// acts on the answer - all on the row that already says which version this
-    /// is. An update check belongs beside the version it is about, not on a
-    /// second row explained by a button in the far corner of the pane.
     fn version_row(&self) -> Element<'_, Message> {
         let (dot, note) = update_state(&self.update);
 
@@ -1480,7 +1768,7 @@ impl Console {
             row![
                 column![
                     text("Version").size(13.5).color(FG),
-                    Space::new().height(3),
+                    Space::new().height(LABEL_GAP),
                     text(note).size(12).color(FAINT),
                 ],
                 Space::new().width(Fill),
@@ -1497,6 +1785,14 @@ impl Console {
     }
 }
 
+/// "No socket yet" is what a start looks like from the outside: systemd has
+/// forked the process, but Ready is only published after the models load and
+/// the mic warms. Believing that gap used to flash "isn't running" for a
+/// second in the middle of Starting.
+fn believe_disconnect(activity: daemon::Activity) -> bool {
+    activity != daemon::Activity::Starting
+}
+
 /// The line and dot colour for each activity the daemon can report. Offline
 /// and Ready both read as calm (no accent) - the accent is reserved for the
 /// two states where Flow is actually doing something with your voice.
@@ -1504,14 +1800,27 @@ fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
     match activity {
         daemon::Activity::Offline => ("Flow isn't running", FAINT),
         daemon::Activity::Starting => ("Starting…", STARTING),
-        daemon::Activity::Ready => ("Flow is ready", FAINT),
+        // Ready means the daemon is up and waiting for the hotkey, which is
+        // the state a person calls running - and a grey dot beside it read as
+        // "nothing is happening" rather than "everything is fine". Green here
+        // and green while listening are the same claim at two volumes: Flow is
+        // alive. The word beside it is what separates idle from live.
+        daemon::Activity::Ready => ("Flow is running", OK),
         daemon::Activity::Listening => ("Listening", ACCENT),
         daemon::Activity::Working => ("Refining your words", ACCENT),
     }
 }
 
-fn service_action_label(pending: Option<&str>, running: bool) -> Option<&'static str> {
-    pending.is_none().then_some(if running { "Restart" } else { "Start" })
+/// The one thing to do to the service, which is whichever of its two states
+/// it is not in. Restart used to live here, and a control that reads the same
+/// whether Flow is up or down says nothing about which it is; Start and Stop
+/// are the status told twice, once as a word and once as an offer.
+fn service_action_label(running: bool) -> &'static str {
+    if running {
+        "Stop"
+    } else {
+        "Start"
+    }
 }
 
 /// The dot's colour and the line beside it, for each thing an update check can
@@ -1529,6 +1838,31 @@ fn update_state(status: &update::Status) -> (Color, String) {
     }
 }
 
+/// The three states the Overview can report, and the only three there are.
+///
+/// `NeedsSetup` wins over whatever the socket says. A daemon left running from
+/// before the models went missing still answers it, and reporting that as
+/// Running would put "Flow is running" over a product that cannot dictate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+    /// Setup unfinished. No start, no stop - the banner owns the way out.
+    NeedsSetup,
+    /// Up, and can be stopped.
+    Running,
+    /// Down, and can be started.
+    Stopped,
+}
+
+fn status_of(incomplete: bool, activity: daemon::Activity) -> Status {
+    if incomplete {
+        Status::NeedsSetup
+    } else if activity == daemon::Activity::Offline {
+        Status::Stopped
+    } else {
+        Status::Running
+    }
+}
+
 /// Read the keyboard until a chord arrives, on whatever thread the runtime
 /// gives us. Split out so the async block above stays a one-liner.
 fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<String> {
@@ -1537,9 +1871,39 @@ fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) 
 
 #[cfg(test)]
 mod tests {
-    use super::{activity_label, service_action_label, Section};
+    use super::{
+        activity_label, believe_disconnect, service_action_label, status_of, Section, Status,
+    };
     use crate::daemon;
     use crate::theme::STARTING;
+
+    /// Running and Stopped are states of a product that is installed. Neither
+    /// may be reported while a model is missing - a daemon left over from
+    /// before that happened still answers the socket, and believing it would
+    /// put "Flow is running" over something that cannot dictate a word.
+    #[test]
+    fn an_unfinished_setup_outranks_whatever_the_socket_says() {
+        for activity in [
+            daemon::Activity::Offline,
+            daemon::Activity::Starting,
+            daemon::Activity::Ready,
+            daemon::Activity::Listening,
+            daemon::Activity::Working,
+        ] {
+            assert_eq!(
+                status_of(true, activity),
+                Status::NeedsSetup,
+                "{activity:?} was reported as something other than needing setup"
+            );
+        }
+    }
+
+    #[test]
+    fn a_finished_setup_reports_the_daemon() {
+        assert_eq!(status_of(false, daemon::Activity::Offline), Status::Stopped);
+        assert_eq!(status_of(false, daemon::Activity::Ready), Status::Running);
+        assert_eq!(status_of(false, daemon::Activity::Working), Status::Running);
+    }
 
     /// The lookup reads the nav labels, so renaming a section would otherwise
     /// silently turn FLOW_SECTION into "open Overview" with nothing to say so.
@@ -1566,8 +1930,17 @@ mod tests {
     #[test]
     fn startup_is_named_once_in_the_status() {
         assert_eq!(activity_label(daemon::Activity::Starting), ("Starting…", STARTING));
-        assert_eq!(service_action_label(Some("start"), false), None);
-        assert_eq!(service_action_label(Some("restart"), true), None);
-        assert_eq!(service_action_label(None, false), Some("Start"));
+        assert_eq!(service_action_label(false), "Start");
+        // The action is the state it is not in - never a word that reads the
+        // same either way.
+        assert_eq!(service_action_label(true), "Stop");
+    }
+
+    #[test]
+    fn a_missing_socket_during_startup_is_not_offline() {
+        assert!(!believe_disconnect(daemon::Activity::Starting));
+        assert!(believe_disconnect(daemon::Activity::Ready));
+        assert!(believe_disconnect(daemon::Activity::Offline));
+        assert!(believe_disconnect(daemon::Activity::Listening));
     }
 }

@@ -101,6 +101,11 @@ pub(crate) const CONTENT_RIGHT: f32 = PANE_INSET;
 /// History keeps its text on the page grid while the hover surface reaches
 /// past it. The same value is the row's inner inset and the surface's bleed.
 pub(crate) const ENTRY_INSET: f32 = 12.0;
+/// Between a row's label and the line under it - a description, a filename, a
+/// version note. One value because it is one relationship: the second line
+/// belongs to the label above it, and three rows that each guessed at that gap
+/// are three rows that eventually disagree.
+pub(crate) const LABEL_GAP: f32 = 4.0;
 /// Top and bottom padding for one row in a settings list, on both sides of
 /// every hairline between them. Anything else that borders a hairline - the
 /// footer's, for one - uses this too, so a divider always has the same air
@@ -146,4 +151,11 @@ pub(crate) fn mix(from: Color, to: Color, t: f32) -> Color {
         from.b + (to.b - from.b) * t,
         from.a + (to.a - from.a) * t,
     )
+}
+
+/// A colour arriving from the page ground. Iced paints text and buttons at
+/// full opacity regardless of `Color.a`, so a fade has to walk the RGB or
+/// the label pops in already painted.
+pub(crate) fn emerge(colour: Color, t: f32) -> Color {
+    mix(BG, colour, t)
 }

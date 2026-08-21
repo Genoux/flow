@@ -41,8 +41,10 @@ COMMANDS
     version          Print the version
 
 FLAGS
-    --speech-only    install: skip the optional refining model
+    --speech-only    install: the speech model only
+    --refine-only    install: the refining model only
     --porcelain      install: report progress as lines, for the setup screen
+    --plan           install: print what would be fetched, and fetch nothing
     --raw            Skip the refining model for this run
     --terminal       Type the text out instead of pasting it
     --no-ptt         Do not watch the hotkey
@@ -80,13 +82,20 @@ fn main() -> Result<()> {
         Some("start") => return ipc::send(ipc::START),
         Some("stop") => return ipc::send(ipc::STOP),
         Some("install") => {
-            let speech_only = args.iter().any(|a| a == "--speech-only");
+            let want = install::Want::from_args(&args);
+            // What an install would fetch, without fetching it. Always the
+            // machine-readable rendering: this exists for the Models screen,
+            // which has to name a model's size before offering to fetch it.
+            if args.iter().any(|a| a == "--plan") {
+                install::plan_reported(want, &mut install::to_console);
+                return Ok(());
+            }
             // The console drives the same installer and needs numbers rather
             // than a bar, so it asks for the machine-readable rendering.
             if args.iter().any(|a| a == "--porcelain") {
-                return install::run_reported(speech_only, &mut install::to_console);
+                return install::run_reported(want, &mut install::to_console);
             }
-            return install::run(speech_only);
+            return install::run(want);
         }
         Some("probe") => return probe(),
         Some("logs") => return logs(&args[1..]),
@@ -141,54 +150,87 @@ fn main() -> Result<()> {
         );
         bail!("model not found at {} - run `flow install`", dir.display());
     }
+    // The cleanup model is required too, and required even at `cleanup = none`.
+    //
+    // Not a matter of taste: `cleanup` is read live, once per dictation, but
+    // the refiner is loaded once at startup. A daemon that started without the
+    // weights can never honour a later switch to Light - the level changes, the
+    // output does not, and nothing on screen explains why. Demanding the file
+    // here is what makes the Style screen's four levels mean anything at all.
+    //
+    // Refusing rather than degrading is also the honest version of what Flow
+    // now is. Both models arrive together and a machine missing one is a
+    // half-finished install, not a smaller Flow - so it stops, says which half
+    // is missing, and the console offers to finish the job.
+    // Only the daemon. `flow foo.wav` benchmarks the recogniser and `flow
+    // retry` re-runs one dictation - both are diagnostics, and refusing to
+    // measure STT because a second model is absent would be exactly the kind
+    // of unhelpful strictness this gate exists to avoid. `install` returns long
+    // before here, so there is no way to need the model in order to fetch it.
+    let cleanup_model = refine::model_path();
+    if matches!(command(&args), Some("daemon")) && !cleanup_model.is_file() {
+        notify::failure(
+            "Flow can't start",
+            "The cleanup model is missing. Run `flow install` to fetch it.",
+        );
+        bail!("model not found at {} - run `flow install`", cleanup_model.display());
+    }
+    // Bound before the loading starts, not after it. The console shows
+    // "Starting…" from the moment it asks systemd for a start, and the only
+    // thing that can honestly end that is this process saying so. Between here
+    // and `ready` sit a 650 MB recogniser, 2.5 GB of refining weights when
+    // refining is on, and a two-second microphone warm-up - seconds in which a
+    // socket that did not exist yet read as "Flow isn't running" in the middle
+    // of Flow starting. The reporter already opens in `Starting` and sends
+    // that snapshot to whoever connects, so the window has something true to
+    // show for the whole wait.
+    //
+    // Only for the daemon: `spawn` unlinks the socket path before it binds, so
+    // a `flow retry` doing this would cut the running daemon off from the
+    // console it was talking to.
+    let reporter = matches!(command(&args), Some("daemon")).then(status::Reporter::spawn);
     let mut engine = stt::Stt::load(&dir)?;
 
     match command(&args) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
         Some("retry") => {
             let back = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-            retry(&mut engine, back, settings.refine, settings.gpu)
+            retry(&mut engine, back, settings.cleanup, settings.gpu)
         }
         Some("daemon") => {
-            // Refining is the point of the tool, so it stays on unless the config
-            // or --raw turns it off, or the model is missing.
-            let refiner = if settings.refine {
-                match refine::Refiner::load(
-                    &refine::model_path(),
-                    refine::vocabulary(),
-                    settings.gpu,
-                ) {
-                    Ok(refiner) => {
-                        refiner.warm_up();
-                        Some(refiner)
-                    }
-                    Err(err) => {
-                        // Dictation still works, so this is not fatal - but the
-                        // output silently becomes raw transcript, and without a
-                        // word here that reads as the tool getting worse.
-                        //
-                        // Only when the file is actually there, though. Setup
-                        // lets people skip this model on purpose, and popping a
-                        // failure notification on every login for a choice they
-                        // made once is nagging, not informing - the console's
-                        // Models screen already says it is missing and offers
-                        // the button that fetches it. A model that is present
-                        // and still will not load is a real fault and does say
-                        // so: a corrupt file or a card that cannot hold it are
-                        // both things the user would otherwise never find out.
-                        if refine::model_path().is_file() {
-                            notify::failure(
-                                "Flow: refining disabled",
-                                "Dictation works, but text will be unpunctuated. \
-                                 See `flow logs` for why the model would not load.",
-                            );
-                        }
-                        eprintln!("refining model: {err}");
-                        None
-                    }
+            // Loaded whatever the level says, including `none`.
+            //
+            // The level is a live setting and this is a startup cost, so tying
+            // the two together makes the setting a lie in one direction: a
+            // daemon started at `none` could never be switched to Light without
+            // a restart, which is exactly the trap the old `refine = false`
+            // had. Someone who wants the VRAM back turns Flow off, not the dial
+            // down.
+            //
+            // Still not fatal when it will not load, and now that is a real
+            // fault rather than a choice: startup already refused to get this
+            // far without the file, so reaching here means the weights exist
+            // and something else is wrong - a corrupt download, or a card that
+            // cannot hold them. Dictation carries on at raw transcripts, which
+            // is worth more than no dictation, and the notification says so.
+            let refiner = match refine::Refiner::load(
+                &refine::model_path(),
+                refine::vocabulary(),
+                settings.gpu,
+            ) {
+                Ok(refiner) => {
+                    refiner.warm_up();
+                    Some(refiner)
                 }
-            } else {
-                None
+                Err(err) => {
+                    notify::failure(
+                        "Flow: cleanup disabled",
+                        "Dictation works, but text will not be cleaned up. \
+                         See `flow logs` for why the model would not load.",
+                    );
+                    eprintln!("cleanup model: {err}");
+                    None
+                }
             };
             // Shared so the file watcher can swap in new values while the
             // daemon runs. The chord and push_to_talk are read once below:
@@ -202,6 +244,7 @@ fn main() -> Result<()> {
                 settings.push_to_talk,
                 refiner,
                 live,
+                reporter.expect("bound above for the daemon command"),
             )
         }
         None => record_once(&mut engine, DEFAULT_RECORD_SECONDS),
@@ -248,7 +291,12 @@ fn wants_usage(args: &[String]) -> bool {
 /// recogniser three times: the transcript people actually receive has been
 /// through refining, so a retry that stopped at the raw text would answer a
 /// question nobody asked.
-fn retry(engine: &mut stt::Stt, back: usize, refine_wanted: bool, gpu: Option<usize>) -> Result<()> {
+fn retry(
+    engine: &mut stt::Stt,
+    back: usize,
+    cleanup: refine::Cleanup,
+    gpu: Option<usize>,
+) -> Result<()> {
     let takes = recorded_takes()?;
     let Some(raw_path) = takes.iter().rev().nth(back) else {
         bail!(
@@ -277,11 +325,11 @@ fn retry(engine: &mut stt::Stt, back: usize, refine_wanted: bool, gpu: Option<us
         println!("denoised  {denoised_text}");
     }
 
-    if !refine_wanted {
+    if !cleanup.wants_model() {
         return Ok(());
     }
     match refine::Refiner::load(&refine::model_path(), refine::vocabulary(), gpu) {
-        Ok(refiner) => match refiner.refine(&raw_text) {
+        Ok(refiner) => match refiner.refine(&raw_text, cleanup) {
             Ok(refined) => println!("refined   {refined}"),
             Err(err) => eprintln!("refining failed: {err}"),
         },
@@ -404,6 +452,7 @@ fn daemon(
     ptt: bool,
     refiner: Option<refine::Refiner>,
     live: Live,
+    reporter: status::Reporter,
 ) -> Result<()> {
     let device = audio::open_device()?;
     if let Some(name) = audio::default_source_name() {
@@ -418,7 +467,6 @@ fn daemon(
 
     let mut injector = inject::Injector::new()?;
     let overlay = overlay::Overlay::spawn(capture.monitor());
-    let reporter = status::Reporter::spawn();
 
     duck::restore_stale();
 
@@ -864,13 +912,13 @@ fn handle(
 ) -> Result<()> {
     // One read for the whole of this dictation, so a file change part-way
     // through cannot refine the text but paste it with the other chord.
-    let (terminal, denoise_audio, record_debug, refine_wanted) = {
+    let (terminal, denoise_audio, record_debug, cleanup) = {
         let config = live.lock().expect("config");
         (
             config.terminal,
             config.denoise,
             config.record_debug,
-            config.refine,
+            config.cleanup,
         )
     };
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
@@ -968,12 +1016,12 @@ fn handle(
     // A refining failure must never cost the user their words, so the raw
     // transcript stands in whenever the model errors or returns nothing.
     //
-    // `refine_wanted` is read live, so turning it off takes effect on the next
-    // dictation. Turning it back on only works if the model was loaded at
-    // startup - loading one here would stall the paste for several seconds,
-    // which is exactly the trade this whole path refuses to make.
-    let final_text = match refiner.filter(|_| refine_wanted) {
-        Some(refiner) => match refiner.refine(&text) {
+    // `cleanup` is read live, so lowering it takes effect on the next dictation.
+    // Raising it off `none` only works if the model was loaded at startup -
+    // loading one here would stall the paste for several seconds, which is
+    // exactly the trade this whole path refuses to make.
+    let final_text = match refiner.filter(|_| cleanup.wants_model()) {
+        Some(refiner) => match refiner.refine(&text, cleanup) {
             Ok(refined) if !refined.trim().is_empty() => refined,
             Ok(_) => {
                 eprintln!("refining returned nothing, using raw transcript");
@@ -1002,6 +1050,7 @@ fn handle(
     // file, so it is there before the daemon starts and survives it stopping.
     history::append(
         &final_text,
+        &text,
         spoken,
         injected.as_millis(),
         history::now(),

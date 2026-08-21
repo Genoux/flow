@@ -3,6 +3,8 @@
 //! Run explicitly:
 //!   cargo test --release --test vocabulary -- --nocapture --ignored
 
+use flow::refine::Cleanup;
+
 const MANGLED: &[&str] = &[
     // What Parakeet actually produced when the speaker said "Flow".
     "so this is a test recording from the application film",
@@ -22,7 +24,7 @@ fn compare_with_and_without_vocabulary() {
     let bare = flow::refine::Refiner::load(&path, vec![], None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("no vocab:   {:?}", bare.refine_within(raw, std::time::Duration::from_secs(120)).expect("refine"));
+        eprintln!("no vocab:   {:?}", bare.refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light).expect("refine"));
     }
     drop(bare);
 
@@ -35,6 +37,6 @@ fn compare_with_and_without_vocabulary() {
     let informed = flow::refine::Refiner::load(&path, terms, None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("with vocab: {:?}", informed.refine_within(raw, std::time::Duration::from_secs(120)).expect("refine"));
+        eprintln!("with vocab: {:?}", informed.refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light).expect("refine"));
     }
 }
