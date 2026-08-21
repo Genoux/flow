@@ -24,7 +24,11 @@ fn compare_with_and_without_vocabulary() {
     let bare = flow::refine::Refiner::load(&path, vec![], None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("no vocab:   {:?}", bare.refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light).expect("refine"));
+        eprintln!(
+            "no vocab:   {:?}",
+            bare.refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light)
+                .expect("refine")
+        );
     }
     drop(bare);
 
@@ -37,6 +41,11 @@ fn compare_with_and_without_vocabulary() {
     let informed = flow::refine::Refiner::load(&path, terms, None).expect("load");
     for raw in MANGLED {
         eprintln!("\nraw:        {raw:?}");
-        eprintln!("with vocab: {:?}", informed.refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light).expect("refine"));
+        eprintln!(
+            "with vocab: {:?}",
+            informed
+                .refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light)
+                .expect("refine")
+        );
     }
 }

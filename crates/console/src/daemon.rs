@@ -39,7 +39,11 @@ pub struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self { activity: Activity::Offline, problem: None, words: 0 }
+        Self {
+            activity: Activity::Offline,
+            problem: None,
+            words: 0,
+        }
     }
 }
 
@@ -60,7 +64,10 @@ impl State {
             _ => return,
         };
 
-        self.problem = value.get("problem").and_then(|p| p.as_str()).map(str::to_owned);
+        self.problem = value
+            .get("problem")
+            .and_then(|p| p.as_str())
+            .map(str::to_owned);
 
         self.words = value.get("words").and_then(|w| w.as_u64()).unwrap_or(0) as usize;
     }

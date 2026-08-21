@@ -36,7 +36,10 @@ const MODIFIERS: [(KeyCode, &str); 8] = [
 const ORDER: [&str; 4] = ["super", "ctrl", "alt", "shift"];
 
 fn modifier_word(key: KeyCode) -> Option<&'static str> {
-    MODIFIERS.iter().find(|(code, _)| *code == key).map(|(_, word)| *word)
+    MODIFIERS
+        .iter()
+        .find(|(code, _)| *code == key)
+        .map(|(_, word)| *word)
 }
 
 /// The keyboards worth reading, which is not the same as all of them.
@@ -73,7 +76,10 @@ fn keyboards() -> Vec<Device> {
         };
         // Probed with a letter rather than a specific key: any key can be the
         // trigger, and requiring one in particular skips real keyboards.
-        if !device.supported_keys().is_some_and(|keys| keys.contains(KeyCode::KEY_A)) {
+        if !device
+            .supported_keys()
+            .is_some_and(|keys| keys.contains(KeyCode::KEY_A))
+        {
             continue;
         }
         let name = device.name().unwrap_or_default().to_ascii_lowercase();

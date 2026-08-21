@@ -1,5 +1,4 @@
 pub mod audio;
-pub mod refine;
 pub mod config;
 pub mod debug;
 pub mod denoise;
@@ -11,6 +10,7 @@ pub mod install;
 pub mod ipc;
 pub mod notify;
 pub mod overlay;
+pub mod refine;
 pub mod status;
 pub mod stt;
 pub mod wav;

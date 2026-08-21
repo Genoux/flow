@@ -19,7 +19,11 @@ use iced::{Background, Border, Color, Element, Fill, Font, Length, Point, Size, 
 /// `travel` is 0 at the moment of the click and 1 when it has arrived; the
 /// knob moves toward `value` over that, so a toggle flipped back mid-flight
 /// simply reverses.
-pub(crate) fn toggle(value: bool, travel: f32, on_change: fn(bool) -> Message) -> Element<'static, Message> {
+pub(crate) fn toggle(
+    value: bool,
+    travel: f32,
+    on_change: fn(bool) -> Message,
+) -> Element<'static, Message> {
     let at = if value { travel } else { 1.0 - travel };
     let left = (at * 1000.0) as u16;
 
@@ -28,7 +32,10 @@ pub(crate) fn toggle(value: bool, travel: f32, on_change: fn(bool) -> Message) -
         .height(Length::Fixed(12.0))
         .style(move |_| container::Style {
             background: Some(Background::Color(mix(MUTED, ON_ACCENT, at))),
-            border: Border { radius: 6.0.into(), ..Default::default() },
+            border: Border {
+                radius: 6.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
         });
 
@@ -45,11 +52,18 @@ pub(crate) fn toggle(value: bool, travel: f32, on_change: fn(bool) -> Message) -
     .padding([3, 3])
     .style(move |_| container::Style {
         background: Some(Background::Color(mix(LINE, ACCENT, at))),
-        border: Border { radius: 9.0.into(), ..Default::default() },
+        border: Border {
+            radius: 9.0.into(),
+            ..Default::default()
+        },
         ..Default::default()
     });
 
-    button(track).padding(0).style(ghost).on_press(on_change(!value)).into()
+    button(track)
+        .padding(0)
+        .style(ghost)
+        .on_press(on_change(!value))
+        .into()
 }
 
 /// A slider with its value beside it, so the number is always readable rather
@@ -61,31 +75,39 @@ pub(crate) fn value_slider<'a>(
     label: &str,
 ) -> Element<'a, Message> {
     row![
-        container(slider(range, value, on_change).height(14).style(|_theme, _status| {
-            slider::Style {
-                rail: slider::Rail {
-                    backgrounds: (Background::Color(ACCENT), Background::Color(LINE)),
-                    width: 2.0,
-                    border: Border::default(),
-                },
-                handle: slider::Handle {
-                    shape: slider::HandleShape::Circle { radius: 5.0 },
-                    background: Background::Color(FG),
-                    border_width: 0.0,
-                    border_color: Color::TRANSPARENT,
-                },
-            }
-        }))
+        container(
+            slider(range, value, on_change)
+                .height(14)
+                .style(|_theme, _status| {
+                    slider::Style {
+                        rail: slider::Rail {
+                            backgrounds: (Background::Color(ACCENT), Background::Color(LINE)),
+                            width: 2.0,
+                            border: Border::default(),
+                        },
+                        handle: slider::Handle {
+                            shape: slider::HandleShape::Circle { radius: 5.0 },
+                            background: Background::Color(FG),
+                            border_width: 0.0,
+                            border_color: Color::TRANSPARENT,
+                        },
+                    }
+                })
+        )
         .width(Length::Fixed(140.0)),
         Space::new().width(12),
-        container(text(label.to_string()).size(12).font(Font::MONOSPACE).color(MUTED))
-            .width(Length::Fixed(56.0))
-            .align_x(iced::alignment::Horizontal::Right),
+        container(
+            text(label.to_string())
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(MUTED)
+        )
+        .width(Length::Fixed(56.0))
+        .align_x(iced::alignment::Horizontal::Right),
     ]
     .align_y(iced::Center)
     .into()
 }
-
 
 /// A 7px dot. The only place the accent appears besides a primary button.
 pub(crate) fn pip(colour: Color) -> Element<'static, Message> {
@@ -94,7 +116,10 @@ pub(crate) fn pip(colour: Color) -> Element<'static, Message> {
         .height(Length::Fixed(7.0))
         .style(move |_| container::Style {
             background: Some(Background::Color(colour)),
-            border: Border { radius: 3.5.into(), ..Default::default() },
+            border: Border {
+                radius: 3.5.into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .into()
@@ -205,7 +230,6 @@ pub(crate) fn action_faded(
     .into()
 }
 
-
 /// Text that behaves like a link: no chrome at all, just the label.
 fn ghost(_theme: &Theme, _status: button::Status) -> button::Style {
     button::Style {
@@ -240,9 +264,15 @@ pub(crate) fn copy_btn(index: usize, copied: bool, warmth: f32) -> Element<'stat
     let colour = if copied { ACCENT } else { MUTED };
     iced::widget::mouse_area(
         container(
-            Canvas::new(CopyMark { colour: Color { a: opacity, ..colour }, checked: copied })
-                .width(Length::Fixed(COPY_GLYPH))
-                .height(Length::Fixed(COPY_GLYPH)),
+            Canvas::new(CopyMark {
+                colour: Color {
+                    a: opacity,
+                    ..colour
+                },
+                checked: copied,
+            })
+            .width(Length::Fixed(COPY_GLYPH))
+            .height(Length::Fixed(COPY_GLYPH)),
         )
         .width(Length::Fixed(COPY_SLOT))
         .height(Length::Fixed(COPY_SLOT))

@@ -163,7 +163,14 @@ const CASES: &[Case] = &[
         name: "hard rewrites without inventing",
         level: Cleanup::Hard,
         raw: "tell the team the thing is delayed",
-        forbidden: &["week", "monday", "tomorrow", "apolog", "unfortunately", "due to"],
+        forbidden: &[
+            "week",
+            "monday",
+            "tomorrow",
+            "apolog",
+            "unfortunately",
+            "due to",
+        ],
         required: &["delay"],
         max_words: 16,
         max_sentences: None,
@@ -176,7 +183,10 @@ fn load() -> Option<flow::refine::Refiner> {
         eprintln!("skipping: no refining model at {}", path.display());
         return None;
     }
-    Some(flow::refine::Refiner::load(&path, vec!["Flow".into(), "Hyprland".into()], None).expect("load"))
+    Some(
+        flow::refine::Refiner::load(&path, vec!["Flow".into(), "Hyprland".into()], None)
+            .expect("load"),
+    )
 }
 
 /// One test, not several: cargo runs tests as parallel threads, and two
@@ -205,7 +215,10 @@ fn refining_behaves() {
 
         for bad in case.forbidden {
             if lowered.contains(&bad.to_lowercase()) {
-                failures.push(format!("[{}] still contains {bad:?}: {refined:?}", case.name));
+                failures.push(format!(
+                    "[{}] still contains {bad:?}: {refined:?}",
+                    case.name
+                ));
             }
         }
         for good in case.required {
@@ -241,8 +254,20 @@ fn refining_behaves() {
     // Greedy sampling is chosen so the same input always cleans the same way.
     // Without this the assertions above would be measuring noise.
     let repeated = "um so the the build is uh broken again";
-    let first = refiner.refine_within(repeated, std::time::Duration::from_secs(120), Cleanup::Light).expect("clean");
-    let second = refiner.refine_within(repeated, std::time::Duration::from_secs(120), Cleanup::Light).expect("clean");
+    let first = refiner
+        .refine_within(
+            repeated,
+            std::time::Duration::from_secs(120),
+            Cleanup::Light,
+        )
+        .expect("clean");
+    let second = refiner
+        .refine_within(
+            repeated,
+            std::time::Duration::from_secs(120),
+            Cleanup::Light,
+        )
+        .expect("clean");
     if first != second {
         failures.push(format!("not deterministic: {first:?} vs {second:?}"));
     }
@@ -252,14 +277,22 @@ fn refining_behaves() {
     // only thing that can tell "returned unchanged" apart from "skipped".
     let already_clean = "Yeah.";
     let started = std::time::Instant::now();
-    let skipped = refiner.refine_within(already_clean, std::time::Duration::from_secs(120), Cleanup::Light).expect("clean");
+    let skipped = refiner
+        .refine_within(
+            already_clean,
+            std::time::Duration::from_secs(120),
+            Cleanup::Light,
+        )
+        .expect("clean");
     let elapsed = started.elapsed();
     eprintln!("\n[trivial] {already_clean:?} -> {skipped:?}  ({elapsed:?})");
     if skipped != already_clean {
         failures.push(format!("trivial input was altered: {skipped:?}"));
     }
     if elapsed > std::time::Duration::from_millis(5) {
-        failures.push(format!("trivial input took {elapsed:?} - reaching the model?"));
+        failures.push(format!(
+            "trivial input took {elapsed:?} - reaching the model?"
+        ));
     }
 
     // A real dictation that came back entirely in English. Either the model keeps
@@ -267,12 +300,18 @@ fn refining_behaves() {
     // transcript - what must never happen is translated text reaching the user.
     let quebecois = "On copie-tu dimanche, je vais régler des chills le live, ok \
                      j'ai pas vraiment d'entête à ça, est-ce que dimanche c'est chill?";
-    match refiner.refine_within(quebecois, std::time::Duration::from_secs(120), Cleanup::Light) {
+    match refiner.refine_within(
+        quebecois,
+        std::time::Duration::from_secs(120),
+        Cleanup::Light,
+    ) {
         Err(err) => eprintln!("\n[language] guard caught it: {err}"),
         Ok(text) => {
             eprintln!("\n[language] -> {text:?}");
             if flow::refine::changed_language(&text, quebecois) {
-                failures.push(format!("translated french and the guard missed it: {text:?}"));
+                failures.push(format!(
+                    "translated french and the guard missed it: {text:?}"
+                ));
             }
             if text.to_lowercase().contains("sunday") {
                 failures.push(format!("translated 'dimanche' to Sunday: {text:?}"));
@@ -285,7 +324,11 @@ fn refining_behaves() {
     // daemon never sends these now, but the guard has to hold if one slips
     // through, because pasting an invented word is the worst outcome here.
     for hesitation in ["Um", "Uh", "Er"] {
-        match refiner.refine_within(hesitation, std::time::Duration::from_secs(120), Cleanup::Light) {
+        match refiner.refine_within(
+            hesitation,
+            std::time::Duration::from_secs(120),
+            Cleanup::Light,
+        ) {
             Err(err) => eprintln!("\n[filler] {hesitation:?} refused: {err}"),
             Ok(text) => {
                 eprintln!("\n[filler] {hesitation:?} -> {text:?}");

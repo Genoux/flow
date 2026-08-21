@@ -127,7 +127,10 @@ mod tests {
     fn xdg_variables_win_over_home() {
         // SAFETY: single-threaded test, and the value is restored below.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "/custom/config") };
-        assert_eq!(config_file(), PathBuf::from("/custom/config/flow/config.toml"));
+        assert_eq!(
+            config_file(),
+            PathBuf::from("/custom/config/flow/config.toml")
+        );
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 

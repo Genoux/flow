@@ -233,7 +233,13 @@ impl Ducker {
         let _ = std::fs::write(state_file(), serde_json::to_vec(&found)?);
 
         let settled = Arc::new(AtomicBool::new(false));
-        fade(found.clone(), percent.min(100), FADE_OUT, false, Some(settled.clone()));
+        fade(
+            found.clone(),
+            percent.min(100),
+            FADE_OUT,
+            false,
+            Some(settled.clone()),
+        );
 
         let known = Arc::new(Mutex::new(found));
         let active = Arc::new(AtomicBool::new(true));
@@ -278,7 +284,9 @@ impl Drop for Ducker {
 /// Called at startup, where the state file is the only record of what was lost.
 pub fn restore_stale() {
     let path = state_file();
-    let Ok(raw) = std::fs::read(&path) else { return };
+    let Ok(raw) = std::fs::read(&path) else {
+        return;
+    };
 
     if let Ok(saved) = serde_json::from_slice::<Vec<(u32, u32)>>(&raw) {
         eprintln!(

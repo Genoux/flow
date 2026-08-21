@@ -66,7 +66,10 @@ fn the_real_keyboard_path_sees_the_chord() {
     let released = incoming
         .recv_timeout(Duration::from_secs(2))
         .expect("no Released event - lifting a modifier did not stop the hold");
-    assert!(matches!(released, Event::Released { .. }), "got {released:?}");
+    assert!(
+        matches!(released, Event::Released { .. }),
+        "got {released:?}"
+    );
 
     press(&mut device, KeyCode::KEY_D, false);
     press(&mut device, KeyCode::KEY_LEFTSHIFT, false);
@@ -101,7 +104,9 @@ fn a_stray_key_mid_hold_does_not_lose_the_recording() {
     press(&mut device, KeyCode::KEY_LEFTSHIFT, true);
     press(&mut device, KeyCode::KEY_D, true);
     assert_eq!(
-        incoming.recv_timeout(Duration::from_secs(2)).expect("Pressed"),
+        incoming
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Pressed"),
         Event::Pressed
     );
 
@@ -114,8 +119,13 @@ fn a_stray_key_mid_hold_does_not_lose_the_recording() {
     );
 
     press(&mut device, KeyCode::KEY_D, false);
-    let released = incoming.recv_timeout(Duration::from_secs(2)).expect("Released");
-    assert!(matches!(released, Event::Released { .. }), "got {released:?}");
+    let released = incoming
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Released");
+    assert!(
+        matches!(released, Event::Released { .. }),
+        "got {released:?}"
+    );
 
     press(&mut device, KeyCode::KEY_LEFTSHIFT, false);
     press(&mut device, KeyCode::KEY_LEFTMETA, false);

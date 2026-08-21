@@ -51,7 +51,10 @@ fn report_the_pauses_in_real_speech() {
     }
     runs.sort_unstable();
     eprintln!("quiet runs in jfk.wav, ms: {runs:?}");
-    eprintln!("longest: {}ms - the splitter needs 250ms", runs.last().copied().unwrap_or(0));
+    eprintln!(
+        "longest: {}ms - the splitter needs 250ms",
+        runs.last().copied().unwrap_or(0)
+    );
 }
 
 /// Real speech on both sides of a real cut. The fixture alone has no pause long
@@ -71,7 +74,10 @@ fn a_cut_in_a_real_pause_keeps_every_word() {
     let mut samples = one.clone();
     samples.extend(vec![0.0; 16_000 * 3 / 4]);
     samples.extend(one.clone());
-    eprintln!("{:.1}s with a 750ms pause in the middle", samples.len() as f32 / 16_000.0);
+    eprintln!(
+        "{:.1}s with a 750ms pause in the middle",
+        samples.len() as f32 / 16_000.0
+    );
 
     let whole = engine.transcribe(samples.clone()).expect("whole");
     let pieces = split_on_silence(&samples);
@@ -86,14 +92,24 @@ fn a_cut_in_a_real_pause_keeps_every_word() {
 
     let words = |text: &str| {
         text.split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
     };
     eprintln!("whole:  {whole:?}");
     eprintln!("joined: {joined:?}");
-    assert_eq!(words(&whole), words(&joined), "a cut in a real pause changed the words");
-    eprintln!("VERDICT: {} words preserved across a real cut", words(&whole).len());
+    assert_eq!(
+        words(&whole),
+        words(&joined),
+        "a cut in a real pause changed the words"
+    );
+    eprintln!(
+        "VERDICT: {} words preserved across a real cut",
+        words(&whole).len()
+    );
 }
 
 #[test]
@@ -120,7 +136,10 @@ fn does_splitting_the_audio_change_the_words() {
     let started = Instant::now();
     for (index, piece) in pieces.iter().enumerate() {
         let text = engine.transcribe(piece.to_vec()).expect("piece");
-        eprintln!("  {index} ({:.1}s): {text:?}", piece.len() as f32 / 16_000.0);
+        eprintln!(
+            "  {index} ({:.1}s): {text:?}",
+            piece.len() as f32 / 16_000.0
+        );
         joined.push(text);
     }
     let pieces_took = started.elapsed();
@@ -131,7 +150,10 @@ fn does_splitting_the_audio_change_the_words() {
     // and a split legitimately changes where sentences appear to end.
     let words = |text: &str| {
         text.split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
     };

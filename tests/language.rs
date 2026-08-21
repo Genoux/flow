@@ -36,18 +36,29 @@ fn translated_the_speakers_french() {
 fn a_faithful_refining_is_left_alone() {
     let raw = "euh alors je pense qu'on peut peut livrer la la fonctionnalité vendredi";
     let refined = "Alors, je pense qu'on peut livrer la fonctionnalité vendredi.";
-    assert!(!changed_language(refined, raw), "both French, nothing to complain about");
+    assert!(
+        !changed_language(refined, raw),
+        "both French, nothing to complain about"
+    );
 
     let english_raw = "um so i pushed the change and then uh the build broke again";
     let english_clean = "So I pushed the change and then the build broke again.";
-    assert!(!changed_language(english_clean, english_raw), "both English");
+    assert!(
+        !changed_language(english_clean, english_raw),
+        "both English"
+    );
 }
 
 /// Short or ambiguous text must not be guessed at: a false positive here would
 /// silently switch refining off, which is worse than the translation it prevents.
 #[test]
 fn an_unclear_language_is_never_a_complaint() {
-    for pair in [("Yeah.", "Yeah."), ("Mm.", "Mm."), ("OK", "Okay."), ("", "")] {
+    for pair in [
+        ("Yeah.", "Yeah."),
+        ("Mm.", "Mm."),
+        ("OK", "Okay."),
+        ("", ""),
+    ] {
         assert!(
             !changed_language(pair.1, pair.0),
             "{pair:?} is too little to judge"

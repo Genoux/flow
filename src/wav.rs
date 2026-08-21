@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 /// Read a 16 kHz mono WAV as normalised f32 samples, the format Parakeet expects.

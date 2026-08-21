@@ -12,29 +12,64 @@
 
 use iced::Color;
 
-pub(crate) const BG: Color = Color { r: 0.039, g: 0.043, b: 0.055, a: 1.0 }; // #0A0B0E
-pub(crate) const FG: Color = Color { r: 0.925, g: 0.929, b: 0.937, a: 1.0 }; // #ECEDEF
+pub(crate) const BG: Color = Color {
+    r: 0.039,
+    g: 0.043,
+    b: 0.055,
+    a: 1.0,
+}; // #0A0B0E
+pub(crate) const FG: Color = Color {
+    r: 0.925,
+    g: 0.929,
+    b: 0.937,
+    a: 1.0,
+}; // #ECEDEF
 /// Secondary text: labels, captions, the second line of a tile. Lifted from
 /// #7C828C, which sat at 4.4:1 on a card and so failed the same contrast bar
 /// the body text clears comfortably. Quiet is a job for weight and size here,
 /// not for a grey that has to be squinted at.
-pub(crate) const MUTED: Color = Color { r: 0.541, g: 0.565, b: 0.604, a: 1.0 }; // #8A909A
+pub(crate) const MUTED: Color = Color {
+    r: 0.541,
+    g: 0.565,
+    b: 0.604,
+    a: 1.0,
+}; // #8A909A
 /// The quietest text in the product - 11px meta: timestamps, month names, the
 /// label half of a label/value pair. Also lifted, from #4E545C at 2.2:1, which
 /// is decoration rather than text at that size.
-pub(crate) const FAINT: Color = Color { r: 0.424, g: 0.451, b: 0.490, a: 1.0 }; // #6C737D
-pub(crate) const LINE: Color = Color { r: 0.106, g: 0.118, b: 0.137, a: 1.0 }; // #1B1E23
+pub(crate) const FAINT: Color = Color {
+    r: 0.424,
+    g: 0.451,
+    b: 0.490,
+    a: 1.0,
+}; // #6C737D
+pub(crate) const LINE: Color = Color {
+    r: 0.106,
+    g: 0.118,
+    b: 0.137,
+    a: 1.0,
+}; // #1B1E23
 /// The lifted surface a card sits on. Half a step off the ground rather than a
 /// full one: a card already carries a hairline and a shadow, and three depth
 /// cues on one rectangle - repeated down a page of them - is what turned the
 /// Overview into a stack of grey plates. The container recedes; the words on
 /// it are the thing to see.
-pub(crate) const RAISED: Color = Color { r: 0.082, g: 0.090, b: 0.106, a: 1.0 }; // #15171B
+pub(crate) const RAISED: Color = Color {
+    r: 0.082,
+    g: 0.090,
+    b: 0.106,
+    a: 1.0,
+}; // #15171B
 /// What a rail item sits on when it is the current section. `RAISED` was doing
 /// this job too, and at card weight against the same ground the selected item
 /// was nearly invisible - a rail should stay quiet, but quiet still has to be
 /// legible.
-pub(crate) const RAIL_ON: Color = Color { r: 0.145, g: 0.157, b: 0.176, a: 1.0 }; // #25282D
+pub(crate) const RAIL_ON: Color = Color {
+    r: 0.145,
+    g: 0.157,
+    b: 0.176,
+    a: 1.0,
+}; // #25282D
 /// Any line drawn *on* a card - its border, and any rule inside it.
 ///
 /// `LINE` is a page-ground colour and is one value off `RAISED`: a hairline in
@@ -47,16 +82,41 @@ pub(crate) const RAIL_ON: Color = Color { r: 0.145, g: 0.157, b: 0.176, a: 1.0 }
 /// and read as content second - seven outlined rectangles on one page. This is
 /// the lowest value that still separates a card from the ground and still
 /// shows up as a rule *on* the card.
-pub(crate) const EDGE: Color = Color { r: 0.149, g: 0.165, b: 0.184, a: 1.0 }; // #262A2F
-pub(crate) const ACCENT: Color = Color { r: 0.180, g: 0.835, b: 0.451, a: 1.0 }; // #2ED573
-pub(crate) const STARTING: Color = Color { r: 0.929, g: 0.612, b: 0.216, a: 1.0 }; // #ED9C37
-pub(crate) const ERR: Color = Color { r: 0.831, g: 0.451, b: 0.420, a: 1.0 }; // #D4736B
+pub(crate) const EDGE: Color = Color {
+    r: 0.149,
+    g: 0.165,
+    b: 0.184,
+    a: 1.0,
+}; // #262A2F
+pub(crate) const ACCENT: Color = Color {
+    r: 0.180,
+    g: 0.835,
+    b: 0.451,
+    a: 1.0,
+}; // #2ED573
+pub(crate) const STARTING: Color = Color {
+    r: 0.929,
+    g: 0.612,
+    b: 0.216,
+    a: 1.0,
+}; // #ED9C37
+pub(crate) const ERR: Color = Color {
+    r: 0.831,
+    g: 0.451,
+    b: 0.420,
+    a: 1.0,
+}; // #D4736B
 /// "Nothing to do" - and the same green as ACCENT, deliberately. It used to be
 /// a muted olive of its own, to sit at ERR's weight in a row of dots, and next
 /// to the accent it just read as a second, dirtier green. One green in the
 /// product, one meaning per colour: green is fine, red is not.
 pub(crate) const OK: Color = ACCENT;
-pub(crate) const ON_ACCENT: Color = Color { r: 0.078, g: 0.082, b: 0.059, a: 1.0 };
+pub(crate) const ON_ACCENT: Color = Color {
+    r: 0.078,
+    g: 0.082,
+    b: 0.059,
+    a: 1.0,
+};
 
 pub(crate) const RAIL_WIDTH: f32 = 176.0;
 

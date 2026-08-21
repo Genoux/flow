@@ -35,7 +35,9 @@ fn a_player_that_jumps_back_up_has_escaped() {
 /// so two of these at once would fight over the same streams.
 fn exclusive() -> MutexGuard<'static, ()> {
     static AUDIO: Mutex<()> = Mutex::new(());
-    AUDIO.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    AUDIO
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Reads one live playback stream's volume, or None if nothing is playing.

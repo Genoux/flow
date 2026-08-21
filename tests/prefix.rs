@@ -6,7 +6,7 @@
 //! cut lands in silence: tests/chunking.rs shows a cut between sentences costs
 //! nothing, and a cut through a word would cost a word.
 
-use flow::audio::{split_at_silence, SAMPLE_RATE, SILENCE_RMS};
+use flow::audio::{SAMPLE_RATE, SILENCE_RMS, split_at_silence};
 
 const RATE: usize = SAMPLE_RATE as usize;
 
@@ -44,7 +44,11 @@ fn a_pause_between_sentences_is_where_it_splits() {
 #[test]
 fn continuous_speech_is_never_cut() {
     let samples = speech(30.0);
-    assert_eq!(split_at_silence(&samples, 8 * RATE), None, "no gap to split on");
+    assert_eq!(
+        split_at_silence(&samples, 8 * RATE),
+        None,
+        "no gap to split on"
+    );
 }
 
 /// Nothing to gain from splitting a short recording, and the tail would be
@@ -54,7 +58,11 @@ fn a_short_recording_is_left_alone() {
     let mut samples = speech(2.0);
     samples.extend(silence(0.5));
     samples.extend(speech(2.0));
-    assert_eq!(split_at_silence(&samples, 8 * RATE), None, "too short to bother");
+    assert_eq!(
+        split_at_silence(&samples, 8 * RATE),
+        None,
+        "too short to bother"
+    );
 }
 
 /// A gap has to be quiet enough to be a real gap. Quiet speech and room tone are

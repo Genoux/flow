@@ -115,7 +115,10 @@ impl VirtualKeyboard {
             .roundtrip(&mut globals)
             .context("wayland registry roundtrip")?;
 
-        let seat = globals.seat.clone().context("compositor offers no wl_seat")?;
+        let seat = globals
+            .seat
+            .clone()
+            .context("compositor offers no wl_seat")?;
         let manager = globals
             .manager
             .clone()

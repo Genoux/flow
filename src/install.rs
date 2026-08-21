@@ -5,7 +5,7 @@
 //! `.part` and is only renamed once it hashes correctly, so an interrupted
 //! install can never look like a finished one.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -108,7 +108,9 @@ pub fn total_bytes(assets: &[Asset]) -> u64 {
 /// disagrees with.
 pub enum Event<'a> {
     /// Everything that will be fetched, before any of it starts. Sent once.
-    Planned { total: u64 },
+    Planned {
+        total: u64,
+    },
     /// One of the two models, and how many bytes it accounts for. Sent in the
     /// order they are fetched, straight after `Planned`.
     ///
@@ -116,17 +118,31 @@ pub enum Event<'a> {
     /// this is what tells it where the boundary falls. It is sent rather than
     /// hardcoded there because the sizes live here, next to the assets they
     /// are the sum of.
-    Group { label: &'static str, bytes: u64 },
+    Group {
+        label: &'static str,
+        bytes: u64,
+    },
     /// Hashing - either checking what is already on disk, or verifying what
     /// just came down. A 2.4 GB file takes long enough that a bar which simply
     /// stops moving reads as a hang.
-    Verifying { asset: &'a Asset },
-    Fetching { asset: &'a Asset },
+    Verifying {
+        asset: &'a Asset,
+    },
+    Fetching {
+        asset: &'a Asset,
+    },
     /// Bytes done across the whole install, not this asset.
-    Progress { done: u64 },
-    Installed { asset: &'a Asset },
+    Progress {
+        done: u64,
+    },
+    Installed {
+        asset: &'a Asset,
+    },
     /// A template landed (`written`) or an existing file was left alone.
-    Seeded { path: PathBuf, written: bool },
+    Seeded {
+        path: PathBuf,
+        written: bool,
+    },
     Finished,
 }
 
@@ -161,14 +177,22 @@ impl Terminal {
             }
             Event::Progress { done } if self.total > 0 => {
                 let percent = done * 100 / self.total;
-                self.line(&format!("{} of {}  {percent}%", size(done), size(self.total)));
+                self.line(&format!(
+                    "{} of {}  {percent}%",
+                    size(done),
+                    size(self.total)
+                ));
             }
             Event::Progress { .. } => {}
             // Ends the line the three above have been rewriting, so the next
             // asset starts on its own rather than overwriting this one.
             Event::Installed { asset } => eprintln!("\r  {} ✓\x1b[K", asset.dest),
             Event::Seeded { path, written } => {
-                eprintln!("{} {}", if written { "wrote" } else { "kept your" }, path.display());
+                eprintln!(
+                    "{} {}",
+                    if written { "wrote" } else { "kept your" },
+                    path.display()
+                );
             }
             Event::Finished => {}
         }
@@ -196,7 +220,11 @@ pub fn to_console(event: Event) {
         Event::Progress { done } => println!("progress {done}"),
         Event::Installed { asset } => println!("installed {}", asset.dest),
         Event::Seeded { path, written } => {
-            println!("seeded {} {}", if written { "wrote" } else { "kept" }, path.display());
+            println!(
+                "seeded {} {}",
+                if written { "wrote" } else { "kept" },
+                path.display()
+            );
         }
         Event::Finished => println!("finished"),
     }
@@ -249,7 +277,9 @@ fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -
     // hashing the recogniser already on disk; without this the ring sits empty
     // through them and then takes the whole file in one jump.
     if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == asset.bytes) {
-        report(Event::Progress { done: base + asset.bytes });
+        report(Event::Progress {
+            done: base + asset.bytes,
+        });
     }
     if is_installed(&path, asset) {
         report(Event::Installed { asset });
@@ -312,7 +342,9 @@ fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -
                 break status;
             }
             let so_far = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
-            report(Event::Progress { done: base + so_far });
+            report(Event::Progress {
+                done: base + so_far,
+            });
             std::thread::sleep(POLL);
         };
 
@@ -330,7 +362,11 @@ fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -
             bail!(
                 "Downloading {} failed{}",
                 asset.dest,
-                if reason.is_empty() { String::new() } else { format!(": {reason}") }
+                if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {reason}")
+                }
             );
         }
     }
@@ -342,14 +378,20 @@ fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -
     // asking them to do the job this function just declined to.
     report(Event::Verifying { asset });
     let size = std::fs::metadata(&part)?.len();
-    let hash = if size == asset.bytes { sha256(&part)? } else { String::new() };
+    let hash = if size == asset.bytes {
+        sha256(&part)?
+    } else {
+        String::new()
+    };
     if size != asset.bytes || hash != asset.sha256 {
         let _ = std::fs::remove_file(&part);
-        bail!("{} arrived damaged and was discarded. Try again.", asset.dest);
+        bail!(
+            "{} arrived damaged and was discarded. Try again.",
+            asset.dest
+        );
     }
 
-    std::fs::rename(&part, &path)
-        .with_context(|| format!("moving {} into place", asset.dest))?;
+    std::fs::rename(&part, &path).with_context(|| format!("moving {} into place", asset.dest))?;
     report(Event::Installed { asset });
     Ok(())
 }
@@ -467,12 +509,20 @@ pub fn planned_bytes(want: Want) -> u64 {
 /// The same `total` and `group` lines a real run opens with, and nothing else.
 /// Notably no `finished`, which would tell the window an install had happened.
 pub fn plan_reported(want: Want, report: &mut dyn FnMut(Event)) {
-    report(Event::Planned { total: planned_bytes(want) });
+    report(Event::Planned {
+        total: planned_bytes(want),
+    });
     if want.speech() {
-        report(Event::Group { label: "speech", bytes: total_bytes(SPEECH) });
+        report(Event::Group {
+            label: "speech",
+            bytes: total_bytes(SPEECH),
+        });
     }
     if want.refine() {
-        report(Event::Group { label: "refine", bytes: total_bytes(REFINE) });
+        report(Event::Group {
+            label: "refine",
+            bytes: total_bytes(REFINE),
+        });
     }
 }
 
@@ -495,8 +545,14 @@ pub fn run_reported(want: Want, report: &mut dyn FnMut(Event)) -> Result<()> {
     // Seeded after the models, so a download that fails leaves no config
     // implying an install that finished.
     for (path, contents) in [
-        (super::config::path(), include_str!("../packaging/config.template.toml")),
-        (flow_paths::vocabulary_file(), include_str!("../packaging/vocabulary.template.txt")),
+        (
+            super::config::path(),
+            include_str!("../packaging/config.template.toml"),
+        ),
+        (
+            flow_paths::vocabulary_file(),
+            include_str!("../packaging/vocabulary.template.txt"),
+        ),
     ] {
         let written = seed(&path, contents)?;
         report(Event::Seeded { path, written });

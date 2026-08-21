@@ -17,9 +17,16 @@ pub(crate) fn panel<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
         .width(Fill)
         .style(|_theme| container::Style {
             background: Some(Background::Color(RAISED)),
-            border: Border { color: EDGE, width: 1.0, radius: 10.0.into() },
+            border: Border {
+                color: EDGE,
+                width: 1.0,
+                radius: 10.0.into(),
+            },
             shadow: iced::Shadow {
-                color: Color { a: 0.22, ..Color::BLACK },
+                color: Color {
+                    a: 0.22,
+                    ..Color::BLACK
+                },
                 offset: iced::Vector::new(0.0, 2.0),
                 blur_radius: 14.0,
             },
@@ -30,7 +37,14 @@ pub(crate) fn panel<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 
 /// A panel with its subject named along the top.
 pub(crate) fn card<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
-    panel(column![text(title).size(12.5).color(MUTED), Space::new().height(12), content,].into())
+    panel(
+        column![
+            text(title).size(12.5).color(MUTED),
+            Space::new().height(12),
+            content,
+        ]
+        .into(),
+    )
 }
 
 /// A number with what it is above it and what it means below it.

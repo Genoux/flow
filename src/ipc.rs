@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::PathBuf;
 
 /// `flow start` / `flow stop` signal the daemon. Start alone is enough for
