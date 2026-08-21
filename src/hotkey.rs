@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use evdev::{Device, EventType, KeyCode};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,6 @@ const CHORD_APPEAR: Duration = Duration::from_millis(40);
 
 /// Poll interval while waiting for the compositor chord to break.
 const CHORD_POLL: Duration = Duration::from_millis(4);
-
 
 /// Modifiers that must be physically released before we inject. Injected keys
 /// travel through the compositor's keybind layer, so a still-held modifier turns
@@ -109,7 +108,10 @@ impl Default for Chord {
 impl Chord {
     /// A lone key, like the Right Ctrl this used to hardcode.
     pub fn bare(trigger: KeyCode) -> Self {
-        Self { trigger, modifiers: Vec::new() }
+        Self {
+            trigger,
+            modifiers: Vec::new(),
+        }
     }
 
     /// Modifiers make a press unambiguous, so it needs no minimum hold.
@@ -118,7 +120,11 @@ impl Chord {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let mut parts = text.split('+').map(str::trim).filter(|p| !p.is_empty()).peekable();
+        let mut parts = text
+            .split('+')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .peekable();
         if parts.peek().is_none() {
             return Err(anyhow!("empty binding"));
         }
@@ -139,10 +145,15 @@ impl Chord {
         // A trailing modifier name would mean the chord can never complete: the
         // key that triggers it would also be the one holding it.
         if Modifier::parse(last).is_some() && !modifiers.is_empty() {
-            return Err(anyhow!("{last:?} is a modifier, so there is no key to press"));
+            return Err(anyhow!(
+                "{last:?} is a modifier, so there is no key to press"
+            ));
         }
 
-        Ok(Self { trigger: trigger_key(last)?, modifiers })
+        Ok(Self {
+            trigger: trigger_key(last)?,
+            modifiers,
+        })
     }
 
     fn satisfied(&self, held: &HashSet<KeyCode>) -> bool {
@@ -186,19 +197,48 @@ impl std::fmt::Display for Chord {
 /// KEY_A is 30 and KEY_D is 32. Arithmetic on KEY_A silently yields the wrong
 /// letter, so both directions go through this one table.
 const LETTERS: [KeyCode; 26] = [
-    KeyCode::KEY_A, KeyCode::KEY_B, KeyCode::KEY_C, KeyCode::KEY_D, KeyCode::KEY_E,
-    KeyCode::KEY_F, KeyCode::KEY_G, KeyCode::KEY_H, KeyCode::KEY_I, KeyCode::KEY_J,
-    KeyCode::KEY_K, KeyCode::KEY_L, KeyCode::KEY_M, KeyCode::KEY_N, KeyCode::KEY_O,
-    KeyCode::KEY_P, KeyCode::KEY_Q, KeyCode::KEY_R, KeyCode::KEY_S, KeyCode::KEY_T,
-    KeyCode::KEY_U, KeyCode::KEY_V, KeyCode::KEY_W, KeyCode::KEY_X, KeyCode::KEY_Y,
+    KeyCode::KEY_A,
+    KeyCode::KEY_B,
+    KeyCode::KEY_C,
+    KeyCode::KEY_D,
+    KeyCode::KEY_E,
+    KeyCode::KEY_F,
+    KeyCode::KEY_G,
+    KeyCode::KEY_H,
+    KeyCode::KEY_I,
+    KeyCode::KEY_J,
+    KeyCode::KEY_K,
+    KeyCode::KEY_L,
+    KeyCode::KEY_M,
+    KeyCode::KEY_N,
+    KeyCode::KEY_O,
+    KeyCode::KEY_P,
+    KeyCode::KEY_Q,
+    KeyCode::KEY_R,
+    KeyCode::KEY_S,
+    KeyCode::KEY_T,
+    KeyCode::KEY_U,
+    KeyCode::KEY_V,
+    KeyCode::KEY_W,
+    KeyCode::KEY_X,
+    KeyCode::KEY_Y,
     KeyCode::KEY_Z,
 ];
 
 /// F11 and F12 sit apart from F1-F10, so this is a table too.
 const FUNCTION_KEYS: [KeyCode; 12] = [
-    KeyCode::KEY_F1, KeyCode::KEY_F2, KeyCode::KEY_F3, KeyCode::KEY_F4,
-    KeyCode::KEY_F5, KeyCode::KEY_F6, KeyCode::KEY_F7, KeyCode::KEY_F8,
-    KeyCode::KEY_F9, KeyCode::KEY_F10, KeyCode::KEY_F11, KeyCode::KEY_F12,
+    KeyCode::KEY_F1,
+    KeyCode::KEY_F2,
+    KeyCode::KEY_F3,
+    KeyCode::KEY_F4,
+    KeyCode::KEY_F5,
+    KeyCode::KEY_F6,
+    KeyCode::KEY_F7,
+    KeyCode::KEY_F8,
+    KeyCode::KEY_F9,
+    KeyCode::KEY_F10,
+    KeyCode::KEY_F11,
+    KeyCode::KEY_F12,
 ];
 
 /// Named keys usable as a trigger. Letters and digits cover almost everything;
@@ -252,7 +292,10 @@ fn trigger_name(key: KeyCode) -> String {
         KeyCode::KEY_LEFTMETA => "leftmeta".into(),
         KeyCode::KEY_RIGHTMETA => "rightmeta".into(),
         key if FUNCTION_KEYS.contains(&key) => {
-            let at = FUNCTION_KEYS.iter().position(|f| *f == key).expect("checked");
+            let at = FUNCTION_KEYS
+                .iter()
+                .position(|f| *f == key)
+                .expect("checked");
             format!("f{}", at + 1)
         }
         key if LETTERS.contains(&key) => {
@@ -272,11 +315,39 @@ pub enum Event {
     Pressed,
     /// Another key arrived while PTT was down, so this was a shortcut, not dictation.
     Cancelled,
-    Released { held: Duration },
+    Released {
+        held: Duration,
+    },
     /// From `flow start` / `flow stop`. Start arms a chord watcher so hold works
     /// even when the compositor's release bind never fires.
     Start,
     Stop,
+}
+
+/// Native press and compositor `flow start` are the same physical tap, a few
+/// milliseconds apart. Acting on both would start a dictation and stop it
+/// before the mic opened.
+pub const TAP_ECHO: Duration = Duration::from_millis(150);
+
+/// What a tap-to-talk event does to the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapAction {
+    Begin,
+    Finish,
+    Ignore,
+}
+
+/// Tap-to-talk: the chord (or `flow start`) is a switch. Release does not
+/// end the session - including Hyprland's release bind, which sends `flow
+/// stop` and would otherwise make this setting a no-op.
+pub fn tap_action(event: Event, recording: bool, echo: bool) -> TapAction {
+    match event {
+        Event::Pressed | Event::Start if echo => TapAction::Ignore,
+        Event::Pressed | Event::Start if recording => TapAction::Finish,
+        Event::Pressed | Event::Start => TapAction::Begin,
+        Event::Released { .. } | Event::Stop => TapAction::Ignore,
+        Event::Cancelled => TapAction::Ignore,
+    }
 }
 
 /// Every keyboard-capable device. A device grabbed by a remapper (keyd) delivers
@@ -312,7 +383,10 @@ pub struct PttState {
 
 impl PttState {
     pub fn new(chord: Chord) -> Self {
-        Self { chord, ..Self::default() }
+        Self {
+            chord,
+            ..Self::default()
+        }
     }
 
     /// Adopt a new chord, but only between holds.
@@ -408,26 +482,34 @@ pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord
     eprintln!("push-to-talk: {}", chord.lock().expect("chord"));
 
     for (path, device) in &devices {
-        crate::verbose!("watching {} ({})", path.display(), device.name().unwrap_or("?"));
+        crate::verbose!(
+            "watching {} ({})",
+            path.display(),
+            device.name().unwrap_or("?")
+        );
     }
 
     let (raw_tx, raw_rx) = channel();
     for (_, mut device) in devices {
         let raw_tx = raw_tx.clone();
-        std::thread::spawn(move || loop {
-            let Ok(batch) = device.fetch_events() else { return };
-            for event in batch {
-                if event.event_type() != EventType::KEY {
-                    continue;
-                }
-                // 2 is autorepeat, which says nothing new about hold state.
-                let pressed = match event.value() {
-                    0 => false,
-                    1 => true,
-                    _ => continue,
-                };
-                if raw_tx.send((KeyCode(event.code()), pressed)).is_err() {
+        std::thread::spawn(move || {
+            loop {
+                let Ok(batch) = device.fetch_events() else {
                     return;
+                };
+                for event in batch {
+                    if event.event_type() != EventType::KEY {
+                        continue;
+                    }
+                    // 2 is autorepeat, which says nothing new about hold state.
+                    let pressed = match event.value() {
+                        0 => false,
+                        1 => true,
+                        _ => continue,
+                    };
+                    if raw_tx.send((KeyCode(event.code()), pressed)).is_err() {
+                        return;
+                    }
                 }
             }
         });
@@ -455,9 +537,10 @@ pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord
                 }
             }
             if let Some(event) = state.apply(key, pressed)
-                && events.send(event).is_err() {
-                    return;
-                }
+                && events.send(event).is_err()
+            {
+                return;
+            }
         }
     });
 
@@ -564,12 +647,10 @@ fn keyd_paths_from_proc() -> Vec<PathBuf> {
     };
     text.split("\n\n")
         .filter(|block| {
-            block
-                .lines()
-                .any(|line| {
-                    let lower = line.to_ascii_lowercase();
-                    lower.contains("name=\"keyd") && lower.contains("keyboard")
-                })
+            block.lines().any(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("name=\"keyd") && lower.contains("keyboard")
+            })
         })
         .filter_map(|block| {
             block.lines().find_map(|line| {
@@ -666,7 +747,9 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Ch
         let watched = watched.clone();
         std::thread::spawn(move || {
             loop {
-                let Ok(batch) = device.fetch_events() else { return };
+                let Ok(batch) = device.fetch_events() else {
+                    return;
+                };
                 for event in batch {
                     if event.event_type() != EventType::KEY || event.value() != 0 {
                         continue;

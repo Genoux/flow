@@ -8,8 +8,7 @@
 #
 # Word fixes live next door in ~/.config/flow/vocabulary.txt, not here.
 
-# Hold the hotkey below to dictate. Turn this off if a compositor binding calling
-# `flow start` is your only trigger, so the physical keys stay inert.
+# On, hold the chord while you speak. Off, tap to start and tap to stop.
 # push_to_talk = true
 
 # The combination to hold. Flow watches the keyboard directly, so this needs no

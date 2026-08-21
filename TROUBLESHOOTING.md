@@ -30,7 +30,7 @@ instead of a tensor dump.
 | Cause | Check | Fix |
 |---|---|---|
 | Daemon isn't running | `systemctl --user status flow.service` | `systemctl --user start flow.service` |
-| Not in the `input` group | `flow logs` says *push-to-talk disabled* | `sudo usermod -aG input $USER`, then log out and back in |
+| Not in the `input` group | `flow logs` says *chord watcher disabled* | `sudo usermod -aG input $USER`, then log out and back in |
 | Another app owns the chord | Your compositor's binds | Change `hotkey` in `config.toml` |
 | Held under half a second | `flow logs` says *too short to be a deliberate hold* | Hold longer — the 500 ms floor is what stops a frustrated double-tap injecting a stray "Yeah." |
 | Another key was pressed during the hold | *another key turned the hold into a shortcut* | Expected. Flow assumes you meant the shortcut. |

@@ -43,20 +43,17 @@ mod vocabulary;
 use crate::calendar::{calendar_card, current_streak, longest_streak};
 use crate::card::{fact, panel, stat_tile};
 use crate::control::{
-    action_msg, card_rule, hairline, pip, toggle, value_slider,
-    vertical_hairline,
+    action_msg, card_rule, hairline, pip, toggle, value_slider, vertical_hairline,
 };
 use crate::format::{clip, commas, plural, trend};
 use crate::layout::{
-    entry_list, entry_row, fact_path, fact_row, heading, inert, nav, scroll,
-    scroll_inset, section_shell, setting,
+    entry_list, entry_row, fact_path, fact_row, heading, inert, nav, scroll, scroll_inset,
+    section_shell, setting,
 };
 use crate::theme::{
-    mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE,
-    FAINT, FG, GAP, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH,
-    ROW_PAD,
-    SCROLL_PAD,
-    STARTING,
+    mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE, FAINT,
+    FG, GAP, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD,
+    SCROLL_PAD, STARTING,
 };
 use iced::widget::{column, container, row, stack, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Subscription, Task, Theme};
@@ -93,7 +90,10 @@ fn theme(_state: &Console) -> Theme {
 }
 
 fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
-    iced::theme::Style { background_color: BG, text_color: FG }
+    iced::theme::Style {
+        background_color: BG,
+        text_color: FG,
+    }
 }
 
 fn subscription(state: &Console) -> Subscription<Message> {
@@ -157,7 +157,9 @@ impl Section {
     }
 
     fn from_label(name: &str) -> Option<Self> {
-        Section::ALL.into_iter().find(|section| section.label().eq_ignore_ascii_case(name.trim()))
+        Section::ALL
+            .into_iter()
+            .find(|section| section.label().eq_ignore_ascii_case(name.trim()))
     }
 
     /// Whether this screen still means something when Flow cannot run.
@@ -259,15 +261,6 @@ struct Console {
     /// True once anything has been written, which is what the footer's "Saved"
     /// note is for.
     saved: bool,
-    /// Push-to-talk as the running daemon has it, which is only what it read at
-    /// startup. Every other setting is picked up live - the config watcher
-    /// swaps new values in, and the chord is compared on each key - but this one
-    /// decides whether the thread watching `/dev/input` exists at all, so
-    /// changing it means restarting.
-    applied_ptt: bool,
-    /// A restart owed to the setting above, waiting for the daemon to be idle.
-    /// Restarting mid-dictation would throw away the words being transcribed.
-    restart_pending: bool,
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
     autostart: Option<bool>,
@@ -343,10 +336,7 @@ impl Console {
             None => setup::needed(),
         };
 
-        // Whatever is on disk now is what a running daemon read at startup, so
-        // it is also the baseline `applied_ptt` measures against.
         let settings = settings::Settings::load();
-        let applied_ptt = settings.push_to_talk;
 
         (
             Self {
@@ -357,8 +347,6 @@ impl Console {
                 service_error: None,
                 service_pending: None,
                 saved: false,
-                applied_ptt,
-                restart_pending: false,
                 autostart: system::autostart_enabled(),
                 input: match pretend {
                     Some(_) => demo::input(),
@@ -403,7 +391,11 @@ impl Console {
             // already the request; a Begin button in front of it would only be
             // asking the same question twice.
             Task::batch([
-                if first_run { Task::done(Message::BeginSetup) } else { Task::none() },
+                if first_run {
+                    Task::done(Message::BeginSetup)
+                } else {
+                    Task::none()
+                },
                 // Whether there is a newer Flow, asked without being asked.
                 // A release nobody knows about is a release nobody installs,
                 // and the answer belongs on screen before the question occurs
@@ -425,7 +417,10 @@ impl Console {
     /// How far this toggle is through its travel, 0 to 1. A toggle that has
     /// never moved is already home.
     fn travel(&self, key: &str) -> f32 {
-        self.toggled_at.get(key).map(|at| progress(*at, self.now, KNOB)).unwrap_or(1.0)
+        self.toggled_at
+            .get(key)
+            .map(|at| progress(*at, self.now, KNOB))
+            .unwrap_or(1.0)
     }
 
     /// True while any motion is still running, which is what decides whether
@@ -472,53 +467,6 @@ impl Console {
             }
             Err(err) => self.save_error = Some(err.to_string()),
         }
-    }
-
-    /// Carry a push-to-talk change into the running daemon, by restarting it.
-    ///
-    /// The console used to print "Settings changed - restart Flow for them to
-    /// take effect" after *any* save, which was wrong twice over. Almost
-    /// nothing needs a restart: the daemon watches its own config file, and the
-    /// chord is re-read on every key press. And where one is genuinely needed,
-    /// stopping to tell someone to go and do it by hand is handing them a chore
-    /// the window is perfectly able to do itself.
-    ///
-    /// Push-to-talk is the exception that is real. It decides whether the thread
-    /// reading `/dev/input` is spawned at all, so it is read once at startup and
-    /// no amount of config watching can apply it.
-    ///
-    /// Deferred while the daemon is listening or transcribing: a restart there
-    /// would throw away the dictation in flight, and no setting is worth a lost
-    /// sentence. `Message::Service` owns the actual verb, including the guard
-    /// against two at once.
-    fn apply_push_to_talk(&mut self) -> Task<Message> {
-        if self.demo || self.settings.push_to_talk == self.applied_ptt {
-            return Task::none();
-        }
-        self.applied_ptt = self.settings.push_to_talk;
-
-        // Nothing to carry it into. Whatever starts next reads the file.
-        if self.daemon.activity == daemon::Activity::Offline {
-            self.restart_pending = false;
-            return Task::none();
-        }
-
-        self.restart_pending = true;
-        self.restart_when_idle()
-    }
-
-    /// Fire the owed restart if the daemon is in a state where losing its
-    /// current work costs nothing.
-    fn restart_when_idle(&mut self) -> Task<Message> {
-        let busy = matches!(
-            self.daemon.activity,
-            daemon::Activity::Listening | daemon::Activity::Working | daemon::Activity::Starting
-        );
-        if !self.restart_pending || busy || self.service_pending.is_some() {
-            return Task::none();
-        }
-        self.restart_pending = false;
-        Task::done(Message::Service("restart"))
     }
 
     fn start_setup_daemon(&mut self) -> Task<Message> {
@@ -626,8 +574,10 @@ impl Console {
                 // hitch, or the first tick after the window maps, can be much
                 // longer than a frame; a chase given that as one step arrives
                 // inside it, which is the snap the speed limit exists to prevent.
-                let elapsed =
-                    now.saturating_duration_since(self.now).as_secs_f32().min(FRAME_CAP);
+                let elapsed = now
+                    .saturating_duration_since(self.now)
+                    .as_secs_f32()
+                    .min(FRAME_CAP);
                 self.now = now;
                 if let Some(state) = self.download.as_mut() {
                     state.advance(elapsed);
@@ -654,9 +604,9 @@ impl Console {
             }
             Message::PushToTalk(on) => {
                 self.settings.push_to_talk = on;
-                self.toggled_at.insert("push_to_talk", std::time::Instant::now());
+                self.toggled_at
+                    .insert("push_to_talk", std::time::Instant::now());
                 self.persist();
-                return self.apply_push_to_talk();
             }
             Message::SetCleanup(level) => {
                 self.settings.cleanup = level;
@@ -665,7 +615,8 @@ impl Console {
             }
             Message::Terminal(on) => {
                 self.settings.terminal = on;
-                self.toggled_at.insert("terminal", std::time::Instant::now());
+                self.toggled_at
+                    .insert("terminal", std::time::Instant::now());
                 self.persist();
             }
             Message::Denoise(on) => {
@@ -678,7 +629,8 @@ impl Console {
                 self.persist();
             }
             Message::Autostart(on) => {
-                self.toggled_at.insert("autostart", std::time::Instant::now());
+                self.toggled_at
+                    .insert("autostart", std::time::Instant::now());
                 match system::set_autostart(on) {
                     // Re-read rather than assume: systemd is the authority on
                     // whether that worked, not our optimism.
@@ -699,9 +651,6 @@ impl Console {
                     self.entries = history::recent();
                     self.days = history::daily(CALENDAR_DAYS);
                 }
-                // A restart deferred because the daemon was mid-dictation goes
-                // the moment it is done with it.
-                return self.restart_when_idle();
             }
             Message::Copy(index) => {
                 if let Some(text) = self.entries.get(index).map(|entry| entry.text.clone()) {
@@ -756,7 +705,8 @@ impl Console {
             }
             Message::CancelCapture => {
                 self.capturing = false;
-                self.cancel_capture.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cancel_capture
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Message::Captured(captured) => {
                 self.capturing = false;
@@ -885,9 +835,11 @@ impl Console {
                     state.apply(event);
                 }
 
-                let over = !self.download.as_ref().is_some_and(setup::State::downloading);
-                let stopped =
-                    over && self.download.as_ref().is_some_and(|state| state.stopped);
+                let over = !self
+                    .download
+                    .as_ref()
+                    .is_some_and(setup::State::downloading);
+                let stopped = over && self.download.as_ref().is_some_and(|state| state.stopped);
 
                 // What was downloaded stays downloaded. Stopping used to delete
                 // the part file, on the reasoning that bytes of a model someone
@@ -958,7 +910,9 @@ impl Console {
     fn save_note(&self) -> Element<'_, Message> {
         match (&self.save_error, self.saved) {
             (Some(err), _) => text(format!("Couldn't save: {err}")).size(12).color(ERR),
-            (None, true) => text("Saved. Applies to your next dictation.").size(12).color(FAINT),
+            (None, true) => text("Saved. Applies to your next dictation.")
+                .size(12)
+                .color(FAINT),
             (None, false) => text(settings::config_path().display().to_string())
                 .size(12)
                 .font(Font::MONOSPACE)
@@ -1018,7 +972,10 @@ impl Console {
                 // A debug build says so, and says when it was made. See
                 // `update::dev_note`.
                 container(column![
-                    text(update::running()).size(11).font(Font::MONOSPACE).color(FAINT),
+                    text(update::running())
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .color(FAINT),
                     text(update::dev_note().unwrap_or_default())
                         .size(10)
                         .font(Font::MONOSPACE)
@@ -1136,7 +1093,10 @@ impl Console {
             Space::new().width(Fill),
             pip(dot),
             Space::new().width(9),
-            text(label).size(13).color(dot).wrapping(text::Wrapping::None),
+            text(label)
+                .size(13)
+                .color(dot)
+                .wrapping(text::Wrapping::None),
         ]
         .align_y(iced::Center);
 
@@ -1145,7 +1105,9 @@ impl Console {
             header = header.push(action_msg(
                 service_action_label(running),
                 !running,
-                self.service_pending.is_none().then_some(Message::Service(verb)),
+                self.service_pending
+                    .is_none()
+                    .then_some(Message::Service(verb)),
             ));
         }
 
@@ -1180,14 +1142,23 @@ impl Console {
                 if dictations == 0 {
                     ("nothing this week".to_string(), MUTED)
                 } else {
-                    (format!("{} average", history::duration(spoken / dictations as f32)), MUTED)
+                    (
+                        format!("{} average", history::duration(spoken / dictations as f32)),
+                        MUTED,
+                    )
                 },
             ),
             Space::new().width(GAP),
             stat_tile(
                 "Current streak",
                 plural(streak as u32, "day"),
-                (format!("longest {}", plural(longest_streak(&self.days) as u32, "day")), MUTED,),
+                (
+                    format!(
+                        "longest {}",
+                        plural(longest_streak(&self.days) as u32, "day")
+                    ),
+                    MUTED,
+                ),
             ),
         ];
 
@@ -1218,7 +1189,6 @@ impl Console {
         ]))
     }
 
-
     /// The way out of a stopped setup.
     ///
     /// Only reachable by having pressed Stop, so it is worded as the resumption
@@ -1245,7 +1215,11 @@ impl Console {
             .width(Fill)
             .style(|_| container::Style {
                 background: Some(Background::Color(mix(BG, ACCENT, 0.055))),
-                border: Border { radius: 8.0.into(), width: 1.0, color: mix(BG, ACCENT, 0.22) },
+                border: Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: mix(BG, ACCENT, 0.22),
+                },
                 ..Default::default()
             })
             .into(),
@@ -1265,14 +1239,24 @@ impl Console {
         let facts = row![
             fact(
                 "Chord",
-                if self.settings.push_to_talk {
-                    self.settings.hotkey.replace('+', " ")
-                } else {
-                    "push to talk is off".to_string()
-                },
+                // The verb leads. "super shift d to hold" reads as a chord
+                // named after an action; "hold super shift d" is the
+                // instruction it was meant to be.
+                format!(
+                    "{} {}",
+                    if self.settings.push_to_talk {
+                        "hold"
+                    } else {
+                        "tap"
+                    },
+                    self.settings.hotkey.replace('+', " "),
+                ),
             ),
             Space::new().width(44),
-            fact("Microphone", clip(self.input.as_deref().unwrap_or("system default"), 38,),),
+            fact(
+                "Microphone",
+                clip(self.input.as_deref().unwrap_or("system default"), 38,),
+            ),
             Space::new().width(Fill),
             fact("Models", format!("{installed} of {}", self.models.len())),
         ];
@@ -1315,7 +1299,9 @@ impl Console {
     /// back through it stay History's job, one item down the rail.
     fn last_said(&self) -> Element<'_, Message> {
         let latest = self.entries.first();
-        let when = latest.map(|entry| history::ago(entry.at, history::now())).unwrap_or_default();
+        let when = latest
+            .map(|entry| history::ago(entry.at, history::now()))
+            .unwrap_or_default();
 
         let heading = row![
             text("Last dictation").size(11).color(FAINT),
@@ -1323,10 +1309,7 @@ impl Console {
             // `ago` already says "just now" for the last minute; empty means
             // the timestamp is missing or in the future, and no label is
             // better than a confident wrong one.
-            text(when)
-                .size(11)
-                .font(Font::MONOSPACE)
-                .color(FAINT),
+            text(when).size(11).font(Font::MONOSPACE).color(FAINT),
         ]
         .align_y(iced::Center);
 
@@ -1339,7 +1322,9 @@ impl Console {
                 .size(12.5)
                 .color(mix(MUTED, FG, 0.55))
                 .wrapping(text::Wrapping::None),
-            None => text("nothing yet - hold the chord and say something").size(12.5).color(FAINT),
+            None => text("nothing yet - hold the chord and say something")
+                .size(12.5)
+                .color(FAINT),
         };
 
         column![heading, Space::new().height(5), line].into()
@@ -1364,18 +1349,6 @@ impl Console {
         if let update::Status::Available(tag) = &self.update {
             notes.push((ACCENT, format!("{tag} is available to install.")));
         }
-        // Only push-to-talk ever needs saying, and only while it is waiting.
-        // Everything else this window writes is picked up by the running daemon
-        // on its own, so a line after every save was telling people to go and
-        // do a chore that did not exist - and never naming which setting, since
-        // it did not know either.
-        if self.restart_pending {
-            notes.push((
-                MUTED,
-                "Push to talk changed - Flow will restart itself as soon as it is idle."
-                    .to_string(),
-            ));
-        }
         notes
     }
 
@@ -1386,10 +1359,14 @@ impl Console {
             // Sits on the heading's left edge and at a row's own top pad, so
             // the line reads as the first entry's place rather than as loose
             // text floating outside the list.
-            container(text("Nothing yet. Hold the chord and say something.").size(13).color(FAINT))
-                .padding([10.0, ENTRY_INSET])
-                .width(Fill)
-                .into()
+            container(
+                text("Nothing yet. Hold the chord and say something.")
+                    .size(13)
+                    .color(FAINT),
+            )
+            .padding([10.0, ENTRY_INSET])
+            .width(Fill)
+            .into()
         } else {
             let mut rows = column![];
             for (index, entry) in self.entries.iter().enumerate() {
@@ -1423,9 +1400,13 @@ impl Console {
     fn dictation_section(&self) -> Element<'_, Message> {
         let mut rows: Vec<Element<Message>> = vec![
             setting(
-                "Push to talk",
-                "Flow watches the chord itself, so no compositor binding is needed. Changing this restarts Flow.",
-                toggle(self.settings.push_to_talk, self.travel("push_to_talk"), Message::PushToTalk),
+                "Hold to talk",
+                "On, hold the chord while you speak. Off, tap to start and tap to stop.",
+                toggle(
+                    self.settings.push_to_talk,
+                    self.travel("push_to_talk"),
+                    Message::PushToTalk,
+                ),
             ),
             setting(
                 "Chord",
@@ -1434,7 +1415,7 @@ impl Console {
                 // and `hotkey::spawn` compares it on every key, so a rebinding
                 // is live by the next press. The stale line was sending people
                 // off to restart for nothing.
-                "Held down while you speak. Takes effect straight away.",
+                "The keys that start a dictation.",
                 row![
                     text(if self.capturing {
                         "press the chord…".to_string()
@@ -1473,7 +1454,11 @@ impl Console {
             setting(
                 "Terminal paste chord",
                 "Send Ctrl+Shift+V when a terminal has focus.",
-                toggle(self.settings.terminal, self.travel("terminal"), Message::Terminal),
+                toggle(
+                    self.settings.terminal,
+                    self.travel("terminal"),
+                    Message::Terminal,
+                ),
             ),
             setting(
                 "Vocabulary",
@@ -1518,11 +1503,15 @@ impl Console {
             setting(
                 "Microphone",
                 "Follows your system's default input. Change it in your sound settings.",
-                text(self.input.clone().unwrap_or_else(|| "not detected".to_string()))
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(MUTED)
-                    .into(),
+                text(
+                    self.input
+                        .clone()
+                        .unwrap_or_else(|| "not detected".to_string()),
+                )
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(MUTED)
+                .into(),
             ),
             setting(
                 "Turn other apps down",
@@ -1537,7 +1526,11 @@ impl Console {
             setting(
                 "Noise suppression",
                 "Runs RNNoise over the audio. Can blunt consonants on a weak mic.",
-                toggle(self.settings.denoise, self.travel("denoise"), Message::Denoise),
+                toggle(
+                    self.settings.denoise,
+                    self.travel("denoise"),
+                    Message::Denoise,
+                ),
             ),
         ];
 
@@ -1595,7 +1588,11 @@ impl Console {
                 .padding([8, 10])
                 .style(|_theme, _status| iced::widget::text_input::Style {
                     background: Background::Color(BG),
-                    border: Border { color: LINE, width: 1.0, radius: 6.0.into() },
+                    border: Border {
+                        color: LINE,
+                        width: 1.0,
+                        radius: 6.0.into()
+                    },
                     icon: FAINT,
                     placeholder: FAINT,
                     value: FG,
@@ -1685,7 +1682,9 @@ impl Console {
 
         let body = column![
             row![
-                text(title).size(13.5).color(if chosen { FG } else { MUTED }),
+                text(title)
+                    .size(13.5)
+                    .color(if chosen { FG } else { MUTED }),
                 Space::new().width(Fill),
                 pip(if chosen { OK } else { mix(BG, FG, 0.18) }),
             ]
@@ -1696,7 +1695,11 @@ impl Console {
             example,
         ];
 
-        let tint = if chosen { mix(BG, OK, 0.05) } else { Color::TRANSPARENT };
+        let tint = if chosen {
+            mix(BG, OK, 0.05)
+        } else {
+            Color::TRANSPARENT
+        };
         iced::widget::button(container(body).padding([10, 12]).width(Fill))
             .padding(0)
             .on_press(Message::SetCleanup(level))
@@ -1708,14 +1711,16 @@ impl Console {
                 border: Border {
                     radius: 8.0.into(),
                     width: 1.0,
-                    color: if chosen { mix(BG, OK, 0.3) } else { Color::TRANSPARENT },
+                    color: if chosen {
+                        mix(BG, OK, 0.3)
+                    } else {
+                        Color::TRANSPARENT
+                    },
                 },
                 ..Default::default()
             })
             .into()
     }
-
-
 
     fn about_section(&self) -> Element<'_, Message> {
         // Bound so the borrows outlive the rows built from them.
@@ -1748,7 +1753,10 @@ impl Console {
     }
 
     fn model_fact(&self, index: usize) -> String {
-        self.models.get(index).map(system::Model::fact).unwrap_or_else(|| "unknown".into())
+        self.models
+            .get(index)
+            .map(system::Model::fact)
+            .unwrap_or_else(|| "unknown".into())
     }
 
     fn version_row(&self) -> Element<'_, Message> {
@@ -1774,7 +1782,10 @@ impl Console {
                 Space::new().width(Fill),
                 pip(dot),
                 Space::new().width(7),
-                text(update::running()).size(12).font(Font::MONOSPACE).color(MUTED),
+                text(update::running())
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .color(MUTED),
                 Space::new().width(12),
                 action,
             ]
@@ -1929,7 +1940,10 @@ mod tests {
 
     #[test]
     fn startup_is_named_once_in_the_status() {
-        assert_eq!(activity_label(daemon::Activity::Starting), ("Starting…", STARTING));
+        assert_eq!(
+            activity_label(daemon::Activity::Starting),
+            ("Starting…", STARTING)
+        );
         assert_eq!(service_action_label(false), "Start");
         // The action is the state it is not in - never a word that reads the
         // same either way.

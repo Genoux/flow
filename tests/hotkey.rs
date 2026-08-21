@@ -1,5 +1,7 @@
 use evdev::KeyCode;
-use flow::hotkey::{chord_broken, chord_released, Chord, Event, Modifier, PttState};
+use flow::hotkey::{
+    Chord, Event, Modifier, PttState, TapAction, chord_broken, chord_released, tap_action,
+};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -54,6 +56,38 @@ fn a_tap_too_short_to_hold_speech_is_discarded() {
     }
 }
 
+/// Hyprland binds USR1 on press and USR2 on release of the same chord Flow
+/// watches natively. If tap-to-talk honoured that stop, turning the setting
+/// off would still end every dictation the moment the keys came up.
+#[test]
+fn tap_to_talk_ignores_release_and_compositor_stop() {
+    assert_eq!(
+        tap_action(
+            Event::Released {
+                held: Duration::from_millis(40)
+            },
+            true,
+            false
+        ),
+        TapAction::Ignore,
+    );
+    assert_eq!(tap_action(Event::Stop, true, false), TapAction::Ignore);
+}
+
+/// Native `Pressed` and compositor `Start` are one tap. The second must not
+/// toggle the session back off.
+#[test]
+fn tap_to_talk_treats_the_compositor_echo_as_the_same_press() {
+    assert_eq!(tap_action(Event::Pressed, false, false), TapAction::Begin);
+    assert_eq!(tap_action(Event::Start, true, true), TapAction::Ignore);
+}
+
+#[test]
+fn a_second_tap_ends_the_dictation() {
+    assert_eq!(tap_action(Event::Pressed, true, false), TapAction::Finish);
+    assert_eq!(tap_action(Event::Start, true, false), TapAction::Finish);
+}
+
 /// `deliberate()` still exists, but now only decides whether a stray key cancels.
 #[test]
 fn only_bare_keys_cancel_on_a_stray_key() {
@@ -91,7 +125,10 @@ fn releasing_the_trigger_ends_the_hold() {
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
-    assert!(matches!(state.apply(D, false), Some(Event::Released { .. })));
+    assert!(matches!(
+        state.apply(D, false),
+        Some(Event::Released { .. })
+    ));
 }
 
 /// The hold ends when any finger lifts, not only the letter. Hyprland's release
@@ -125,11 +162,18 @@ fn the_chord_starts_whichever_key_completes_it() {
         let mut state = PttState::new(Chord::default());
         let events: Vec<_> = order.iter().map(|key| state.apply(*key, true)).collect();
         assert_eq!(
-            events.iter().filter(|e| **e == Some(Event::Pressed)).count(),
+            events
+                .iter()
+                .filter(|e| **e == Some(Event::Pressed))
+                .count(),
             1,
             "expected exactly one Pressed for {order:?}, got {events:?}"
         );
-        assert_eq!(events[2], Some(Event::Pressed), "must start on the last key of {order:?}");
+        assert_eq!(
+            events[2],
+            Some(Event::Pressed),
+            "must start on the last key of {order:?}"
+        );
     }
 }
 
@@ -160,13 +204,22 @@ fn autorepeat_on_the_trigger_is_ignored() {
 /// with nothing in the log.
 #[test]
 fn a_deliberate_chord_never_discards_on_an_unrelated_key() {
-    for intruder in [OTHER, KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTALT, KeyCode::KEY_X] {
+    for intruder in [
+        OTHER,
+        KeyCode::KEY_LEFTCTRL,
+        KeyCode::KEY_LEFTALT,
+        KeyCode::KEY_X,
+    ] {
         let mut state = PttState::new(Chord::default());
         state.apply(SUPER, true);
         state.apply(SHIFT, true);
         state.apply(D, true);
 
-        assert_eq!(state.apply(intruder, true), None, "{intruder:?} cancelled the hold");
+        assert_eq!(
+            state.apply(intruder, true),
+            None,
+            "{intruder:?} cancelled the hold"
+        );
         state.apply(intruder, false);
         assert!(
             matches!(state.apply(D, false), Some(Event::Released { .. })),
@@ -182,7 +235,11 @@ fn a_bare_key_still_cancels_on_an_extra_key() {
     let mut state = bare();
     state.apply(BARE, true);
     assert_eq!(state.apply(OTHER, true), Some(Event::Cancelled));
-    assert_eq!(state.apply(BARE, false), None, "cancelled hold must not dictate");
+    assert_eq!(
+        state.apply(BARE, false),
+        None,
+        "cancelled hold must not dictate"
+    );
 }
 
 /// After a bare-key combo the trigger is often still down. Pressing further keys
@@ -245,7 +302,10 @@ fn the_chord_can_be_used_twice() {
         state.apply(SUPER, true);
         state.apply(SHIFT, true);
         assert_eq!(state.apply(D, true), Some(Event::Pressed), "round {round}");
-        assert!(matches!(state.apply(D, false), Some(Event::Released { .. })));
+        assert!(matches!(
+            state.apply(D, false),
+            Some(Event::Released { .. })
+        ));
         state.apply(SHIFT, false);
         state.apply(SUPER, false);
     }
@@ -259,7 +319,10 @@ fn a_modifier_lift_after_the_hold_ended_is_quiet() {
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
-    assert!(matches!(state.apply(D, false), Some(Event::Released { .. })));
+    assert!(matches!(
+        state.apply(D, false),
+        Some(Event::Released { .. })
+    ));
     assert_eq!(state.apply(SHIFT, false), None);
     assert_eq!(state.apply(SUPER, false), None);
 }
@@ -270,7 +333,10 @@ fn a_modifier_lift_after_the_hold_ended_is_quiet() {
 fn hold_then_release_dictates() {
     let mut state = bare();
     assert_eq!(state.apply(BARE, true), Some(Event::Pressed));
-    assert!(matches!(state.apply(BARE, false), Some(Event::Released { .. })));
+    assert!(matches!(
+        state.apply(BARE, false),
+        Some(Event::Released { .. })
+    ));
 }
 
 /// Right Ctrl + C must stay a copy. Without this the PTT key would fire on
@@ -281,7 +347,11 @@ fn combo_cancels_and_emits_no_release() {
     state.apply(BARE, true);
     assert_eq!(state.apply(OTHER, true), Some(Event::Cancelled));
     assert_eq!(state.apply(OTHER, false), None);
-    assert_eq!(state.apply(BARE, false), None, "cancelled hold must not dictate");
+    assert_eq!(
+        state.apply(BARE, false),
+        None,
+        "cancelled hold must not dictate"
+    );
 }
 
 #[test]
@@ -290,7 +360,10 @@ fn duplicate_device_reports_are_ignored() {
     assert_eq!(state.apply(BARE, true), Some(Event::Pressed));
     assert_eq!(state.apply(BARE, true), None, "duplicate press");
 
-    assert!(matches!(state.apply(BARE, false), Some(Event::Released { .. })));
+    assert!(matches!(
+        state.apply(BARE, false),
+        Some(Event::Released { .. })
+    ));
     assert_eq!(state.apply(BARE, false), None, "duplicate release");
 }
 
@@ -343,7 +416,12 @@ fn every_letter_and_function_key_round_trips() {
 #[test]
 fn binding_text_is_forgiving_about_shape() {
     let expected = Chord::default();
-    for text in ["SUPER+SHIFT+D", " super + shift + d ", "meta+shift+d", "win+shift+d"] {
+    for text in [
+        "SUPER+SHIFT+D",
+        " super + shift + d ",
+        "meta+shift+d",
+        "win+shift+d",
+    ] {
         assert_eq!(Chord::parse(text).expect(text), expected, "{text}");
     }
 }
@@ -380,9 +458,15 @@ fn modifiers_are_judged_from_what_was_actually_seen() {
     use flow::hotkey::any_modifier_in;
 
     assert!(!any_modifier_in(&HashSet::new()), "nothing held");
-    assert!(!any_modifier_in(&HashSet::from([KeyCode::KEY_D, KeyCode::KEY_A])), "letters only");
+    assert!(
+        !any_modifier_in(&HashSet::from([KeyCode::KEY_D, KeyCode::KEY_A])),
+        "letters only"
+    );
     assert!(any_modifier_in(&HashSet::from([KeyCode::KEY_LEFTMETA])));
-    assert!(any_modifier_in(&HashSet::from([KeyCode::KEY_RIGHTSHIFT, KeyCode::KEY_D])));
+    assert!(any_modifier_in(&HashSet::from([
+        KeyCode::KEY_RIGHTSHIFT,
+        KeyCode::KEY_D
+    ])));
 }
 
 /// Kept as a device-backed smoke test, but it cannot assert timing: a stuck
@@ -392,21 +476,31 @@ fn modifiers_are_judged_from_what_was_actually_seen() {
 fn the_device_fallback_still_answers() {
     let started = std::time::Instant::now();
     let released = flow::hotkey::wait_for_modifiers_released(Duration::from_millis(300));
-    eprintln!("device fallback: released={released} in {:?}", started.elapsed());
+    eprintln!(
+        "device fallback: released={released} in {:?}",
+        started.elapsed()
+    );
 }
 
 /// Compositor hold ends when any finger of the original chord comes up - not
 /// only when every key is released, and not only when the letter key lifts.
 #[test]
 fn chord_breaks_when_any_held_key_lifts() {
-    let chord = HashSet::from([KeyCode::KEY_LEFTMETA, KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_D]);
+    let chord = HashSet::from([
+        KeyCode::KEY_LEFTMETA,
+        KeyCode::KEY_LEFTSHIFT,
+        KeyCode::KEY_D,
+    ]);
     assert!(!chord_broken(&chord, &chord));
 
     let mut after = chord.clone();
     after.remove(&KeyCode::KEY_D);
     assert!(chord_broken(&chord, &after));
     assert!(!chord_released(&chord, &after), "shift/super still down");
-    assert!(!chord_broken(&chord, &HashSet::new()), "empty read is unknown, not a release");
+    assert!(
+        !chord_broken(&chord, &HashSet::new()),
+        "empty read is unknown, not a release"
+    );
     assert!(chord_released(&chord, &HashSet::new()));
 }
 
@@ -428,5 +522,8 @@ fn the_modifier_check_is_not_a_device_scan() {
     }
     let each = started.elapsed() / 5;
     eprintln!("modifier check: {each:?} per call");
-    assert!(each < Duration::from_millis(5), "{each:?} per call - rediscovering or reopening devices?");
+    assert!(
+        each < Duration::from_millis(5),
+        "{each:?} per call - rediscovering or reopening devices?"
+    );
 }
