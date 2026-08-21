@@ -190,7 +190,7 @@ fn flags_win_over_the_file() {
 
     // `--cleanup` names a level outright, where `--raw` only ever means none.
     let levelled =
-        from_file.overridden_by(&["daemon", "--cleanup", "medium"].map(String::from).to_vec());
+        from_file.overridden_by(["daemon", "--cleanup", "medium"].map(String::from).as_ref());
     assert_eq!(levelled.cleanup, Cleanup::Medium);
 }
 
