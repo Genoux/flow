@@ -31,18 +31,20 @@ pub enum Cleanup {
     #[default]
     Light,
     Medium,
-    Hard,
 }
 
 impl Cleanup {
-    pub const ALL: [Self; 4] = [Self::None, Self::Light, Self::Medium, Self::Hard];
+    pub const ALL: [Self; 3] = [Self::None, Self::Light, Self::Medium];
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "none" => Some(Self::None),
             "light" => Some(Self::Light),
             "medium" => Some(Self::Medium),
-            "hard" => Some(Self::Hard),
+            // See `flow::refine::Cleanup::parse`: an existing `cleanup = hard`
+            // file must still round-trip through the window as Medium rather
+            // than reset the setting on open.
+            "hard" => Some(Self::Medium),
             _ => None,
         }
     }
@@ -52,7 +54,6 @@ impl Cleanup {
             Self::None => "none",
             Self::Light => "light",
             Self::Medium => "medium",
-            Self::Hard => "hard",
         }
     }
 
@@ -63,7 +64,6 @@ impl Cleanup {
             Self::None => ("None", "Types exactly what you said, mistakes and all"),
             Self::Light => ("Light", "Removes filler words, keeps your wording"),
             Self::Medium => ("Medium", "Fixes grammar and tightens for clarity"),
-            Self::Hard => ("Hard", "Rewrites into the way you would have typed it"),
         }
     }
 
@@ -75,7 +75,6 @@ impl Cleanup {
             Self::None => "um so me and him was gonna ship the the feature friday you know",
             Self::Light => "so me and him was gonna ship the feature friday",
             Self::Medium => "Me and him were gonna ship the feature Friday.",
-            Self::Hard => "He and I were going to ship the feature on Friday.",
         }
     }
 }

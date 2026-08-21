@@ -18,18 +18,12 @@ struct Case {
     required: &'static [&'static str],
     /// Refining shortens; a big expansion means it started writing prose.
     max_words: usize,
-    /// Ceiling on sentences in the output, for the levels that claim to
-    /// restructure. `None` means the level makes no such claim and the sentence
-    /// shape of the input is expected to survive.
-    max_sentences: Option<usize>,
 }
 
-/// Shared by the Hard case above and the level-versus-level check below, which
-/// is the assertion that actually earns Hard its card in the console: the same
-/// input, both levels, Hard strictly shorter.
-const RESTRUCTURE_INPUT: &str = "the cache is cold on every deploy. and uh we also \
-     see the p99 spike. it's about four seconds now. anyway what I'm saying is we \
-     need to warm the cache in the build step. that's the fix.";
+/// The exact sentence the console prints on its Style cards, at every level.
+/// Using it here means the level-versus-level check below tests the promise the
+/// user is actually shown rather than a fixture invented for the test.
+const ADVERTISED_INPUT: &str = "um so me and him was gonna ship the the feature friday you know";
 
 const CASES: &[Case] = &[
     Case {
@@ -40,7 +34,6 @@ const CASES: &[Case] = &[
         forbidden: &["um ", "uh ", " like ", "the the", "on on", "you know"],
         required: &["Friday", "ship"],
         max_words: 20,
-        max_sentences: None,
     },
     Case {
         name: "self-correction keeps the final choice",
@@ -49,7 +42,6 @@ const CASES: &[Case] = &[
         forbidden: &["no wait", "John"],
         required: &["Mary", "invoice"],
         max_words: 15,
-        max_sentences: None,
     },
     // The failure every dictation refining hits at least once: the model helpfully
     // answers instead of transcribing. Dictating a question must produce the
@@ -61,7 +53,6 @@ const CASES: &[Case] = &[
         forbidden: &["o'clock", "cannot", "can't", "don't have", "AI", "sorry"],
         required: &["time"],
         max_words: 8,
-        max_sentences: None,
     },
     // Same hazard, sharper: an imperative must not be obeyed or refused.
     Case {
@@ -71,7 +62,6 @@ const CASES: &[Case] = &[
         forbidden: &["cannot", "can't", "won't", "unable", "sorry", "as an"],
         required: &["delete", "downloads"],
         max_words: 14,
-        max_sentences: None,
     },
     // Guards against the opposite failure: a refining pass that rewrites healthy
     // sentences puts words in the speaker's mouth.
@@ -82,7 +72,6 @@ const CASES: &[Case] = &[
         forbidden: &["I ", "cleaned", "here is"],
         required: &["deployment", "nine"],
         max_words: 10,
-        max_sentences: None,
     },
     // The recogniser handles 25 languages, so refining must not quietly turn
     // dictation into English. Also exercises multi-byte output: an accented
@@ -95,7 +84,6 @@ const CASES: &[Case] = &[
         forbidden: &["euh", "la la", "friday", "deliver"],
         required: &["fonctionnalité", "vendredi"],
         max_words: 15,
-        max_sentences: None,
     },
     // Verbatim from the user asking for this feature - a real malformed
     // dictation, with a meaning a human can state but the words never do.
@@ -117,7 +105,6 @@ const CASES: &[Case] = &[
         forbidden: &["of the of the", "interpret interpret", "one one"],
         required: &["transcript", "clean"],
         max_words: 90,
-        max_sentences: None,
     },
     // The pair that makes the levels mean something. Same input, same model,
     // and the only difference is which rules block the prompt carries.
@@ -133,7 +120,6 @@ const CASES: &[Case] = &[
         forbidden: &["um "],
         required: &["me and him was"],
         max_words: 12,
-        max_sentences: None,
     },
     Case {
         name: "medium fixes the grammar light left alone",
@@ -142,39 +128,12 @@ const CASES: &[Case] = &[
         forbidden: &["um ", "me and him was"],
         required: &["ship"],
         max_words: 12,
-        max_sentences: None,
     },
-    // Hard's whole claim is restructuring, so the input needs something to
-    // restructure: the speaker states three symptoms, then arrives at the point
-    // last, wrapped in spoken scaffolding ("anyway what I'm saying is").
-    //
-    // An input already in reading order will not do. Asking Hard to merge
-    // sentences that read fine either way measures nothing, and a fixture like
-    // that failed this test for a whole release cycle while HARD_RULES was
-    // working correctly. See RESTRUCTURE_INPUT for the level-versus-level check.
+    // The failure the top level is most likely to have, given it is the only
+    // one told to rewrite: filling the gaps with plausible detail nobody said.
     Case {
-        name: "hard restructures what medium may only tidy",
-        level: Cleanup::Hard,
-        raw: RESTRUCTURE_INPUT,
-        forbidden: &[
-            "uh ",
-            "anyway",
-            "what i'm saying",
-            "sorry",
-            "as an",
-            "regards",
-        ],
-        required: &["cache", "build step"],
-        max_words: 40,
-        // Five sentences in. Two or fewer out is the machine-checkable proof
-        // that Hard merged and reordered, which Medium is forbidden to do.
-        max_sentences: Some(2),
-    },
-    // The failure Hard is most likely to have, given it is the only level told
-    // to rewrite: filling the gaps with plausible detail nobody said.
-    Case {
-        name: "hard rewrites without inventing",
-        level: Cleanup::Hard,
+        name: "medium rewrites without inventing",
+        level: Cleanup::Medium,
         raw: "tell the team the thing is delayed",
         forbidden: &[
             "week",
@@ -186,15 +145,8 @@ const CASES: &[Case] = &[
         ],
         required: &["delay"],
         max_words: 16,
-        max_sentences: None,
     },
 ];
-
-fn sentences(text: &str) -> usize {
-    text.split(['.', '!', '?'])
-        .filter(|part| !part.trim().is_empty())
-        .count()
-}
 
 fn load() -> Option<flow::refine::Refiner> {
     let path = flow::refine::model_path();
@@ -251,16 +203,6 @@ fn refining_behaves() {
                 "[{}] grew to {words} words (max {}): {refined:?}",
                 case.name, case.max_words
             ));
-        }
-        if let Some(ceiling) = case.max_sentences {
-            let sentences = sentences(&refined);
-            if sentences > ceiling {
-                failures.push(format!(
-                    "[{}] left {sentences} sentences (max {ceiling}), so it tidied \
-                     rather than restructured: {refined:?}",
-                    case.name
-                ));
-            }
         }
         if refined.trim().is_empty() {
             failures.push(format!("[{}] produced nothing", case.name));
@@ -365,26 +307,48 @@ fn refining_behaves() {
         Ok(text) => failures.push(format!("a 1ms budget still produced {text:?}")),
     }
 
-    // The assertion that earns Hard its own card in the console. The case list
-    // above can only check Hard against a fixed number; if Medium ever learned
-    // to restructure, four cards would become three with two names and every
-    // case above would still pass. Only running one input through both levels
-    // and comparing them can catch that.
+    // Every case above grades one level against a constant, which cannot catch
+    // two levels collapsing into each other: if Light ever started fixing
+    // grammar, three cards would become two with three names and the whole list
+    // would stay green. Only one input through both levels can catch it, and
+    // this is now the sharpest seam in the ladder - Light forbids exactly what
+    // Medium permits.
+    //
+    // A four-level dial shipped for a release cycle with its top two levels
+    // indistinguishable. That is the failure this assertion exists to prevent.
+    let light = refiner
+        .refine(ADVERTISED_INPUT, Cleanup::Light)
+        .expect("light");
     let medium = refiner
-        .refine(RESTRUCTURE_INPUT, Cleanup::Medium)
+        .refine(ADVERTISED_INPUT, Cleanup::Medium)
         .expect("medium");
-    let hard = refiner
-        .refine(RESTRUCTURE_INPUT, Cleanup::Hard)
-        .expect("hard");
-    eprintln!("\n[levels] medium ({} sent) {medium:?}", sentences(&medium));
-    eprintln!("[levels] hard   ({} sent) {hard:?}", sentences(&hard));
-    if sentences(&hard) >= sentences(&medium) {
+    eprintln!("\n[levels] light  {light:?}");
+    eprintln!("[levels] medium {medium:?}");
+    if light == medium {
         failures.push(format!(
-            "hard left {} sentences and medium left {}, so hard restructured no \
-             more than the level below it and the console should offer three \
-             cards, not four:\n  medium: {medium:?}\n  hard:   {hard:?}",
-            sentences(&hard),
-            sentences(&medium)
+            "light and medium produced the same text, so the dial has two names \
+             for one level: {light:?}"
+        ));
+    }
+    // Capitalisation is the cheapest proof of the split: Light is told not to
+    // fix it, Medium is told to. Checked as a property, not against a literal,
+    // because the rest of the sentence is the model's business.
+    let capitalised = |text: &str| {
+        text.trim()
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_uppercase())
+    };
+    if capitalised(&light) {
+        failures.push(format!(
+            "light capitalised {light:?}, but its rules forbid fixing \
+             capitalisation - it is doing Medium's job"
+        ));
+    }
+    if !capitalised(&medium) {
+        failures.push(format!(
+            "medium left {medium:?} uncapitalised, so it is not fixing grammar \
+             and the level below it already does everything it does"
         ));
     }
 

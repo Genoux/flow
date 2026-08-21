@@ -64,6 +64,18 @@ fn the_old_refine_key_still_parses() {
     );
 }
 
+/// `hard` was a fourth level until it measured indistinguishable from Medium.
+/// Anyone who selected it has it written to disk, and the daemon refusing to
+/// start over a level that no longer exists would be a far worse regression
+/// than silently giving them the closest one that does.
+#[test]
+fn the_removed_hard_level_still_starts_the_daemon() {
+    assert_eq!(
+        Config::parse("cleanup = hard\n").expect("hard").cleanup,
+        Cleanup::Medium
+    );
+}
+
 #[test]
 fn an_unknown_cleanup_level_is_loud() {
     let err = Config::parse("cleanup = aggressive\n").expect_err("bad level");

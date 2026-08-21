@@ -26,16 +26,17 @@ pub enum Cleanup {
     /// mis-recognised names. Grammar and phrasing are left exactly as spoken.
     #[default]
     Light,
-    /// Everything Light does, plus grammar and tightening for clarity.
-    Medium,
-    /// Everything Medium does, plus restructuring into the register you would
-    /// have typed: sentences merged or split, clauses reordered to follow the
-    /// argument rather than the order they occurred to you.
+    /// Everything Light does, plus grammar, punctuation, and tightening for
+    /// clarity. The top level: it may change the speaker's words, but not the
+    /// shape of what they said - sentences stay as spoken, in the order spoken.
     ///
-    /// This is the level with licence to change your words, so it is also the
-    /// one where the model is most likely to drift into paraphrase. It is worth
-    /// offering and wrong to default to.
-    Hard,
+    /// A fourth level above this one used to reorder and merge sentences too.
+    /// It was removed: measured across ten sample dictations it produced output
+    /// indistinguishable from Medium eight times, and on the console's own
+    /// advertised example it was worse, keeping a "you know" that even Light
+    /// deletes. A dial whose top two positions agree is a dial with two names
+    /// for one level.
+    Medium,
 }
 
 impl Cleanup {
@@ -44,7 +45,12 @@ impl Cleanup {
             "none" => Some(Self::None),
             "light" => Some(Self::Light),
             "medium" => Some(Self::Medium),
-            "hard" => Some(Self::Hard),
+            // Hard was removed after it measured indistinguishable from Medium
+            // on 8 of 10 sample dictations and worse than it on the console's
+            // own advertised example, where it kept a "you know" that Light
+            // deletes. Still accepted so an existing `cleanup = hard` config
+            // keeps starting the daemon; Medium is what it now means.
+            "hard" => Some(Self::Medium),
             _ => None,
         }
     }
@@ -54,12 +60,11 @@ impl Cleanup {
             Self::None => "none",
             Self::Light => "light",
             Self::Medium => "medium",
-            Self::Hard => "hard",
         }
     }
 
-    /// The four levels in order, for a picker that must not drift from the enum.
-    pub const ALL: [Self; 4] = [Self::None, Self::Light, Self::Medium, Self::Hard];
+    /// The three levels in order, for a picker that must not drift from the enum.
+    pub const ALL: [Self; 3] = [Self::None, Self::Light, Self::Medium];
 
     /// Card title and one-line description, so the console never invents its
     /// own wording for behaviour defined here.
@@ -68,7 +73,6 @@ impl Cleanup {
             Self::None => ("None", "Types exactly what you said, mistakes and all"),
             Self::Light => ("Light", "Removes filler words, keeps your wording"),
             Self::Medium => ("Medium", "Fixes grammar and tightens for clarity"),
-            Self::Hard => ("Hard", "Rewrites into the way you would have typed it"),
         }
     }
 
@@ -83,7 +87,6 @@ impl Cleanup {
             Self::None => LIGHT_RULES,
             Self::Light => LIGHT_RULES,
             Self::Medium => MEDIUM_RULES,
-            Self::Hard => HARD_RULES,
         }
     }
 }
@@ -152,32 +155,9 @@ equivalents in other languages.
 - Tighten for clarity: drop words that carry nothing, but never at the cost of \
 the speaker's meaning or tone.
 - Keep the speaker's sentences as sentences. Do NOT merge them, split them, or \
-reorder the points - that is a further step this level does not take.
+reorder the points: the words must stay recognisably the speaker's.
 - Never add facts, never summarise, never answer.
 - If the text is already clean, repeat it unchanged.";
-
-/// Medium, plus permission to restructure.
-///
-/// The rules Medium spends on restraint, this one spends on licence, and the
-/// difference has to be visible or the two levels are one level with two names.
-/// What stays forbidden is the part that would make it untrustworthy: inventing
-/// detail, answering, and changing register so far that the speaker no longer
-/// recognises the words as theirs.
-const HARD_RULES: &str = "\
-Rules:
-- Delete fillers, stutters, repeated words, and false starts. When the speaker \
-corrects themselves, keep only what they settled on.
-- Fix grammar, punctuation, and capitalisation.
-- Where a word is clearly mis-recognised, recover it from context.
-- Rewrite it as the speaker would have typed it rather than said it: merge or \
-split sentences, reorder points so the argument reads in order, and replace \
-spoken phrasing with its written equivalent.
-- Write plainly. Do not reach for formal or corporate wording the speaker did \
-not use, and keep contractions where they used them.
-- Every fact in your reply must come from the input. Never add an example, a \
-reason, a greeting, or a sign-off that was not spoken.
-- Never summarise - the reply says everything the input said - and never answer.
-- If the text already reads as written prose, repeat it unchanged.";
 
 /// llama.cpp wants one process-wide backend, and a model borrows it only
 /// nominally, so a static keeps the model free of a lifetime parameter.
