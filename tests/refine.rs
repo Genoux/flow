@@ -24,6 +24,13 @@ struct Case {
     max_sentences: Option<usize>,
 }
 
+/// Shared by the Hard case above and the level-versus-level check below, which
+/// is the assertion that actually earns Hard its card in the console: the same
+/// input, both levels, Hard strictly shorter.
+const RESTRUCTURE_INPUT: &str = "the cache is cold on every deploy. and uh we also \
+     see the p99 spike. it's about four seconds now. anyway what I'm saying is we \
+     need to warm the cache in the build step. that's the fix.";
+
 const CASES: &[Case] = &[
     Case {
         name: "fillers and stutters",
@@ -137,24 +144,30 @@ const CASES: &[Case] = &[
         max_words: 12,
         max_sentences: None,
     },
-    // Hard's whole claim is restructuring, so the input is deliberately one the
-    // lower levels cannot help: three stumbling sentences that say one thing in
-    // the order it occurred to the speaker rather than the order it reads in.
+    // Hard's whole claim is restructuring, so the input needs something to
+    // restructure: the speaker states three symptoms, then arrives at the point
+    // last, wrapped in spoken scaffolding ("anyway what I'm saying is").
     //
-    // Medium may only clean these three sentences. Hard may make them one or
-    // two. If Hard cannot beat Medium here the level is a label, not a feature,
-    // and the console should offer three cards instead of four.
+    // An input already in reading order will not do. Asking Hard to merge
+    // sentences that read fine either way measures nothing, and a fixture like
+    // that failed this test for a whole release cycle while HARD_RULES was
+    // working correctly. See RESTRUCTURE_INPUT for the level-versus-level check.
     Case {
         name: "hard restructures what medium may only tidy",
         level: Cleanup::Hard,
-        raw: "so the deploy failed last night. it was the migration that broke \
-              it. we should probably roll back first and then um look at the \
-              migration after I think",
-        forbidden: &["um ", "sorry", "as an", "let me know", "regards"],
-        required: &["migration", "roll back"],
+        raw: RESTRUCTURE_INPUT,
+        forbidden: &[
+            "uh ",
+            "anyway",
+            "what i'm saying",
+            "sorry",
+            "as an",
+            "regards",
+        ],
+        required: &["cache", "build step"],
         max_words: 40,
-        // Three sentences in. Two or fewer out is the only machine-checkable
-        // proof that Hard did something Medium is forbidden to do.
+        // Five sentences in. Two or fewer out is the machine-checkable proof
+        // that Hard merged and reordered, which Medium is forbidden to do.
         max_sentences: Some(2),
     },
     // The failure Hard is most likely to have, given it is the only level told
@@ -176,6 +189,12 @@ const CASES: &[Case] = &[
         max_sentences: None,
     },
 ];
+
+fn sentences(text: &str) -> usize {
+    text.split(['.', '!', '?'])
+        .filter(|part| !part.trim().is_empty())
+        .count()
+}
 
 fn load() -> Option<flow::refine::Refiner> {
     let path = flow::refine::model_path();
@@ -234,10 +253,7 @@ fn refining_behaves() {
             ));
         }
         if let Some(ceiling) = case.max_sentences {
-            let sentences = refined
-                .split(['.', '!', '?'])
-                .filter(|part| !part.trim().is_empty())
-                .count();
+            let sentences = sentences(&refined);
             if sentences > ceiling {
                 failures.push(format!(
                     "[{}] left {sentences} sentences (max {ceiling}), so it tidied \
@@ -347,6 +363,29 @@ fn refining_behaves() {
     match refiner.refine_within(long, std::time::Duration::from_millis(1), Cleanup::Light) {
         Err(err) => eprintln!("\n[budget] refused as expected: {err}"),
         Ok(text) => failures.push(format!("a 1ms budget still produced {text:?}")),
+    }
+
+    // The assertion that earns Hard its own card in the console. The case list
+    // above can only check Hard against a fixed number; if Medium ever learned
+    // to restructure, four cards would become three with two names and every
+    // case above would still pass. Only running one input through both levels
+    // and comparing them can catch that.
+    let medium = refiner
+        .refine(RESTRUCTURE_INPUT, Cleanup::Medium)
+        .expect("medium");
+    let hard = refiner
+        .refine(RESTRUCTURE_INPUT, Cleanup::Hard)
+        .expect("hard");
+    eprintln!("\n[levels] medium ({} sent) {medium:?}", sentences(&medium));
+    eprintln!("[levels] hard   ({} sent) {hard:?}", sentences(&hard));
+    if sentences(&hard) >= sentences(&medium) {
+        failures.push(format!(
+            "hard left {} sentences and medium left {}, so hard restructured no \
+             more than the level below it and the console should offer three \
+             cards, not four:\n  medium: {medium:?}\n  hard:   {hard:?}",
+            sentences(&hard),
+            sentences(&medium)
+        ));
     }
 
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
