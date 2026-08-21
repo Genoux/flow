@@ -2,12 +2,13 @@
 //! names, and a typo must be loud rather than silently ignored.
 
 use flow::config::Config;
+use flow::refine::Cleanup;
 
 #[test]
 fn defaults_need_no_file() {
     let defaults = Config::default();
     assert!(defaults.push_to_talk);
-    assert!(defaults.refine);
+    assert_eq!(defaults.cleanup, Cleanup::Light);
     assert_eq!(defaults.duck, 50);
     assert!(!defaults.terminal);
 }
@@ -21,7 +22,7 @@ fn missing_file_is_the_normal_state() {
 #[test]
 fn file_overrides_every_key() {
     let parsed = Config::parse(
-        "push_to_talk = false\nduck = 20\nrefine = false\nterminal = true\n",
+        "push_to_talk = false\nduck = 20\ncleanup = medium\nterminal = true\n",
     )
     .expect("parse");
     assert_eq!(
@@ -29,7 +30,7 @@ fn file_overrides_every_key() {
         Config {
             push_to_talk: false,
             duck: 20,
-            refine: false,
+            cleanup: Cleanup::Medium,
             terminal: true,
             chord: Default::default(),
             gpu: None, denoise: false, record_debug: false,
@@ -42,7 +43,27 @@ fn partial_file_keeps_the_other_defaults() {
     let parsed = Config::parse("duck = 0\n").expect("parse");
     assert_eq!(parsed.duck, 0);
     assert_eq!(parsed.push_to_talk, Config::default().push_to_talk);
-    assert_eq!(parsed.refine, Config::default().refine);
+    assert_eq!(parsed.cleanup, Config::default().cleanup);
+}
+
+/// `refine` was the only switch before levels existed. An existing config still
+/// says it, and must keep meaning what it meant.
+#[test]
+fn the_old_refine_key_still_parses() {
+    assert_eq!(
+        Config::parse("refine = false\n").expect("parse").cleanup,
+        Cleanup::None
+    );
+    assert_eq!(
+        Config::parse("refine = true\n").expect("parse").cleanup,
+        Cleanup::Light
+    );
+}
+
+#[test]
+fn an_unknown_cleanup_level_is_loud() {
+    let err = Config::parse("cleanup = aggressive\n").expect_err("bad level");
+    assert!(err.to_string().contains("cleanup"), "{err}");
 }
 
 #[test]
@@ -132,7 +153,7 @@ fn flags_win_over_the_file() {
     let from_file = Config {
         push_to_talk: true,
         duck: 50,
-        refine: true,
+        cleanup: Cleanup::Light,
         terminal: false,
         chord: Default::default(),
         gpu: None, denoise: false, record_debug: false,
@@ -141,11 +162,17 @@ fn flags_win_over_the_file() {
         .map(String::from)
         .to_vec();
 
-    let effective = from_file.overridden_by(&flags);
+    let effective = from_file.clone().overridden_by(&flags);
     assert!(!effective.push_to_talk);
-    assert!(!effective.refine);
+    assert_eq!(effective.cleanup, Cleanup::None);
     assert!(effective.terminal);
     assert_eq!(effective.duck, 20);
+
+    // `--cleanup` names a level outright, where `--raw` only ever means none.
+    let levelled = from_file.overridden_by(
+        &["daemon", "--cleanup", "medium"].map(String::from).to_vec(),
+    );
+    assert_eq!(levelled.cleanup, Cleanup::Medium);
 }
 
 #[test]
@@ -153,7 +180,7 @@ fn absent_flags_leave_the_file_alone() {
     let from_file = Config {
         push_to_talk: false,
         duck: 20,
-        refine: false,
+        cleanup: Cleanup::None,
         terminal: true,
         chord: Default::default(),
         gpu: None, denoise: false, record_debug: false,

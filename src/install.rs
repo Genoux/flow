@@ -245,6 +245,12 @@ fn is_installed(path: &Path, asset: &Asset) -> bool {
 fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -> Result<()> {
     let path = root.join(asset.dest);
     report(Event::Verifying { asset });
+    // Length is known before the hash. A resumed run spends its first seconds
+    // hashing the recogniser already on disk; without this the ring sits empty
+    // through them and then takes the whole file in one jump.
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == asset.bytes) {
+        report(Event::Progress { done: base + asset.bytes });
+    }
     if is_installed(&path, asset) {
         report(Event::Installed { asset });
         return Ok(());
@@ -259,73 +265,126 @@ fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -
     // own bar is off now - the part file is the progress, and reading it is
     // what lets the terminal and the window show the same number.
     let part = path.with_extension("part");
-    report(Event::Fetching { asset });
-    let mut child = Command::new("curl")
-        .args(["-fL", "--silent", "--show-error", "-C", "-", "-o"])
-        .arg(&part)
-        .arg(asset.url())
-        .stdin(std::process::Stdio::null())
-        // stdout stays clear: it carries the console's protocol, and curl must
-        // never be able to write a line onto it.
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("running curl - is it installed?")?;
 
-    // `-C -` resumes into the part file, so its length already counts whatever
-    // an interrupted run left there and this stays correct across a retry.
-    let status = loop {
-        if let Some(status) = child.try_wait().context("waiting for curl")? {
-            break status;
+    // `-C -` resumes from the part file's length, so that length has to name a
+    // point inside the download. At or past the end, curl decides the file is
+    // already fully downloaded: it transfers nothing and exits 0. The size check
+    // below then rejected what was on disk and left it there - so the next run
+    // resumed from the same bad length, curl skipped again, and the install
+    // failed identically for ever. An interrupted download became one that could
+    // not be finished, under a message that said "rerun to resume".
+    //
+    // A part file can only be oversized if two writers shared it, so nothing in
+    // it is trustworthy at any offset and the only repair is to start again. At
+    // exactly the full size the bytes may well be right, so that one skips the
+    // fetch and goes to the hash, which is the only thing entitled to an opinion
+    // about it.
+    let have = match std::fs::metadata(&part).map(|meta| meta.len()) {
+        Ok(len) if len > asset.bytes => {
+            std::fs::remove_file(&part)
+                .with_context(|| format!("discarding oversized {}", part.display()))?;
+            0
         }
-        let so_far = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
-        report(Event::Progress { done: base + so_far });
-        std::thread::sleep(POLL);
+        Ok(len) => len,
+        Err(_) => 0,
     };
 
-    if !status.success() {
-        // curl says why - a DNS failure and a 404 are different problems, and
-        // "downloading failed" tells whoever hit it neither. Safe to read only
-        // now that curl has exited: with `-sS` it writes nothing until it does.
-        let mut reason = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            use std::io::Read;
-            let _ = stderr.read_to_string(&mut reason);
+    if have != asset.bytes {
+        report(Event::Fetching { asset });
+        let mut child = Command::new("curl")
+            .args(["-fL", "--silent", "--show-error", "-C", "-", "-o"])
+            .arg(&part)
+            .arg(asset.url())
+            .stdin(std::process::Stdio::null())
+            // stdout stays clear: it carries the console's protocol, and curl
+            // must never be able to write a line onto it.
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .die_with_parent()
+            .spawn()
+            .context("running curl - is it installed?")?;
+
+        // `-C -` resumes into the part file, so its length already counts
+        // whatever an interrupted run left there and this stays correct across
+        // a retry.
+        let status = loop {
+            if let Some(status) = child.try_wait().context("waiting for curl")? {
+                break status;
+            }
+            let so_far = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
+            report(Event::Progress { done: base + so_far });
+            std::thread::sleep(POLL);
+        };
+
+        if !status.success() {
+            // curl says why - a DNS failure and a 404 are different problems,
+            // and "downloading failed" tells whoever hit it neither. Safe to
+            // read only now that curl has exited: with `-sS` it writes nothing
+            // until it does.
+            let mut reason = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                use std::io::Read;
+                let _ = stderr.read_to_string(&mut reason);
+            }
+            let reason = reason.trim();
+            bail!(
+                "Downloading {} failed{}",
+                asset.dest,
+                if reason.is_empty() { String::new() } else { format!(": {reason}") }
+            );
         }
-        let reason = reason.trim();
-        bail!(
-            "downloading {} failed{} - rerun to resume",
-            asset.dest,
-            if reason.is_empty() { String::new() } else { format!(": {reason}") }
-        );
     }
 
     // Verified before the rename, so a truncated or tampered file never lands at
-    // the real path where the daemon would load it.
-    let size = std::fs::metadata(&part)?.len();
-    if size != asset.bytes {
-        bail!(
-            "{}: expected {} bytes, got {size} - delete {} and retry",
-            asset.dest,
-            asset.bytes,
-            part.display()
-        );
-    }
+    // the real path where the daemon would load it. Both checks clear the part
+    // file on their way out: leaving it is what turns one bad download into a
+    // permanent one, and telling a person to go and delete a file themselves is
+    // asking them to do the job this function just declined to.
     report(Event::Verifying { asset });
-    let hash = sha256(&part)?;
-    if hash != asset.sha256 {
-        bail!(
-            "{}: sha256 mismatch\n  expected {}\n  got      {hash}\ndelete {} and retry",
-            asset.dest,
-            asset.sha256,
-            part.display()
-        );
+    let size = std::fs::metadata(&part)?.len();
+    let hash = if size == asset.bytes { sha256(&part)? } else { String::new() };
+    if size != asset.bytes || hash != asset.sha256 {
+        let _ = std::fs::remove_file(&part);
+        bail!("{} arrived damaged and was discarded. Try again.", asset.dest);
     }
 
     std::fs::rename(&part, &path)
         .with_context(|| format!("moving {} into place", asset.dest))?;
     report(Event::Installed { asset });
     Ok(())
+}
+
+/// Tie a child's life to this process's.
+///
+/// Stopping a download kills `flow install`, and it is killed with SIGKILL, so
+/// it gets no chance to tidy up after itself - which left curl orphaned and
+/// still writing into the part file. Pressing the button again started a second
+/// curl resuming from a length the first one was still extending, and two
+/// writers appending to one file is how a 2.4 GB download ends up 2.5 GB of
+/// nothing. `PR_SET_PDEATHSIG` moves that guarantee into the kernel, which is
+/// the only party still around to honour it.
+trait DieWithParent {
+    fn die_with_parent(&mut self) -> &mut Self;
+}
+
+impl DieWithParent for Command {
+    #[cfg(target_os = "linux")]
+    fn die_with_parent(&mut self) -> &mut Self {
+        use std::os::unix::process::CommandExt;
+        // Between fork and exec, so only async-signal-safe calls are allowed.
+        // `prctl` is one.
+        unsafe {
+            self.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            })
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn die_with_parent(&mut self) -> &mut Self {
+        self
+    }
 }
 
 /// `base` carries forward between assets so one download finishing does not
@@ -369,27 +428,67 @@ pub fn models_root() -> PathBuf {
     flow_paths::models_dir()
 }
 
-/// What `run` will fetch, without fetching it. The setup screen asks so it can
-/// name the download size before anyone commits to it.
-pub fn planned_bytes(speech_only: bool) -> u64 {
-    total_bytes(SPEECH) + if speech_only { 0 } else { total_bytes(REFINE) }
+/// Which models a run should fetch.
+///
+/// Setup asks for both. The flags remain so a broken half can be retried
+/// without hashing the other, and so `--plan` can name one model's size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Want {
+    All,
+    Speech,
+    Refine,
+}
+
+impl Want {
+    fn speech(self) -> bool {
+        matches!(self, Want::All | Want::Speech)
+    }
+
+    fn refine(self) -> bool {
+        matches!(self, Want::All | Want::Refine)
+    }
+
+    pub fn from_args(args: &[String]) -> Self {
+        let has = |flag: &str| args.iter().any(|arg| arg == flag);
+        match (has("--speech-only"), has("--refine-only")) {
+            (true, false) => Want::Speech,
+            (false, true) => Want::Refine,
+            _ => Want::All,
+        }
+    }
+}
+
+/// What a run will fetch, without fetching it.
+pub fn planned_bytes(want: Want) -> u64 {
+    let counted = |on: bool, assets: &[Asset]| if on { total_bytes(assets) } else { 0 };
+    counted(want.speech(), SPEECH) + counted(want.refine(), REFINE)
+}
+
+/// The same `total` and `group` lines a real run opens with, and nothing else.
+/// Notably no `finished`, which would tell the window an install had happened.
+pub fn plan_reported(want: Want, report: &mut dyn FnMut(Event)) {
+    report(Event::Planned { total: planned_bytes(want) });
+    if want.speech() {
+        report(Event::Group { label: "speech", bytes: total_bytes(SPEECH) });
+    }
+    if want.refine() {
+        report(Event::Group { label: "refine", bytes: total_bytes(REFINE) });
+    }
 }
 
 /// The whole install, reporting itself through `report`.
 ///
 /// The terminal and the console pass different reporters and share every other
 /// line of this, so there is one installer and not two that drift.
-pub fn run_reported(speech_only: bool, report: &mut dyn FnMut(Event)) -> Result<()> {
+pub fn run_reported(want: Want, report: &mut dyn FnMut(Event)) -> Result<()> {
     let root = models_root();
-    report(Event::Planned { total: planned_bytes(speech_only) });
-    report(Event::Group { label: "speech", bytes: total_bytes(SPEECH) });
-    if !speech_only {
-        report(Event::Group { label: "refine", bytes: total_bytes(REFINE) });
-    }
+    plan_reported(want, report);
 
     let mut base = 0;
-    fetch_all_from(SPEECH, &root, &mut base, report)?;
-    if !speech_only {
+    if want.speech() {
+        fetch_all_from(SPEECH, &root, &mut base, report)?;
+    }
+    if want.refine() {
         fetch_all_from(REFINE, &root, &mut base, report)?;
     }
 
@@ -407,15 +506,17 @@ pub fn run_reported(speech_only: bool, report: &mut dyn FnMut(Event)) -> Result<
     Ok(())
 }
 
-pub fn run(speech_only: bool) -> Result<()> {
+pub fn run(want: Want) -> Result<()> {
     let root = models_root();
     eprintln!("installing into {}", root.display());
-    if speech_only {
-        eprintln!("speech recognition only (--speech-only)");
+    match want {
+        Want::Speech => eprintln!("speech recognition only (--speech-only)"),
+        Want::Refine => eprintln!("cleanup model only (--refine-only)"),
+        Want::All => {}
     }
 
     let mut terminal = Terminal::default();
-    run_reported(speech_only, &mut |event| terminal.report(event))?;
+    run_reported(want, &mut |event| terminal.report(event))?;
 
     eprintln!("\ndone. `flow daemon` to run it, or install packaging/flow.service");
     Ok(())

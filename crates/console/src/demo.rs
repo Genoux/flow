@@ -53,36 +53,33 @@ pub fn setup() -> Option<bool> {
     Some(value.trim().eq_ignore_ascii_case("setup"))
 }
 
-/// An install part-way through the refining model - the state with the most on
-/// screen at once, and the only one where the skip control is live.
+/// First run, part-way through the speech model: the only state the setup
+/// screen has that is worth laying out.
+///
+/// `elapsed` is past the hold so the ring is settled - a demo that had to be
+/// watched through its first second would be a demo of the hold rather than of
+/// the page.
 pub fn setup_state() -> crate::setup::State {
     crate::setup::State {
-        total: 3_167_800_824,
-        groups: vec![
-            ("speech".into(), 670_619_706),
-            ("refine".into(), 2_497_181_118),
-        ],
-        done: 1_402_000_000,
-        phase: crate::setup::Phase::Fetching("qwen3-4b-instruct-q4km.gguf".into()),
-        hardware: Some("NVIDIA GeForce RTX 3060 Ti".into()),
-        ..crate::setup::State::default()
+        total: 670_619_803,
+        done: 402_000_000,
+        shown: 0.6,
+        elapsed: 5.0,
+        spawned: true,
+        phase: crate::setup::Phase::Fetching("tdt/encoder-model.int8.onnx".into()),
+        ..crate::setup::State::new(crate::setup::Handle::default())
     }
 }
 
-/// Both models present and sized as the pinned releases actually are, so the
-/// Models screen can be laid out against the numbers it will really show.
+
+/// The speech model present and the refining model absent: the state a real
+/// machine is in after first run, and the one the Overview's banner and the
+/// Models screen's Download button are drawn for. Sized as the pinned release
+/// actually is, so the row can be laid out against the number it will show.
 pub fn models() -> Vec<system::Model> {
     system::models()
         .into_iter()
-        .zip([
-            ("parakeet-tdt-0.6b-v3 int8", 652_000_000),
-            ("qwen3-4b-instruct-q4km.gguf", 2_497_000_000),
-        ])
-        .map(|(model, (detail, bytes))| system::Model {
-            detail: detail.to_string(),
-            bytes,
-            installed: true,
-            ..model
-        })
+        .zip([652_000_000, 0])
+        .map(|(model, bytes)| system::Model { bytes, installed: bytes > 0, ..model })
         .collect()
 }

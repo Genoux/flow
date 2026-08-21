@@ -4,59 +4,78 @@
 //! a model swap would break literal expectations, but "must not answer the
 //! question" has to hold for every model we ever ship.
 
+use flow::refine::Cleanup;
+
 struct Case {
     name: &'static str,
     raw: &'static str,
+    /// Which level this case describes. Most are disfluency removal, which is
+    /// every level's job and so is tested at the default.
+    level: Cleanup,
     /// Case-insensitive substrings that must be gone from the output.
     forbidden: &'static [&'static str],
     /// Case-insensitive substrings that must survive.
     required: &'static [&'static str],
     /// Refining shortens; a big expansion means it started writing prose.
     max_words: usize,
+    /// Ceiling on sentences in the output, for the levels that claim to
+    /// restructure. `None` means the level makes no such claim and the sentence
+    /// shape of the input is expected to survive.
+    max_sentences: Option<usize>,
 }
 
 const CASES: &[Case] = &[
     Case {
         name: "fillers and stutters",
+        level: Cleanup::Light,
         raw: "um so I was thinking that uh we could maybe like ship the the the \
               feature on on Friday you know",
         forbidden: &["um ", "uh ", " like ", "the the", "on on", "you know"],
         required: &["Friday", "ship"],
         max_words: 20,
+        max_sentences: None,
     },
     Case {
         name: "self-correction keeps the final choice",
+        level: Cleanup::Light,
         raw: "send the invoice to John no wait send it to Mary instead",
         forbidden: &["no wait", "John"],
         required: &["Mary", "invoice"],
         max_words: 15,
+        max_sentences: None,
     },
     // The failure every dictation refining hits at least once: the model helpfully
     // answers instead of transcribing. Dictating a question must produce the
     // question as text.
     Case {
         name: "a dictated question is text, not a prompt",
+        level: Cleanup::Light,
         raw: "what time is it",
         forbidden: &["o'clock", "cannot", "can't", "don't have", "AI", "sorry"],
         required: &["time"],
         max_words: 8,
+        max_sentences: None,
     },
     // Same hazard, sharper: an imperative must not be obeyed or refused.
     Case {
         name: "a dictated instruction is text, not a command",
+        level: Cleanup::Light,
         raw: "delete all the files in the downloads folder",
         forbidden: &["cannot", "can't", "won't", "unable", "sorry", "as an"],
         required: &["delete", "downloads"],
         max_words: 14,
+        max_sentences: None,
     },
     // Guards against the opposite failure: a refining pass that rewrites healthy
     // sentences puts words in the speaker's mouth.
     Case {
         name: "already clean text is left alone",
+        level: Cleanup::Light,
         raw: "The deployment finished at nine this morning.",
         forbidden: &["I ", "cleaned", "here is"],
         required: &["deployment", "nine"],
         max_words: 10,
+        max_sentences: None,
     },
     // The recogniser handles 25 languages, so refining must not quietly turn
     // dictation into English. Also exercises multi-byte output: an accented
@@ -64,10 +83,12 @@ const CASES: &[Case] = &[
     // state between them.
     Case {
         name: "keeps the speaker's language and accents",
+        level: Cleanup::Light,
         raw: "euh alors je pense qu'on peut peut livrer la la fonctionnalité vendredi",
         forbidden: &["euh", "la la", "friday", "deliver"],
         required: &["fonctionnalité", "vendredi"],
         max_words: 15,
+        max_sentences: None,
     },
     // Verbatim from the user asking for this feature - a real malformed
     // dictation, with a meaning a human can state but the words never do.
@@ -79,6 +100,7 @@ const CASES: &[Case] = &[
     // damage - the speaker's own stumbles - is forbidden.
     Case {
         name: "real dictation: garbled with recoverable intent",
+        level: Cleanup::Light,
         raw: "How can we improve the transcript like if the human says like uh \
               like malform phrase can the LM correct it and like write what's \
               the intention uh of the of the of the of the speech. I don't want \
@@ -88,6 +110,63 @@ const CASES: &[Case] = &[
         forbidden: &["of the of the", "interpret interpret", "one one"],
         required: &["transcript", "clean"],
         max_words: 90,
+        max_sentences: None,
+    },
+    // The pair that makes the levels mean something. Same input, same model,
+    // and the only difference is which rules block the prompt carries.
+    //
+    // If either of these fails the dial is decorative: an instruct model asked
+    // to "clean up" a transcript fixes grammar unprompted because that reads as
+    // helpful, so Light has to forbid what Medium permits or both levels emit
+    // the same sentence.
+    Case {
+        name: "light removes the filler but leaves the grammar alone",
+        level: Cleanup::Light,
+        raw: "um me and him was gonna ship it yesterday",
+        forbidden: &["um "],
+        required: &["me and him was"],
+        max_words: 12,
+        max_sentences: None,
+    },
+    Case {
+        name: "medium fixes the grammar light left alone",
+        level: Cleanup::Medium,
+        raw: "um me and him was gonna ship it yesterday",
+        forbidden: &["um ", "me and him was"],
+        required: &["ship"],
+        max_words: 12,
+        max_sentences: None,
+    },
+    // Hard's whole claim is restructuring, so the input is deliberately one the
+    // lower levels cannot help: three stumbling sentences that say one thing in
+    // the order it occurred to the speaker rather than the order it reads in.
+    //
+    // Medium may only clean these three sentences. Hard may make them one or
+    // two. If Hard cannot beat Medium here the level is a label, not a feature,
+    // and the console should offer three cards instead of four.
+    Case {
+        name: "hard restructures what medium may only tidy",
+        level: Cleanup::Hard,
+        raw: "so the deploy failed last night. it was the migration that broke \
+              it. we should probably roll back first and then um look at the \
+              migration after I think",
+        forbidden: &["um ", "sorry", "as an", "let me know", "regards"],
+        required: &["migration", "roll back"],
+        max_words: 40,
+        // Three sentences in. Two or fewer out is the only machine-checkable
+        // proof that Hard did something Medium is forbidden to do.
+        max_sentences: Some(2),
+    },
+    // The failure Hard is most likely to have, given it is the only level told
+    // to rewrite: filling the gaps with plausible detail nobody said.
+    Case {
+        name: "hard rewrites without inventing",
+        level: Cleanup::Hard,
+        raw: "tell the team the thing is delayed",
+        forbidden: &["week", "monday", "tomorrow", "apolog", "unfortunately", "due to"],
+        required: &["delay"],
+        max_words: 16,
+        max_sentences: None,
     },
 ];
 
@@ -111,12 +190,18 @@ fn refining_behaves() {
     for case in CASES {
         let started = std::time::Instant::now();
         let refined = refiner
-            .refine_within(case.raw, std::time::Duration::from_secs(120))
+            .refine_within(case.raw, std::time::Duration::from_secs(120), case.level)
             .expect("clean");
         let elapsed = started.elapsed();
         let lowered = refined.to_lowercase();
 
-        eprintln!("\n[{}] {:?}\n  -> {:?}  ({elapsed:?})", case.name, case.raw, refined);
+        eprintln!(
+            "\n[{}] ({}) {:?}\n  -> {:?}  ({elapsed:?})",
+            case.name,
+            case.level.as_str(),
+            case.raw,
+            refined
+        );
 
         for bad in case.forbidden {
             if lowered.contains(&bad.to_lowercase()) {
@@ -135,6 +220,19 @@ fn refining_behaves() {
                 case.name, case.max_words
             ));
         }
+        if let Some(ceiling) = case.max_sentences {
+            let sentences = refined
+                .split(['.', '!', '?'])
+                .filter(|part| !part.trim().is_empty())
+                .count();
+            if sentences > ceiling {
+                failures.push(format!(
+                    "[{}] left {sentences} sentences (max {ceiling}), so it tidied \
+                     rather than restructured: {refined:?}",
+                    case.name
+                ));
+            }
+        }
         if refined.trim().is_empty() {
             failures.push(format!("[{}] produced nothing", case.name));
         }
@@ -143,8 +241,8 @@ fn refining_behaves() {
     // Greedy sampling is chosen so the same input always cleans the same way.
     // Without this the assertions above would be measuring noise.
     let repeated = "um so the the build is uh broken again";
-    let first = refiner.refine_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
-    let second = refiner.refine_within(repeated, std::time::Duration::from_secs(120)).expect("clean");
+    let first = refiner.refine_within(repeated, std::time::Duration::from_secs(120), Cleanup::Light).expect("clean");
+    let second = refiner.refine_within(repeated, std::time::Duration::from_secs(120), Cleanup::Light).expect("clean");
     if first != second {
         failures.push(format!("not deterministic: {first:?} vs {second:?}"));
     }
@@ -154,7 +252,7 @@ fn refining_behaves() {
     // only thing that can tell "returned unchanged" apart from "skipped".
     let already_clean = "Yeah.";
     let started = std::time::Instant::now();
-    let skipped = refiner.refine_within(already_clean, std::time::Duration::from_secs(120)).expect("clean");
+    let skipped = refiner.refine_within(already_clean, std::time::Duration::from_secs(120), Cleanup::Light).expect("clean");
     let elapsed = started.elapsed();
     eprintln!("\n[trivial] {already_clean:?} -> {skipped:?}  ({elapsed:?})");
     if skipped != already_clean {
@@ -169,7 +267,7 @@ fn refining_behaves() {
     // transcript - what must never happen is translated text reaching the user.
     let quebecois = "On copie-tu dimanche, je vais régler des chills le live, ok \
                      j'ai pas vraiment d'entête à ça, est-ce que dimanche c'est chill?";
-    match refiner.refine_within(quebecois, std::time::Duration::from_secs(120)) {
+    match refiner.refine_within(quebecois, std::time::Duration::from_secs(120), Cleanup::Light) {
         Err(err) => eprintln!("\n[language] guard caught it: {err}"),
         Ok(text) => {
             eprintln!("\n[language] -> {text:?}");
@@ -187,7 +285,7 @@ fn refining_behaves() {
     // daemon never sends these now, but the guard has to hold if one slips
     // through, because pasting an invented word is the worst outcome here.
     for hesitation in ["Um", "Uh", "Er"] {
-        match refiner.refine_within(hesitation, std::time::Duration::from_secs(120)) {
+        match refiner.refine_within(hesitation, std::time::Duration::from_secs(120), Cleanup::Light) {
             Err(err) => eprintln!("\n[filler] {hesitation:?} refused: {err}"),
             Ok(text) => {
                 eprintln!("\n[filler] {hesitation:?} -> {text:?}");
@@ -203,7 +301,7 @@ fn refining_behaves() {
     // treats the error as "use the raw transcript", and a truncated refining would
     // be worse than the transcript it replaced.
     let long = "um so i pushed the change and then uh the build broke again";
-    match refiner.refine_within(long, std::time::Duration::from_millis(1)) {
+    match refiner.refine_within(long, std::time::Duration::from_millis(1), Cleanup::Light) {
         Err(err) => eprintln!("\n[budget] refused as expected: {err}"),
         Ok(text) => failures.push(format!("a 1ms budget still produced {text:?}")),
     }
