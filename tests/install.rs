@@ -11,14 +11,26 @@ fn every_asset() -> Vec<&'static install::Asset> {
 #[test]
 fn the_manifest_is_well_formed() {
     for asset in every_asset() {
-        assert_eq!(asset.sha256.len(), 64, "{}: sha256 is not 64 hex", asset.dest);
+        assert_eq!(
+            asset.sha256.len(),
+            64,
+            "{}: sha256 is not 64 hex",
+            asset.dest
+        );
         assert!(
-            asset.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+            asset
+                .sha256
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
             "{}: sha256 must be lowercase hex",
             asset.dest
         );
         assert!(asset.bytes > 0, "{}: zero bytes", asset.dest);
-        assert!(!asset.dest.is_empty() && !asset.dest.starts_with('/'), "{}", asset.dest);
+        assert!(
+            !asset.dest.is_empty() && !asset.dest.starts_with('/'),
+            "{}",
+            asset.dest
+        );
     }
 }
 
@@ -34,7 +46,11 @@ fn every_source_is_pinned_to_a_commit() {
             asset.dest,
             asset.revision
         );
-        assert!(asset.url().starts_with("https://huggingface.co/"), "{}", asset.url());
+        assert!(
+            asset.url().starts_with("https://huggingface.co/"),
+            "{}",
+            asset.url()
+        );
         assert!(asset.url().contains(asset.revision), "{}", asset.url());
     }
 }
@@ -60,7 +76,10 @@ fn speech_and_refining_are_separate() {
 #[test]
 fn install_flags_pick_which_models() {
     let args = |flags: &[&str]| flags.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    assert_eq!(install::Want::from_args(&args(&["install"])), install::Want::All);
+    assert_eq!(
+        install::Want::from_args(&args(&["install"])),
+        install::Want::All
+    );
     assert_eq!(
         install::Want::from_args(&args(&["install", "--speech-only"])),
         install::Want::Speech
@@ -69,8 +88,14 @@ fn install_flags_pick_which_models() {
         install::Want::from_args(&args(&["install", "--refine-only"])),
         install::Want::Refine
     );
-    assert_eq!(install::planned_bytes(install::Want::Speech), install::total_bytes(install::SPEECH));
-    assert_eq!(install::planned_bytes(install::Want::Refine), install::total_bytes(install::REFINE));
+    assert_eq!(
+        install::planned_bytes(install::Want::Speech),
+        install::total_bytes(install::SPEECH)
+    );
+    assert_eq!(
+        install::planned_bytes(install::Want::Refine),
+        install::total_bytes(install::REFINE)
+    );
 }
 
 #[test]
@@ -109,7 +134,12 @@ fn the_pins_match_the_refining_model_on_disk() {
             eprintln!("skipping: {} not installed", asset.dest);
             return;
         }
-        assert_eq!(install::sha256(&path).expect("hash"), asset.sha256, "{}", asset.dest);
+        assert_eq!(
+            install::sha256(&path).expect("hash"),
+            asset.sha256,
+            "{}",
+            asset.dest
+        );
     }
 }
 
@@ -121,12 +151,21 @@ fn seeding_never_overwrites() {
     std::fs::create_dir_all(&dir).expect("mkdir");
     let path = dir.join("config.toml");
 
-    assert!(install::seed(&path, "fresh").expect("first seed"), "should create");
+    assert!(
+        install::seed(&path, "fresh").expect("first seed"),
+        "should create"
+    );
     assert_eq!(std::fs::read_to_string(&path).expect("read"), "fresh");
 
     std::fs::write(&path, "mine, hand-edited").expect("write");
-    assert!(!install::seed(&path, "fresh").expect("second seed"), "should leave alone");
-    assert_eq!(std::fs::read_to_string(&path).expect("read"), "mine, hand-edited");
+    assert!(
+        !install::seed(&path, "fresh").expect("second seed"),
+        "should leave alone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        "mine, hand-edited"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -146,7 +185,10 @@ fn scratch(name: &str) -> std::path::PathBuf {
 fn downloading_verifies_and_lands_the_files() {
     let root = scratch("install");
     let small = &install::SPEECH[2..];
-    assert!(install::total_bytes(small) < 1_000_000, "meant to be the small ones");
+    assert!(
+        install::total_bytes(small) < 1_000_000,
+        "meant to be the small ones"
+    );
 
     install::fetch_all(small, &root).expect("fetch");
 
@@ -154,7 +196,11 @@ fn downloading_verifies_and_lands_the_files() {
         let path = root.join(asset.dest);
         assert!(path.is_file(), "{} missing", asset.dest);
         assert_eq!(install::sha256(&path).expect("hash"), asset.sha256);
-        assert!(!path.with_extension("part").exists(), "{} left a .part", asset.dest);
+        assert!(
+            !path.with_extension("part").exists(),
+            "{} left a .part",
+            asset.dest
+        );
     }
 
     // Second run must be a no-op, which is what makes a failed install resumable.
@@ -203,7 +249,10 @@ fn an_oversized_part_is_discarded() {
     // Offline this fails at curl and online it fetches the real file; either
     // way the length that could never be resumed from must not survive.
     let _ = install::fetch_all(&[asset], &root);
-    assert!(!part.exists(), "the oversized part was left to poison every retry");
+    assert!(
+        !part.exists(),
+        "the oversized part was left to poison every retry"
+    );
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -211,6 +260,9 @@ fn an_oversized_part_is_discarded() {
 fn the_download_size_is_reported_in_gigabytes() {
     let speech = install::total_bytes(install::SPEECH);
     let both = install::total_bytes(install::SPEECH) + install::total_bytes(install::REFINE);
-    assert!(speech > 600_000_000, "speech should be ~670MB, got {speech}");
+    assert!(
+        speech > 600_000_000,
+        "speech should be ~670MB, got {speech}"
+    );
     assert!(both > speech, "refining should add to the total");
 }

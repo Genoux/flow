@@ -7,7 +7,7 @@
 //! movement: speech swings 30x between its vowels and the gaps between its words,
 //! this room swings 2 to 3x.
 
-use flow::audio::{sounds_like_speech, swing, SAMPLE_RATE};
+use flow::audio::{SAMPLE_RATE, sounds_like_speech, swing};
 
 const RATE: usize = SAMPLE_RATE as usize;
 
@@ -54,16 +54,30 @@ fn a_steady_room_is_not_a_voice() {
 fn loudness_does_not_decide() {
     let loud_room = steady(0.05, 3.0);
     let quiet_speech = bursty(0.002, 0.02, 3.0);
-    assert!(!sounds_like_speech(&loud_room), "loud room: {:.1}x", swing(&loud_room));
-    assert!(sounds_like_speech(&quiet_speech), "quiet speech: {:.1}x", swing(&quiet_speech));
+    assert!(
+        !sounds_like_speech(&loud_room),
+        "loud room: {:.1}x",
+        swing(&loud_room)
+    );
+    assert!(
+        sounds_like_speech(&quiet_speech),
+        "quiet speech: {:.1}x",
+        swing(&quiet_speech)
+    );
 }
 
 #[test]
 fn real_speech_is_a_voice() {
     let speech = flow::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
     let measured = swing(&speech);
-    assert!(sounds_like_speech(&speech), "the fixture is speech, swing {measured:.1}x");
-    assert!(measured > 10.0, "expected a wide swing on real speech, got {measured:.1}x");
+    assert!(
+        sounds_like_speech(&speech),
+        "the fixture is speech, swing {measured:.1}x"
+    );
+    assert!(
+        measured > 10.0,
+        "expected a wide swing on real speech, got {measured:.1}x"
+    );
 }
 
 /// Too little audio to judge must never be rejected - losing a word is far worse

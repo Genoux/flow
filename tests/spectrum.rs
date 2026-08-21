@@ -15,14 +15,19 @@ fn a_tone_lights_only_its_own_slice() {
     for (slice, hz) in [500.0, 1500.0, 4000.0].iter().enumerate() {
         let expected = slice + 1;
         let bands = analyzer.bands(&tone(*hz, 0.2));
-        let loudest = (1..BAND_COUNT).max_by(|a, b| bands[*a].total_cmp(&bands[*b])).unwrap();
+        let loudest = (1..BAND_COUNT)
+            .max_by(|a, b| bands[*a].total_cmp(&bands[*b]))
+            .unwrap();
         assert_eq!(loudest, expected, "{hz}Hz lit band {loudest}: {bands:?}");
 
         let leaked = (1..BAND_COUNT)
             .filter(|band| *band != expected)
             .map(|band| bands[band])
             .fold(0.0f32, f32::max);
-        assert!(leaked < 0.05, "{hz}Hz leaked {leaked} into a neighbour: {bands:?}");
+        assert!(
+            leaked < 0.05,
+            "{hz}Hz leaked {leaked} into a neighbour: {bands:?}"
+        );
     }
 }
 
@@ -41,7 +46,11 @@ fn the_centre_answers_every_frequency() {
 fn a_silent_window_rests_and_a_short_one_is_ignored() {
     let mut analyzer = Analyzer::new();
     assert_eq!(analyzer.bands(&vec![0.0; WINDOW * 2]), [0.0; BAND_COUNT]);
-    assert_eq!(analyzer.bands(&[0.5; 8]), [0.0; BAND_COUNT], "a partial window must not draw");
+    assert_eq!(
+        analyzer.bands(&[0.5; 8]),
+        [0.0; BAND_COUNT],
+        "a partial window must not draw"
+    );
 }
 
 /// BAND_GAIN calibration. Speech energy falls steeply with frequency, so
@@ -76,7 +85,10 @@ fn every_band_carries_part_of_real_speech() {
         at += 256;
     }
 
-    assert!(voiced > 200, "the fixture yielded only {voiced} voiced frames");
+    assert!(
+        voiced > 200,
+        "the fixture yielded only {voiced} voiced frames"
+    );
 
     // The bars mirror these bands about the island's centre, so band 0 draws
     // the middle and band 2 the two ends. Speech has to fall away outward or
@@ -91,22 +103,27 @@ fn every_band_carries_part_of_real_speech() {
     // sentence and only moved for a raised voice. Every bar has to be doing
     // something through ordinary speech, even if only a little.
     for band in 0..BAND_COUNT {
-        let flat = frames
-            .iter()
-            .filter(|heights| heights[band] < 0.02)
-            .count()
-            * 100
-            / frames.len();
+        let flat =
+            frames.iter().filter(|heights| heights[band] < 0.02).count() * 100 / frames.len();
         assert!(flat < 10, "band {band} sat flat for {flat}% of the speech");
     }
 
     for band in 0..BAND_COUNT {
         let mean = totals[band] / voiced as f32;
-        eprintln!("band {band}: mean {mean:.2}, pinned {}%", pinned[band] * 100 / voiced);
-        assert!(mean > 0.08, "band {band} is dead on real speech: mean {mean}");
+        eprintln!(
+            "band {band}: mean {mean:.2}, pinned {}%",
+            pinned[band] * 100 / voiced
+        );
+        assert!(
+            mean > 0.08,
+            "band {band} is dead on real speech: mean {mean}"
+        );
         assert!(mean < 0.6, "band {band} dominates: mean {mean}");
 
         let stuck = pinned[band] * 100 / voiced;
-        assert!(stuck < 15, "band {band} sat at full height for {stuck}% of the speech");
+        assert!(
+            stuck < 15,
+            "band {band} sat at full height for {stuck}% of the speech"
+        );
     }
 }

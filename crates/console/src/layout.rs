@@ -72,8 +72,15 @@ pub(crate) fn entry_row<'a>(
     .padding([10.0, ENTRY_INSET])
     .width(Fill)
     .style(move |_theme| container::Style {
-        background: Some(Background::Color(mix(Color::TRANSPARENT, RAIL_ON, warmth * 0.7))),
-        border: Border { radius: 6.0.into(), ..Default::default() },
+        background: Some(Background::Color(mix(
+            Color::TRANSPARENT,
+            RAIL_ON,
+            warmth * 0.7,
+        ))),
+        border: Border {
+            radius: 6.0.into(),
+            ..Default::default()
+        },
         ..Default::default()
     });
 
@@ -82,12 +89,16 @@ pub(crate) fn entry_row<'a>(
         stack = stack.push(Space::new().height(2));
     }
 
-    iced::widget::mouse_area(stack).on_enter(Message::HoverEntry(Some(index))).into()
+    iced::widget::mouse_area(stack)
+        .on_enter(Message::HoverEntry(Some(index)))
+        .into()
 }
 
 /// The list, not the row, owns "pointer left". See `entry_row`.
 pub(crate) fn entry_list<'a>(rows: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    iced::widget::mouse_area(rows).on_exit(Message::HoverEntry(None)).into()
+    iced::widget::mouse_area(rows)
+        .on_exit(Message::HoverEntry(None))
+        .into()
 }
 
 /// A scrollable with a thin, browser-style bar: invisible until the pointer
@@ -112,11 +123,18 @@ pub(crate) fn scroll_inset<'a>(
     right: f32,
 ) -> Element<'a, Message> {
     scrollable(
-        container(content)
-            .padding(iced::Padding::default().top(PAGE_TOP).bottom(bottom).right(right)),
+        container(content).padding(
+            iced::Padding::default()
+                .top(PAGE_TOP)
+                .bottom(bottom)
+                .right(right),
+        ),
     )
     .direction(scrollable::Direction::Vertical(
-        scrollable::Scrollbar::new().width(4).margin(2).scroller_width(4),
+        scrollable::Scrollbar::new()
+            .width(4)
+            .margin(2)
+            .scroller_width(4),
     ))
     .style(|theme, status| {
         let base = scrollable::default(theme, status);
@@ -193,7 +211,10 @@ pub(crate) fn section_shell<'a>(
             scroll_pad(body, ROW_PAD),
             container(hairline()).padding(iced::Padding::default().right(CONTENT_RIGHT)),
             container(foot).padding(
-                iced::Padding::default().top(FOOT_PAD).bottom(FOOT_PAD).right(CONTENT_RIGHT),
+                iced::Padding::default()
+                    .top(FOOT_PAD)
+                    .bottom(FOOT_PAD)
+                    .right(CONTENT_RIGHT),
             ),
         ]
         .height(Fill)
@@ -201,7 +222,6 @@ pub(crate) fn section_shell<'a>(
         None => scroll(body),
     }
 }
-
 
 /// A rail item behaves like a button, because it is one: the whole row lights,
 /// not just its label. Selection holds a permanent muted background so the
@@ -226,7 +246,10 @@ pub(crate) fn nav(
             .style(|_theme, _status| button::Style {
                 background: None,
                 text_color: mix(BG, MUTED, 0.45),
-                border: Border { radius: 6.0.into(), ..Default::default() },
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .into();
@@ -245,7 +268,10 @@ pub(crate) fn nav(
             .style(move |_theme, _status| button::Style {
                 background: Some(Background::Color(mix(Color::TRANSPARENT, RAIL_ON, fill))),
                 text_color: colour,
-                border: Border { radius: 6.0.into(), ..Default::default() },
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .on_press(Message::Select(section)),
@@ -286,7 +312,10 @@ pub(crate) fn fact_row(label: &'static str, value: impl Into<String>) -> Element
         row![
             text(label).size(13.5).color(FG),
             Space::new().width(Fill),
-            text(value.into()).size(12).font(Font::MONOSPACE).color(MUTED),
+            text(value.into())
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(MUTED),
         ]
         .align_y(iced::Center),
     )
@@ -330,13 +359,15 @@ fn path_link(path: std::path::PathBuf, shown: String) -> Element<'static, Messag
     // A rich-text link, not a button: iced already turns those into a
     // pointer and an underline on hover, which is the affordance a path
     // sitting where Session's value sits would otherwise lack.
-    rich_text![span(shown).size(12).font(Font::MONOSPACE).color(MUTED).link(path)]
-        .on_link_click(Message::OpenPath)
-        .wrapping(text::Wrapping::None)
-        .into()
+    rich_text![span(shown)
+        .size(12)
+        .font(Font::MONOSPACE)
+        .color(MUTED)
+        .link(path)]
+    .on_link_click(Message::OpenPath)
+    .wrapping(text::Wrapping::None)
+    .into()
 }
-
-
 
 /// A layer the pointer cannot reach.
 ///
@@ -425,7 +456,9 @@ pub(crate) fn inert<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a,
             renderer: &iced::Renderer,
             operation: &mut dyn Operation,
         ) {
-            self.content.as_widget_mut().operate(tree, layout, renderer, operation);
+            self.content
+                .as_widget_mut()
+                .operate(tree, layout, renderer, operation);
         }
 
         fn update(
@@ -477,5 +510,7 @@ pub(crate) fn inert<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a,
         }
     }
 
-    Element::new(Inert { content: content.into() })
+    Element::new(Inert {
+        content: content.into(),
+    })
 }

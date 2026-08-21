@@ -9,7 +9,7 @@
 //! whole drawing here is one rounded rectangle repeated - the island and every
 //! bar are the same primitive.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
@@ -18,7 +18,7 @@ use std::time::Duration;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{delegate_noop, Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::audio::Monitor;
@@ -235,8 +235,12 @@ pub const BAND_COUNT: usize = 4;
 ///
 /// The rest split the range that carries the vowels and the sibilance, so the
 /// bars still move with what is being said rather than all together.
-const BANDS: [(f32, f32); BAND_COUNT] =
-    [(80.0, 6500.0), (300.0, 900.0), (900.0, 2500.0), (2500.0, 6500.0)];
+const BANDS: [(f32, f32); BAND_COUNT] = [
+    (80.0, 6500.0),
+    (300.0, 900.0),
+    (900.0, 2500.0),
+    (2500.0, 6500.0),
+];
 
 /// How tall a bar may be relative to the centre. A parabola, not a gain table:
 /// the bands already have their own gains, and those are what made the W.
@@ -732,8 +736,8 @@ impl Canvas {
             for x in left..right {
                 let point = (x as f32 + 0.5, y as f32 + 0.5);
                 // Distance to coverage across one pixel is the whole anti-alias.
-                let mut coverage = (0.5 - rounded_rect_distance(point, centre, half, radius))
-                    .clamp(0.0, 1.0);
+                let mut coverage =
+                    (0.5 - rounded_rect_distance(point, centre, half, radius)).clamp(0.0, 1.0);
                 if let Some((clip_centre, clip_half, clip_radius)) = clip {
                     let inside = (0.5
                         - rounded_rect_distance(point, clip_centre, clip_half, clip_radius))
@@ -789,7 +793,11 @@ fn render(
     // of a paused circle followed by a second growth. Forced back to a circle
     // only if the spinner is ever turned back on - that shape is what a
     // spinner needs, this one doesn't.
-    let grown = if arming && SHOW_ARM_SPINNER { 0.0 } else { wake };
+    let grown = if arming && SHOW_ARM_SPINNER {
+        0.0
+    } else {
+        wake
+    };
     let half_width = corner + (width / 2.0 - corner) * grown;
     let half = (half_width, height / 2.0);
     canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA);
@@ -1003,7 +1011,10 @@ impl Buffers {
         let slot = self.next;
         self.next = 1 - self.next;
         self.file
-            .write_all_at(&self.canvas.pixels, (slot * self.canvas.pixels.len()) as u64)
+            .write_all_at(
+                &self.canvas.pixels,
+                (slot * self.canvas.pixels.len()) as u64,
+            )
             .context("writing the overlay frame")?;
 
         surface.attach(Some(&self.buffers[slot]), 0, 0);
@@ -1205,15 +1216,22 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             island = None;
             continue;
         }
-        let Some(mapped) = island.as_ref() else { continue };
+        let Some(mapped) = island.as_ref() else {
+            continue;
+        };
         if !state.configured {
             continue;
         }
 
-        if buffers.as_ref().is_none_or(|held| held.scale != state.scale) {
+        if buffers
+            .as_ref()
+            .is_none_or(|held| held.scale != state.scale)
+        {
             buffers = Some(Buffers::create(&shm, &handle, state.scale)?);
         }
-        let Some(buffers) = buffers.as_mut() else { continue };
+        let Some(buffers) = buffers.as_mut() else {
+            continue;
+        };
 
         mapped.surface.set_buffer_scale(state.scale);
         if settling {
@@ -1332,9 +1350,3 @@ delegate_noop!(Wayland: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(Wayland: ignore wl_buffer::WlBuffer);
 delegate_noop!(Wayland: ignore wl_region::WlRegion);
 delegate_noop!(Wayland: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
-
-
-
-
-
-

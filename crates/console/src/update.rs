@@ -67,7 +67,10 @@ pub fn dev_note() -> Option<String> {
 
     Some(match built {
         Some(built) => {
-            format!("dev, built {}", crate::history::ago(built.as_secs(), crate::history::now()))
+            format!(
+                "dev, built {}",
+                crate::history::ago(built.as_secs(), crate::history::now())
+            )
         }
         None => "dev".to_string(),
     })
@@ -135,7 +138,11 @@ pub fn install(tag: &str) -> Result<(), String> {
         .args(["-sSL", "--fail", "--max-time", "600", "-o"])
         .arg(&tarball)
         .arg(format!("{DOWNLOAD}/{tag}/{name}.tar.gz")))?;
-    run(Command::new("tar").arg("xzf").arg(&tarball).arg("-C").arg(&dir))?;
+    run(Command::new("tar")
+        .arg("xzf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&dir))?;
     run(Command::new("bash").arg(dir.join(&name).join("packaging/install.sh")))?;
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -145,8 +152,10 @@ pub fn install(tag: &str) -> Result<(), String> {
 /// Run a command to completion, failing with whatever it said on stderr.
 fn run(command: &mut Command) -> Result<(), String> {
     let program = command.get_program().to_string_lossy().into_owned();
-    let output =
-        command.stdin(Stdio::null()).output().map_err(|err| format!("{program}: {err}"))?;
+    let output = command
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("{program}: {err}"))?;
     if output.status.success() {
         return Ok(());
     }
@@ -154,7 +163,11 @@ fn run(command: &mut Command) -> Result<(), String> {
     // hundred lines of progress above it are not what went wrong.
     let stderr = String::from_utf8_lossy(&output.stderr);
     let reason = stderr.trim().lines().last().unwrap_or_default().trim();
-    Err(if reason.is_empty() { format!("{program} failed") } else { reason.to_string() })
+    Err(if reason.is_empty() {
+        format!("{program} failed")
+    } else {
+        reason.to_string()
+    })
 }
 
 fn tag_of(json: &str) -> Option<String> {
@@ -189,7 +202,10 @@ fn parse(version: &str) -> (Vec<u64>, bool) {
         Some(at) => (&version[..at], true),
         None => (version, false),
     };
-    let fields = release.split('.').map(|field| field.parse().unwrap_or(0)).collect();
+    let fields = release
+        .split('.')
+        .map(|field| field.parse().unwrap_or(0))
+        .collect();
     (fields, prerelease)
 }
 
@@ -227,7 +243,10 @@ mod tests {
 
     #[test]
     fn the_tag_is_read_out_of_the_release() {
-        assert_eq!(tag_of(r#"{"tag_name":"v0.2.0","name":"whatever"}"#), Some("v0.2.0".into()));
+        assert_eq!(
+            tag_of(r#"{"tag_name":"v0.2.0","name":"whatever"}"#),
+            Some("v0.2.0".into())
+        );
         assert_eq!(tag_of("not json"), None);
         assert_eq!(tag_of(r#"{"message":"Not Found"}"#), None);
     }

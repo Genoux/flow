@@ -110,7 +110,6 @@ fn score(
 /// Bands, floor, ceiling, the resulting heights, and the score.
 type Candidate = ([f32; BAND_COUNT], f32, f32, Vec<f32>, f32);
 
-
 #[test]
 #[ignore]
 fn search() {

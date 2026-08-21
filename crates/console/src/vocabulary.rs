@@ -100,7 +100,10 @@ mod tests {
         let existing =
             "# Words the recogniser gets wrong.\n# One per line.\n\nHyprland\nPipeWire\n";
         let kept = leading_comment(existing);
-        assert_eq!(kept, vec!["# Words the recogniser gets wrong.", "# One per line."]);
+        assert_eq!(
+            kept,
+            vec!["# Words the recogniser gets wrong.", "# One per line."]
+        );
     }
 
     /// A file that is only terms has no comment to keep, and must not gain a

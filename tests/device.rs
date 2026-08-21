@@ -61,7 +61,10 @@ fn an_igpu_is_used_when_it_is_all_there_is() {
 #[test]
 fn a_device_without_room_is_not_chosen() {
     let devices = [candidate(0, "NVIDIA GeForce GT 1030", true, 1.8)];
-    assert!(choose_device(&devices, NEEDED).is_none(), "should fall back to CPU");
+    assert!(
+        choose_device(&devices, NEEDED).is_none(),
+        "should fall back to CPU"
+    );
 }
 
 #[test]
@@ -71,7 +74,9 @@ fn a_small_discrete_card_loses_to_an_igpu_with_room() {
         candidate(1, "AMD Radeon Graphics", false, 12.0),
     ];
     assert_eq!(
-        choose_device(&devices, NEEDED).expect("igpu has room").index,
+        choose_device(&devices, NEEDED)
+            .expect("igpu has room")
+            .index,
         1,
         "a discrete card that cannot fit the model is not a candidate"
     );
@@ -106,15 +111,18 @@ fn short_and_already_clean_skips_the_model() {
         "No!",
         "Why?",
     ] {
-        assert!(!needs_refining(already_clean), "{already_clean:?} should skip");
+        assert!(
+            !needs_refining(already_clean),
+            "{already_clean:?} should skip"
+        );
     }
 }
 
 #[test]
 fn anything_the_model_could_fix_still_goes_through() {
     for needs_work in [
-        "Hello",             // no terminal punctuation
-        "Uh",                // filler, should be deleted entirely
+        "Hello", // no terminal punctuation
+        "Uh",    // filler, should be deleted entirely
         "Um",
         "Laugh at",          // fragment
         "Okay. Should I be", // trails off
@@ -124,7 +132,10 @@ fn anything_the_model_could_fix_still_goes_through() {
         "I mean, yes.",      // multi-word filler
         "so i pushed the change to the config and then restarted it",
     ] {
-        assert!(needs_refining(needs_work), "{needs_work:?} should be cleaned");
+        assert!(
+            needs_refining(needs_work),
+            "{needs_work:?} should be cleaned"
+        );
     }
 }
 
@@ -133,7 +144,10 @@ fn anything_the_model_could_fix_still_goes_through() {
 #[test]
 fn longer_utterances_are_never_skipped() {
     let clean_but_long = "One two three four five six seven.";
-    assert!(needs_refining(clean_but_long), "too long to assume it is finished");
+    assert!(
+        needs_refining(clean_but_long),
+        "too long to assume it is finished"
+    );
 }
 
 #[test]
@@ -151,7 +165,9 @@ use flow::refine::is_only_filler;
 /// question it thought it had been asked - pasting the literal word "None."
 #[test]
 fn a_transcript_of_pure_hesitation_has_nothing_to_write() {
-    for hesitation in ["Um", "Uh", "uh", "Um.", "Uh, um", "er", "Ah!", "you know", "I mean"] {
+    for hesitation in [
+        "Um", "Uh", "uh", "Um.", "Uh, um", "er", "Ah!", "you know", "I mean",
+    ] {
         assert!(is_only_filler(hesitation), "{hesitation:?} is not text");
     }
 }

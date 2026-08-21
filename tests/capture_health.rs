@@ -40,12 +40,18 @@ fn a_dead_stream_is_detected_and_reopened() {
     let capture = flow::audio::Capture::open(&device).expect("open");
 
     std::thread::sleep(Duration::from_millis(300));
-    assert!(capture.silent_for() < Duration::from_secs(1), "should be live");
+    assert!(
+        capture.silent_for() < Duration::from_secs(1),
+        "should be live"
+    );
 
     capture.kill_stream_for_test();
     std::thread::sleep(Duration::from_millis(3_200));
     let stale = capture.silent_for();
-    assert!(stale >= Duration::from_secs(3), "stream still feeding? {stale:?}");
+    assert!(
+        stale >= Duration::from_secs(3),
+        "stream still feeding? {stale:?}"
+    );
 
     assert!(capture.ensure_live(), "reopen failed");
     std::thread::sleep(Duration::from_millis(300));

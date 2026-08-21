@@ -15,7 +15,11 @@ fn paste_is_a_chord_not_typed_characters() {
 fn terminal_paste_adds_shift() {
     assert_eq!(
         flow::inject::paste_keys(true),
-        vec![KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_V]
+        vec![
+            KeyCode::KEY_LEFTCTRL,
+            KeyCode::KEY_LEFTSHIFT,
+            KeyCode::KEY_V
+        ]
     );
 }
 
@@ -93,7 +97,8 @@ fn the_focused_class_is_read_from_every_compositor_shape() {
 /// than admitting we do not know.
 #[test]
 fn an_unfocused_or_unreadable_answer_yields_nothing() {
-    let nothing_focused = r#"{"type":"root","nodes":[{"type":"con","app_id":"firefox","focused":false}]}"#;
+    let nothing_focused =
+        r#"{"type":"root","nodes":[{"type":"con","app_id":"firefox","focused":false}]}"#;
     assert_eq!(flow::inject::parse_focused_class(nothing_focused), None);
     assert_eq!(flow::inject::parse_focused_class("not json"), None);
     assert_eq!(flow::inject::parse_focused_class("{}"), None);

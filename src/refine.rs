@@ -1,5 +1,5 @@
 use crate::debug;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -223,8 +223,8 @@ const REFINE_BUDGET: Duration = Duration::from_millis(2_500);
 /// hold - "See no lay no" - and that needs voice detection rather than a longer
 /// list. This covers what the recogniser actually produces most of the time.
 const FILLERS: [&str; 19] = [
-    "um", "uh", "er", "ah", "like", "you know", "i mean", "sort of",
-    "mm", "mmm", "hmm", "hm", "mhm", "mmhm", "mmhmm", "uhhuh", "huh", "mm-hmm", "uh-huh",
+    "um", "uh", "er", "ah", "like", "you know", "i mean", "sort of", "mm", "mmm", "hmm", "hm",
+    "mhm", "mmhm", "mmhmm", "uhhuh", "huh", "mm-hmm", "uh-huh",
 ];
 
 /// Longest utterance the gate will call finished. Real dictations that were
@@ -394,14 +394,20 @@ pub fn plan(gpu: Option<usize>) -> Plan {
         Some(index) => match available.iter().find(|c| c.index == index) {
             Some(candidate) => Some(candidate.clone()),
             None => {
-                eprintln!("config wants gpu {index}, which is not a GPU here - falling back to auto");
+                eprintln!(
+                    "config wants gpu {index}, which is not a GPU here - falling back to auto"
+                );
                 choose_device(&available, needed).cloned()
             }
         },
         None => choose_device(&available, needed).cloned(),
     };
 
-    Plan { device, needed, best_free }
+    Plan {
+        device,
+        needed,
+        best_free,
+    }
 }
 
 fn candidates() -> Vec<Candidate> {
@@ -542,12 +548,7 @@ impl Refiner {
         self.refine_within(raw, REFINE_BUDGET, level)
     }
 
-    pub fn refine_within(
-        &self,
-        raw: &str,
-        budget_for: Duration,
-        level: Cleanup,
-    ) -> Result<String> {
+    pub fn refine_within(&self, raw: &str, budget_for: Duration, level: Cleanup) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
@@ -616,7 +617,11 @@ impl Refiner {
             if self.model.is_eog_token(token) {
                 break;
             }
-            output.push_str(&self.model.token_to_piece(token, &mut decoder, false, None)?);
+            output.push_str(
+                &self
+                    .model
+                    .token_to_piece(token, &mut decoder, false, None)?,
+            );
 
             batch.clear();
             batch.add(token, position, &[0], true)?;

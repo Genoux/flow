@@ -7,8 +7,7 @@
 use crate::card::card;
 use crate::format::{commas, plural};
 use crate::theme::{
-    mix, ACCENT, BG, CALENDAR_WEEKS, CELL, CELL_GAP, FAINT, FG, LINE, MUTED, RAISED,
-    WEEKDAY_GUTTER,
+    mix, ACCENT, BG, CALENDAR_WEEKS, CELL, CELL_GAP, FAINT, FG, LINE, MUTED, RAISED, WEEKDAY_GUTTER,
 };
 use crate::{history, Message};
 use iced::widget::{column, container, responsive, row, text, tooltip, Space};
@@ -31,7 +30,11 @@ pub(crate) fn current_streak(days: &[history::Day]) -> usize {
     if ending_today > 0 || days.len() < 2 {
         return ending_today;
     }
-    days[..days.len() - 1].iter().rev().take_while(|day| day.words > 0).count()
+    days[..days.len() - 1]
+        .iter()
+        .rev()
+        .take_while(|day| day.words > 0)
+        .count()
 }
 
 /// The longest run of consecutive active days anywhere in the buffer.
@@ -57,7 +60,11 @@ pub(crate) fn longest_streak(days: &[history::Day]) -> usize {
 /// The 80th percentile of *active* days puts the top of the scale inside
 /// normal use and lets the exceptional days simply saturate.
 fn heat_ceiling(days: &[history::Day]) -> u32 {
-    let mut active: Vec<u32> = days.iter().map(|day| day.words).filter(|&w| w > 0).collect();
+    let mut active: Vec<u32> = days
+        .iter()
+        .map(|day| day.words)
+        .filter(|&w| w > 0)
+        .collect();
     if active.is_empty() {
         return 1;
     }
@@ -101,7 +108,10 @@ fn heat_cell(colour: Color, size: f32) -> Element<'static, Message> {
         .height(Length::Fixed(size))
         .style(move |_theme| container::Style {
             background: Some(Background::Color(colour)),
-            border: Border { radius: (size * 0.22).into(), ..Default::default() },
+            border: Border {
+                radius: (size * 0.22).into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .into()
@@ -114,18 +124,26 @@ fn day_cell(day: history::Day, number: u64, ceiling: u32) -> Element<'static, Me
     let what = match day.words {
         0 => "nothing dictated".to_string(),
         1 => "1 word".to_string(),
-        words => format!("{} words in {}", commas(words), plural(day.dictations, "dictation")),
+        words => format!(
+            "{} words in {}",
+            commas(words),
+            plural(day.dictations, "dictation")
+        ),
     };
 
     tooltip(
         heat_cell(heat_color(day.words, ceiling), CELL),
-        container(text(format!("{when} · {what}")).size(11.5).color(FG)).padding([5, 8]).style(
-            |_theme| container::Style {
+        container(text(format!("{when} · {what}")).size(11.5).color(FG))
+            .padding([5, 8])
+            .style(|_theme| container::Style {
                 background: Some(Background::Color(BG)),
-                border: Border { color: mix(LINE, FG, 0.22), width: 1.0, radius: 6.0.into() },
+                border: Border {
+                    color: mix(LINE, FG, 0.22),
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
                 ..Default::default()
-            },
-        ),
+            }),
         tooltip::Position::Top,
     )
     .gap(6)
@@ -181,7 +199,10 @@ pub(crate) fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
                     Some(index) if number <= today && (index as usize) < days.len() => {
                         day_cell(days[index as usize], number, ceiling)
                     }
-                    _ => Space::new().width(Length::Fixed(CELL)).height(Length::Fixed(CELL)).into(),
+                    _ => Space::new()
+                        .width(Length::Fixed(CELL))
+                        .height(Length::Fixed(CELL))
+                        .into(),
                 };
                 week = week.push(cell);
             }
@@ -246,8 +267,12 @@ pub(crate) fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
         column![
             grid,
             Space::new().height(14),
-            row![text(caption).size(12).color(MUTED), Space::new().width(Fill), legend(),]
-                .align_y(iced::Center),
+            row![
+                text(caption).size(12).color(MUTED),
+                Space::new().width(Fill),
+                legend(),
+            ]
+            .align_y(iced::Center),
         ]
         .into(),
     )
@@ -302,8 +327,9 @@ fn latest_day(days: &[history::Day], today: u64) -> u64 {
 }
 
 fn month_name(month: u32) -> &'static str {
-    const MONTHS: [&str; 12] =
-        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     MONTHS[((month - 1) % 12) as usize]
 }
 

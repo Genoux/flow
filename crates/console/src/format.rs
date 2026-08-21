@@ -68,7 +68,12 @@ pub(crate) fn clip_tail(text: &str, chars: usize) -> String {
 /// Anything outside home is left alone - a custom XDG directory is the
 /// actual location, not a tilde we invented.
 pub(crate) fn display_path(path: &std::path::Path) -> String {
-    collapse_home(path, std::env::var_os("HOME").as_deref().map(std::path::Path::new))
+    collapse_home(
+        path,
+        std::env::var_os("HOME")
+            .as_deref()
+            .map(std::path::Path::new),
+    )
 }
 
 fn collapse_home(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
@@ -126,7 +131,10 @@ mod tests {
             "~/.config/flow/config.toml"
         );
         assert_eq!(
-            collapse_home(Path::new("/home/j/.local/share/flow/history.jsonl"), Some(home)),
+            collapse_home(
+                Path::new("/home/j/.local/share/flow/history.jsonl"),
+                Some(home)
+            ),
             "~/.local/share/flow/history.jsonl"
         );
         assert_eq!(collapse_home(home, Some(home)), "~");
@@ -135,7 +143,10 @@ mod tests {
     #[test]
     fn a_path_outside_home_is_left_alone() {
         assert_eq!(
-            collapse_home(Path::new("/custom/config/flow/config.toml"), Some(Path::new("/home/j"))),
+            collapse_home(
+                Path::new("/custom/config/flow/config.toml"),
+                Some(Path::new("/home/j"))
+            ),
             "/custom/config/flow/config.toml"
         );
         assert_eq!(collapse_home(Path::new("/tmp/x"), None), "/tmp/x");
@@ -144,6 +155,9 @@ mod tests {
     #[test]
     fn a_long_path_keeps_the_filename() {
         assert_eq!(clip_tail("abcdef", 6), "abcdef");
-        assert_eq!(clip_tail("/private/tmp/claude/flow/config.toml", 17), "…flow/config.toml");
+        assert_eq!(
+            clip_tail("/private/tmp/claude/flow/config.toml", 17),
+            "…flow/config.toml"
+        );
     }
 }

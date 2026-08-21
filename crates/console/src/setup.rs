@@ -129,7 +129,10 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
         // The reader ended, so the child has closed its stdout - either it
         // finished, it failed, or it was killed because the user stopped the
         // download. Only the exit status says which.
-        let status = held.lock().ok().and_then(|mut slot| slot.as_mut().map(|c| c.wait()));
+        let status = held
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.as_mut().map(|c| c.wait()));
         let ok = matches!(status, Some(Ok(status)) if status.success());
 
         if !ok {
@@ -162,7 +165,6 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
 
     (rx, handle)
 }
-
 
 /// One protocol line. An unparseable line is skipped rather than treated as a
 /// failure: a newer daemon adding an event must not break an older window.
@@ -550,7 +552,10 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
                 .size(13)
                 .width(Fill)
                 .align_x(iced::Center)
-                .color(emerge(if failed.is_some() { ERR } else { MUTED }, caption_lift)),
+                .color(emerge(
+                    if failed.is_some() { ERR } else { MUTED },
+                    caption_lift
+                )),
         )
         .max_width(MEASURE),
         Space::new().height(8),
@@ -576,7 +581,11 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
     page = page.push(Space::new().height(22));
     page = page.push(if failed.is_some() {
         crate::control::action_faded(
-            if state.start_error.is_some() { "Try starting Flow" } else { "Try again" },
+            if state.start_error.is_some() {
+                "Try starting Flow"
+            } else {
+                "Try again"
+            },
             false,
             button_lift,
             Message::BeginSetup,
@@ -593,10 +602,13 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
     });
 
     stack![
-        container(Space::new()).width(Fill).height(Fill).style(move |_| container::Style {
-            background: Some(iced::Background::Color(iced::Color { a: veil, ..BG })),
-            ..Default::default()
-        }),
+        container(Space::new())
+            .width(Fill)
+            .height(Fill)
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(iced::Color { a: veil, ..BG })),
+                ..Default::default()
+            }),
         container(page)
             .width(Fill)
             .height(Fill)
@@ -649,7 +661,10 @@ impl canvas::Program<Message> for Ring {
         if radius < WIDTH {
             return Vec::new();
         }
-        let quiet = |colour: iced::Color| iced::Color { a: colour.a * self.fade, ..colour };
+        let quiet = |colour: iced::Color| iced::Color {
+            a: colour.a * self.fade,
+            ..colour
+        };
 
         let stroke = |colour: iced::Color| {
             Stroke::default()
@@ -663,8 +678,11 @@ impl canvas::Program<Message> for Ring {
         // Twelve o'clock is where a person starts reading a dial, and canvas
         // angles start at three.
         let top = -std::f32::consts::FRAC_PI_2;
-        let sweep =
-            if self.failed { std::f32::consts::TAU } else { std::f32::consts::TAU * self.fraction };
+        let sweep = if self.failed {
+            std::f32::consts::TAU
+        } else {
+            std::f32::consts::TAU * self.fraction
+        };
 
         // Nothing yet is drawn as nothing. A round cap on a zero-length arc
         // puts a dot at twelve o'clock before a single byte has arrived.
@@ -722,7 +740,10 @@ mod tests {
     use super::*;
 
     fn settled(state: State) -> State {
-        State { elapsed: FLOOR, ..state }
+        State {
+            elapsed: FLOOR,
+            ..state
+        }
     }
 
     fn speech() -> State {
@@ -736,15 +757,25 @@ mod tests {
             }
             state.advance(1.0 / 60.0);
         }
-        panic!("never arrived: shown {} target {}", state.shown, state.fraction());
+        panic!(
+            "never arrived: shown {} target {}",
+            state.shown,
+            state.fraction()
+        );
     }
 
     #[test]
     fn protocol_lines_become_events() {
-        assert!(matches!(parse("total 3149465119"), Some(Event::Total(3_149_465_119))));
+        assert!(matches!(
+            parse("total 3149465119"),
+            Some(Event::Total(3_149_465_119))
+        ));
         assert!(matches!(parse("progress 12"), Some(Event::Progress(12))));
         assert!(matches!(parse("finished"), Some(Event::Finished)));
-        assert!(matches!(parse("installed tdt/vocab.txt"), Some(Event::Installed)));
+        assert!(matches!(
+            parse("installed tdt/vocab.txt"),
+            Some(Event::Installed)
+        ));
         // The dest is the first field; the size after it belongs to the ring's
         // total, not to the label.
         assert!(
@@ -793,7 +824,12 @@ mod tests {
     /// is a failure with something to say about it.
     #[test]
     fn a_stop_is_not_a_failure() {
-        let mut state = State { total: 100, done: 30, stopped: true, ..speech() };
+        let mut state = State {
+            total: 100,
+            done: 30,
+            stopped: true,
+            ..speech()
+        };
         state.apply(Event::Failed("killed".into()));
         assert_eq!(state.phase, Phase::Done);
         assert!(state.failed().is_none());
@@ -801,7 +837,10 @@ mod tests {
         // the 70 that was deliberately dropped is counted as downloaded.
         assert_eq!((state.total, state.done), (30, 30));
 
-        let mut broken = State { total: 100, ..speech() };
+        let mut broken = State {
+            total: 100,
+            ..speech()
+        };
         broken.apply(Event::Failed("no route to host".into()));
         assert_eq!(broken.failed(), Some("no route to host"));
     }
@@ -810,7 +849,12 @@ mod tests {
     /// to it or overshooting past it.
     #[test]
     fn the_ring_chases_without_overshooting() {
-        let mut state = State { total: 100, done: 100, phase: Phase::Done, ..speech() };
+        let mut state = State {
+            total: 100,
+            done: 100,
+            phase: Phase::Done,
+            ..speech()
+        };
         catch_up(&mut state);
         assert!(state.shown <= 1.0, "overshot to {}", state.shown);
         assert!(state.shown > 0.99, "never arrived: {}", state.shown);
@@ -821,13 +865,20 @@ mod tests {
     /// travelled - at a rate the eye can follow - rather than taken in a frame.
     #[test]
     fn a_resumed_run_travels_its_first_jump() {
-        let mut state = State { total: 100, ..speech() };
+        let mut state = State {
+            total: 100,
+            ..speech()
+        };
         state.apply(Event::Progress(96));
 
         // No frame may take more than the speed limit allows, however wide the
         // gap it opened with.
         state.advance(1.0 / 60.0);
-        assert!(state.shown <= SPEED / 60.0 + f32::EPSILON, "jolted to {}", state.shown);
+        assert!(
+            state.shown <= SPEED / 60.0 + f32::EPSILON,
+            "jolted to {}",
+            state.shown
+        );
 
         // Still travelling a fifth of a second in - this is a fill, not a cut.
         for _ in 0..11 {
@@ -839,19 +890,32 @@ mod tests {
         for _ in 0..108 {
             state.advance(1.0 / 60.0);
         }
-        assert!(state.shown > 0.95, "still short at two seconds: {}", state.shown);
+        assert!(
+            state.shown > 0.95,
+            "still short at two seconds: {}",
+            state.shown
+        );
     }
 
     /// While the installer hashes in silence the ring drifts rather than
     /// sitting empty, and never far enough to be mistaken for real progress.
     #[test]
     fn the_ring_drifts_while_nothing_is_reported() {
-        let mut state = State { total: 100, phase: Phase::Verifying("encoder".into()), spawned: true, ..speech() };
+        let mut state = State {
+            total: 100,
+            phase: Phase::Verifying("encoder".into()),
+            spawned: true,
+            ..speech()
+        };
         for _ in 0..90 {
             state.advance(1.0 / 60.0);
         }
         assert!(state.shown > 0.0, "stayed empty");
-        assert!(state.shown <= LEAD + f32::EPSILON, "wandered to {}", state.shown);
+        assert!(
+            state.shown <= LEAD + f32::EPSILON,
+            "wandered to {}",
+            state.shown
+        );
         assert!(state.running());
     }
 
@@ -864,7 +928,10 @@ mod tests {
 
         let mut mid = speech();
         mid.advance(COVER + RISE);
-        assert!(!mid.intro_over(), "the trailing elements are still arriving");
+        assert!(
+            !mid.intro_over(),
+            "the trailing elements are still arriving"
+        );
 
         let mut later = speech();
         later.advance(INTRO);
@@ -874,7 +941,10 @@ mod tests {
 
     #[test]
     fn progress_never_goes_backwards() {
-        let mut state = State { total: 100, ..speech() };
+        let mut state = State {
+            total: 100,
+            ..speech()
+        };
         state.apply(Event::Progress(60));
         // A part file is stat'd while curl writes it, so a short read after a
         // rename could otherwise pull the ring back.

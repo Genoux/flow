@@ -1,6 +1,6 @@
 use flow::overlay::{
-    band_fraction, bar_height, fresh_window, mountain, rounded_rect_distance, smooth, smooth_bar,
-    sweep, WINDOW,
+    WINDOW, band_fraction, bar_height, fresh_window, mountain, rounded_rect_distance, smooth,
+    smooth_bar, sweep,
 };
 
 /// Regression, and the whole reason the scale is in decibels.
@@ -17,17 +17,34 @@ fn a_quiet_band_still_shows_something() {
     let ordinary = band_fraction(0.00056 * 4.0);
     let loud = band_fraction(0.00547 * 4.0);
 
-    assert!(quiet > 0.01, "the quietest tenth of speech is invisible: {quiet}");
-    assert!(ordinary > 0.25, "ordinary speech barely moves the bar: {ordinary}");
-    assert!(ordinary < loud && loud < 1.0, "ordinary {ordinary}, loud {loud}");
+    assert!(
+        quiet > 0.01,
+        "the quietest tenth of speech is invisible: {quiet}"
+    );
+    assert!(
+        ordinary > 0.25,
+        "ordinary speech barely moves the bar: {ordinary}"
+    );
+    assert!(
+        ordinary < loud && loud < 1.0,
+        "ordinary {ordinary}, loud {loud}"
+    );
 }
 
 #[test]
 fn the_scale_rests_at_silence_and_never_overflows() {
     assert_eq!(band_fraction(0.0), 0.0);
-    assert_eq!(band_fraction(-1.0), 0.0, "a negative amplitude is not a tall bar");
+    assert_eq!(
+        band_fraction(-1.0),
+        0.0,
+        "a negative amplitude is not a tall bar"
+    );
     assert_eq!(band_fraction(1e-9), 0.0, "digital silence must rest");
-    assert_eq!(band_fraction(10.0), 1.0, "a clipping mic must not overflow the island");
+    assert_eq!(
+        band_fraction(10.0),
+        1.0,
+        "a clipping mic must not overflow the island"
+    );
 }
 
 #[test]
@@ -35,7 +52,10 @@ fn the_scale_is_monotonic() {
     let mut previous = 0.0;
     for step in 0..60 {
         let height = band_fraction(1e-5 * 1.2f32.powi(step));
-        assert!(height >= previous, "step {step} fell back: {height} after {previous}");
+        assert!(
+            height >= previous,
+            "step {step} fell back: {height} after {previous}"
+        );
         previous = height;
     }
     assert_eq!(previous, 1.0, "the scale never reaches the top");
@@ -62,10 +82,22 @@ fn the_silhouette_is_a_mountain() {
             mountain(bar),
             mountain(bar + 1)
         );
-        assert_eq!(mountain(bar), mountain(6 - bar), "the mountain is not mirrored");
+        assert_eq!(
+            mountain(bar),
+            mountain(6 - bar),
+            "the mountain is not mirrored"
+        );
     }
-    assert!(mountain(0) > 0.45, "the ends vanish on a quiet voice: {}", mountain(0));
-    assert!(mountain(0) < 0.6, "the ends are no longer below the crest: {}", mountain(0));
+    assert!(
+        mountain(0) > 0.45,
+        "the ends vanish on a quiet voice: {}",
+        mountain(0)
+    );
+    assert!(
+        mountain(0) < 0.6,
+        "the ends are no longer below the crest: {}",
+        mountain(0)
+    );
     assert_eq!(mountain(3), 1.0);
 }
 
@@ -90,7 +122,10 @@ fn a_quiet_voice_still_moves_the_ends() {
     let bands = [0.28, 0.2, 0.15, 0.05];
     let end = bar_height(0, &bands);
     assert!(end > 0.10, "a quiet voice left the ends at rest: {end}");
-    assert!(end < bar_height(3, &bands), "the quiet voice is not a mountain");
+    assert!(
+        end < bar_height(3, &bands),
+        "the quiet voice is not a mountain"
+    );
 }
 
 /// Same overall level, different spectrum. If every bar is just the voice
@@ -111,7 +146,10 @@ fn the_spectrum_changes_the_silhouette() {
 fn the_ends_fall_faster_than_the_centre() {
     let end = smooth_bar(0, 0.8, 0.0);
     let mid = smooth_bar(3, 0.8, 0.0);
-    assert!(end < mid, "ends {end} did not drop ahead of the centre {mid}");
+    assert!(
+        end < mid,
+        "ends {end} did not drop ahead of the centre {mid}"
+    );
 }
 
 #[test]
@@ -135,10 +173,17 @@ fn the_transcribing_sweep_lights_one_end_at_a_time() {
     let lit = |seconds: f32| (0..5).filter(|bar| sweep(*bar, seconds) > 0.05).count();
     for step in 0..40 {
         let seconds = step as f32 * 0.05;
-        assert!(lit(seconds) <= 3, "the sweep lit {} bars at {seconds}", lit(seconds));
+        assert!(
+            lit(seconds) <= 3,
+            "the sweep lit {} bars at {seconds}",
+            lit(seconds)
+        );
         for bar in 0..5 {
             let height = sweep(bar, seconds);
-            assert!((0.0..=0.8).contains(&height), "sweep out of range: {height}");
+            assert!(
+                (0.0..=0.8).contains(&height),
+                "sweep out of range: {height}"
+            );
         }
     }
 }
@@ -152,7 +197,10 @@ fn the_sweep_travels_and_repeats() {
     };
     let seen: std::collections::HashSet<usize> =
         (0..60).map(|step| crest(step as f32 * 0.03)).collect();
-    assert!(seen.len() >= 4, "the crest never crossed the island: {seen:?}");
+    assert!(
+        seen.len() >= 4,
+        "the crest never crossed the island: {seen:?}"
+    );
 }
 
 /// Both directions ease. Attack used to be instant, which is what made the bars
@@ -161,7 +209,10 @@ fn the_sweep_travels_and_repeats() {
 #[test]
 fn level_eases_in_both_directions() {
     let jumped = smooth(0.2, 0.9);
-    assert!(jumped > 0.2 && jumped < 0.5, "a rise must ease, not snap: {jumped}");
+    assert!(
+        jumped > 0.2 && jumped < 0.5,
+        "a rise must ease, not snap: {jumped}"
+    );
 
     let mut rising = 0.2;
     for _ in 0..40 {
@@ -170,7 +221,10 @@ fn level_eases_in_both_directions() {
     assert!(rising > 0.85, "a held level must still arrive: {rising}");
 
     let dropped = smooth(0.9, 0.0);
-    assert!(dropped < 0.9 && dropped > 0.6, "the fall is not gradual: {dropped}");
+    assert!(
+        dropped < 0.9 && dropped > 0.6,
+        "the fall is not gradual: {dropped}"
+    );
     let mut falling = dropped;
     for _ in 0..120 {
         falling = smooth(falling, 0.0);
@@ -195,7 +249,10 @@ fn easing_still_keeps_up_with_speech() {
     let up = frames_to(0.0, 1.0, 0.9);
     let down = frames_to(1.0, 0.0, 0.9);
     eprintln!("90% rise in {up} frames, fall in {down}");
-    assert!(up <= 40, "the rise takes {up} frames, too slow to follow a syllable");
+    assert!(
+        up <= 40,
+        "the rise takes {up} frames, too slow to follow a syllable"
+    );
     assert!((20..=90).contains(&down), "the fall takes {down} frames");
 }
 
@@ -257,7 +314,10 @@ fn the_floor_climbs_when_the_room_gets_louder() {
     }
     let loud_floor = analyzer.room();
     eprintln!("floor went {quiet_floor:.5} -> {loud_floor:.5}");
-    assert!(loud_floor > quiet_floor * 2.0, "the floor did not adapt upward");
+    assert!(
+        loud_floor > quiet_floor * 2.0,
+        "the floor did not adapt upward"
+    );
 }
 
 /// Deterministic pseudo-noise, so the thresholds above mean the same thing on
@@ -287,10 +347,16 @@ fn distance_is_negative_inside_and_positive_past_the_corner() {
     assert!(inside < 0.0, "the centre must be inside, got {inside}");
 
     let edge = rounded_rect_distance((50.0, 0.0), centre, half, radius);
-    assert!(edge.abs() < 0.001, "the top edge must sit on the boundary, got {edge}");
+    assert!(
+        edge.abs() < 0.001,
+        "the top edge must sit on the boundary, got {edge}"
+    );
 
     let corner = rounded_rect_distance((0.5, 0.5), centre, half, radius);
-    assert!(corner > 0.0, "the square corner must be cut away, got {corner}");
+    assert!(
+        corner > 0.0,
+        "the square corner must be cut away, got {corner}"
+    );
 }
 
 // -- how long the island stays up ------------------------------------------
@@ -305,7 +371,10 @@ fn the_island_survives_until_the_text_has_landed() {
     let mut life = Lifecycle::default();
     life.record();
     life.transcribe();
-    assert!(life.finish(), "the only job finished, so the island comes down");
+    assert!(
+        life.finish(),
+        "the only job finished, so the island comes down"
+    );
 }
 
 /// Dictations queue. A finish for the first must not take the island down while
@@ -333,7 +402,10 @@ fn a_finish_for_a_replaced_dictation_is_ignored() {
     life.transcribe();
     life.record();
 
-    assert!(!life.finish(), "island is showing bars for the new recording");
+    assert!(
+        !life.finish(),
+        "island is showing bars for the new recording"
+    );
 }
 
 #[test]
@@ -343,4 +415,3 @@ fn a_stray_finish_never_hides_anything() {
     life.record();
     assert!(!life.finish(), "recording, not transcribing");
 }
-

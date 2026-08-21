@@ -71,7 +71,6 @@ pub fn setup_state() -> crate::setup::State {
     }
 }
 
-
 /// The speech model present and the refining model absent: the state a real
 /// machine is in after first run, and the one the Overview's banner and the
 /// Models screen's Download button are drawn for. Sized as the pinned release
@@ -80,6 +79,10 @@ pub fn models() -> Vec<system::Model> {
     system::models()
         .into_iter()
         .zip([652_000_000, 0])
-        .map(|(model, bytes)| system::Model { bytes, installed: bytes > 0, ..model })
+        .map(|(model, bytes)| system::Model {
+            bytes,
+            installed: bytes > 0,
+            ..model
+        })
         .collect()
 }

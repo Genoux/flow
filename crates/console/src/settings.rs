@@ -125,7 +125,9 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Self {
-        std::fs::read_to_string(config_path()).map(|text| Self::parse(&text)).unwrap_or_default()
+        std::fs::read_to_string(config_path())
+            .map(|text| Self::parse(&text))
+            .unwrap_or_default()
     }
 
     /// A missing or malformed value keeps the default rather than failing: the
@@ -144,8 +146,11 @@ impl Settings {
                 // The key this replaced. Still read so a config written before
                 // levels existed opens on the level it meant.
                 "refine" => {
-                    settings.cleanup =
-                        if value == "true" { Cleanup::default() } else { Cleanup::None }
+                    settings.cleanup = if value == "true" {
+                        Cleanup::default()
+                    } else {
+                        Cleanup::None
+                    }
                 }
                 "terminal" => settings.terminal = value == "true",
                 "denoise" => settings.denoise = value == "true",
@@ -271,7 +276,10 @@ mod tests {
         // Writing must append rather than uncomment, so the explanation lives.
         let out = Settings::default().render(template);
         assert!(out.contains("# duck = 50"), "comment was lost:\n{out}");
-        assert!(out.contains("\nduck = 50"), "no real setting written:\n{out}");
+        assert!(
+            out.contains("\nduck = 50"),
+            "no real setting written:\n{out}"
+        );
     }
 
     #[test]
@@ -279,14 +287,20 @@ mod tests {
         // record_debug has no control in the window, so it stands in for any
         // key a future daemon might add that this version knows nothing about.
         let existing = "# keep me\nduck = 20\nrecord_debug = true\n";
-        let settings = Settings { duck: 75, ..Settings::default() };
+        let settings = Settings {
+            duck: 75,
+            ..Settings::default()
+        };
         let out = settings.render(existing);
 
         assert!(out.contains("# keep me"));
         assert!(out.contains("duck = 75"), "duck not updated:\n{out}");
         assert!(!out.contains("duck = 20"));
         // A key the window does not manage must survive a save.
-        assert!(out.contains("record_debug = true"), "unknown key dropped:\n{out}");
+        assert!(
+            out.contains("record_debug = true"),
+            "unknown key dropped:\n{out}"
+        );
     }
 
     #[test]
@@ -309,9 +323,16 @@ mod tests {
     #[test]
     fn saving_removes_the_key_cleanup_replaced() {
         let existing = "cleanup = none\nrefine = true\n";
-        let out = Settings { cleanup: Cleanup::None, ..Settings::default() }.render(existing);
+        let out = Settings {
+            cleanup: Cleanup::None,
+            ..Settings::default()
+        }
+        .render(existing);
 
-        assert!(!out.contains("refine"), "stale refine line survived:\n{out}");
+        assert!(
+            !out.contains("refine"),
+            "stale refine line survived:\n{out}"
+        );
         assert_eq!(Settings::parse(&out).cleanup, Cleanup::None);
     }
 
@@ -332,7 +353,10 @@ mod tests {
     /// would pin the first device instead.
     #[test]
     fn automatic_gpu_removes_the_key() {
-        let pinned = Settings { gpu: Some(1), ..Settings::default() };
+        let pinned = Settings {
+            gpu: Some(1),
+            ..Settings::default()
+        };
         let out = pinned.render("");
         assert!(out.contains("gpu = 1"), "gpu not written:\n{out}");
         assert_eq!(Settings::parse(&out).gpu, Some(1));

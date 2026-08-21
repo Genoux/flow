@@ -1,4 +1,5 @@
 use crate::hotkey;
+use crate::wayland_vk::VirtualKeyboard;
 use anyhow::{Context, Result};
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};
@@ -6,7 +7,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wl_clipboard_rs::copy::{self, MimeSource, MimeType as CopyMime, Options, Source};
 use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
-use crate::wayland_vk::VirtualKeyboard;
 
 /// uinput devices need a moment for udev to create the node and for compositors
 /// to pick them up; emitting immediately after build silently drops events.
