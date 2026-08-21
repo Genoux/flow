@@ -34,9 +34,11 @@ run yourself rather than doing behind your back.
 The first build takes 10–15 minutes: llama.cpp is compiled from source.
 
 Then open **Flow** from your launcher, or `flow-console` from a terminal. The
-first run is a setup screen: it downloads the two models, tells you which GPU it
-found for refining while it does, and starts the daemon at the end. The models
-are about 3 GB, and the refining half can be skipped and fetched later.
+first run is a setup screen: it downloads the two models and starts the daemon
+at the end. They are about 3 GB together and Flow needs both, so there is
+nothing to choose — but you can stop the download and pick it up later from
+where it left off, and **Run setup again** on the About screen refetches them
+from scratch if one ever goes bad.
 
 Then hold **Super+Shift+D** and talk.
 
