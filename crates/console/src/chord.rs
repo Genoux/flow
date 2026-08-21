@@ -202,6 +202,61 @@ mod tests {
         assert_eq!(trigger_word(KeyCode::KEY_KPPLUS), None);
     }
 
+    /// End to end over a real uinput keyboard. Every interesting failure in
+    /// `capture` lives in the device layer, which the spelling tests above
+    /// cannot see. Ignored by default: it needs `/dev/uinput` and a readable
+    /// `/dev/input`.
+    #[test]
+    #[ignore = "needs /dev/uinput and membership of the input group"]
+    fn a_synthetic_chord_is_captured() {
+        use evdev::uinput::VirtualDevice;
+        use evdev::{AttributeSet, KeyEvent};
+        use std::time::{Duration, Instant};
+
+        let mut keys = AttributeSet::<KeyCode>::new();
+        for key in [
+            KeyCode::KEY_A,
+            KeyCode::KEY_LEFTCTRL,
+            KeyCode::KEY_LEFTSHIFT,
+            KeyCode::KEY_F13,
+        ] {
+            keys.insert(key);
+        }
+        // Named for keyd on purpose: where a remapper is present `keyboards`
+        // reads only its devices, so a test keyboard without the word would be
+        // dropped as a physical duplicate and this would test nothing.
+        let mut device = VirtualDevice::builder()
+            .expect("open /dev/uinput")
+            .name("keyd test chord")
+            .with_keys(&keys)
+            .expect("declare keys")
+            .build()
+            .expect("build");
+        std::thread::sleep(Duration::from_millis(700));
+
+        // Bounded, or a capture that never sees the chord hangs the suite.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let captured = std::thread::spawn(move || capture(&|| Instant::now() > deadline));
+        std::thread::sleep(Duration::from_millis(300));
+
+        for (key, value) in [
+            (KeyCode::KEY_LEFTCTRL, 1),
+            (KeyCode::KEY_LEFTSHIFT, 1),
+            (KeyCode::KEY_F13, 1),
+            (KeyCode::KEY_F13, 0),
+            (KeyCode::KEY_LEFTSHIFT, 0),
+            (KeyCode::KEY_LEFTCTRL, 0),
+        ] {
+            device.emit(&[*KeyEvent::new(key, value)]).expect("emit");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        assert_eq!(
+            captured.join().expect("capture thread").as_deref(),
+            Some("ctrl+shift+f13")
+        );
+    }
+
     #[test]
     fn both_sides_of_a_modifier_mean_the_same_word() {
         assert_eq!(modifier_word(KeyCode::KEY_LEFTMETA), Some("super"));
