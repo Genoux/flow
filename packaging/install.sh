@@ -56,6 +56,13 @@ mkdir -p "$units" "$apps" "$icons"
 install -m644 "$repo/packaging/flow.service" "$units/flow.service"
 install -m644 "$repo/packaging/flow-console.desktop" "$apps/flow-console.desktop"
 install -m644 "$repo/packaging/flow-console.png" "$icons/flow-console.png"
+# Rewritten to the absolute path of the icon just installed, rather than left
+# as a theme name. A name is resolved through the user's icon theme, so the
+# launcher shows Flow's own icon on a desktop whose theme happens to carry that
+# name and a blank tile on one that does not - and ~/.local/share/icons/hicolor
+# has no index.theme, so `flow-console` as a bare name is skipped too. A path is
+# read straight off disk by every loader.
+sed -i "s|^Icon=.*|Icon=$icons/flow-console.png|" "$apps/flow-console.desktop"
 systemctl --user daemon-reload
 
 # Without these the launcher shows the entry only after the next login, which
