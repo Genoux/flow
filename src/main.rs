@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use flow::{
     audio, config, denoise, duck, history, hotkey, inject, install, ipc, notify, overlay, refine,
     status, stt, wav,
@@ -69,7 +69,10 @@ fn main() -> Result<()> {
 
     // Same reason as help, and the same trap: `--version` is all flags, so it
     // reached the catch-all and recorded for five seconds.
-    if args.iter().any(|arg| arg == "version" || arg == "--version" || arg == "-V") {
+    if args
+        .iter()
+        .any(|arg| arg == "version" || arg == "--version" || arg == "-V")
+    {
         println!("flow {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
@@ -173,7 +176,10 @@ fn main() -> Result<()> {
             "Flow can't start",
             "The cleanup model is missing. Run `flow install` to fetch it.",
         );
-        bail!("model not found at {} - run `flow install`", cleanup_model.display());
+        bail!(
+            "model not found at {} - run `flow install`",
+            cleanup_model.display()
+        );
     }
     // Bound before the loading starts, not after it. The console shows
     // "Starting…" from the moment it asks systemd for a start, and the only
@@ -233,17 +239,17 @@ fn main() -> Result<()> {
                 }
             };
             // Shared so the file watcher can swap in new values while the
-            // daemon runs. The chord and push_to_talk are read once below:
-            // both own a thread that would have to be torn down and rebuilt,
-            // which is a restart's job.
+            // daemon runs. Hold vs tap is read per event from that; --no-ptt
+            // is the one thing that still decides whether the watcher thread
+            // exists at all.
             let live = std::sync::Arc::new(std::sync::Mutex::new(settings.clone()));
             config::watch(std::sync::Arc::clone(&live));
             daemon(
                 &mut engine,
                 settings.chord.clone(),
-                settings.push_to_talk,
                 refiner,
                 live,
+                !args.iter().any(|arg| arg == "--no-ptt"),
                 reporter.expect("bound above for the daemon command"),
             )
         }
@@ -402,7 +408,9 @@ fn logs(args: &[String]) -> Result<()> {
 /// to ignore a `gpu = ` override, not a reason to refuse to say what hardware
 /// is present.
 fn probe() -> Result<()> {
-    let gpu = config::Config::load().ok().and_then(|settings| settings.gpu);
+    let gpu = config::Config::load()
+        .ok()
+        .and_then(|settings| settings.gpu);
     let plan = refine::plan(gpu);
 
     match plan.device {
@@ -449,9 +457,9 @@ type Live = std::sync::Arc<std::sync::Mutex<config::Config>>;
 fn daemon(
     engine: &mut stt::Stt,
     chord: hotkey::Chord,
-    ptt: bool,
     refiner: Option<refine::Refiner>,
     live: Live,
+    watch_keys: bool,
     reporter: status::Reporter,
 ) -> Result<()> {
     let device = audio::open_device()?;
@@ -480,27 +488,34 @@ fn daemon(
     {
         let chord = std::sync::Arc::clone(&chord);
         let live = std::sync::Arc::clone(&live);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(400));
-            let wanted = live.lock().expect("config").chord.clone();
-            let mut current = chord.lock().expect("chord");
-            if *current != wanted {
-                *current = wanted;
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(400));
+                let wanted = live.lock().expect("config").chord.clone();
+                let mut current = chord.lock().expect("chord");
+                if *current != wanted {
+                    *current = wanted;
+                }
             }
         });
     }
-    let mut ptt = ptt;
-    if ptt && let Err(err) = hotkey::spawn(events.clone(), std::sync::Arc::clone(&chord)) {
+    // Spawned whichever way the chord is meant to work. Hold and tap are the
+    // same key stream read differently, decided per event from the live config
+    // below, so that setting no longer decides whether this thread exists - and
+    // so no longer needs a restart to change. `--no-ptt` still does: it is the
+    // escape hatch for "I have a compositor bind, leave the keys alone".
+    let mut watching = watch_keys;
+    if watch_keys && let Err(err) = hotkey::spawn(events.clone(), std::sync::Arc::clone(&chord)) {
         // The chord is the only way most people ever start a dictation, so
         // losing it looks exactly like Flow not running at all. Name the usual
         // cause: reading /dev/input needs membership of the input group.
         notify::failure(
-            "Flow: push-to-talk disabled",
-            "The chord is not being watched. Add yourself to the `input` group \
-             and log back in, or start dictation with `flow start`.",
+            "Flow: the chord is not being watched",
+            "Add yourself to the `input` group and log back in, or start \
+             dictation with `flow start`.",
         );
-        eprintln!("push-to-talk disabled: {err}");
-        ptt = false;
+        eprintln!("chord watcher disabled: {err}");
+        watching = false;
     }
 
     let signals = events.clone();
@@ -522,8 +537,13 @@ fn daemon(
     hotkey::warmup_devices();
     eprintln!(
         "\nready - {}\n",
-        if ptt {
-            format!("hold {}, or trigger `flow start`", chord.lock().expect("chord"))
+        if watching {
+            let chord = chord.lock().expect("chord");
+            if live.lock().expect("config").push_to_talk {
+                format!("hold {chord}, or trigger `flow start`")
+            } else {
+                format!("tap {chord} to start and again to stop, or trigger `flow start`")
+            }
         } else {
             "trigger `flow start`".to_string()
         }
@@ -594,7 +614,9 @@ fn daemon(
             while listening.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(PREFIX_POLL);
                 let mut engine = engine.lock().expect("stt engine");
-                let Some(prefix) = recording.take_prefix(PREFIX_MIN) else { continue };
+                let Some(prefix) = recording.take_prefix(PREFIX_MIN) else {
+                    continue;
+                };
                 let spoken = prefix.len() as f32 / audio::SAMPLE_RATE as f32;
                 let started = Instant::now();
                 match engine.transcribe(prefix) {
@@ -613,6 +635,10 @@ fn daemon(
         let mut session: Option<Session> = None;
         let mut chord_watch: Option<hotkey::ChordWatch> = None;
         let mut hold_started: Option<Instant> = None;
+        // Last time tap-to-talk actually began or finished a session. Native
+        // press and compositor `flow start` of the same tap land a few
+        // milliseconds apart; without this the second one would toggle back.
+        let mut last_tap: Option<Instant> = None;
         // An event peeked while debouncing a release (see `RELEASE_DEBOUNCE`
         // below) that turned out not to be chatter, and so still needs
         // handling on the next iteration instead of being dropped.
@@ -626,9 +652,50 @@ fn daemon(
                 },
             };
             let was_recording = session.is_some();
+            // Hold or tap, read per event from the live config so switching
+            // the two in the console lands on the next press. It cannot be
+            // read once at startup: that is what used to make this setting
+            // need a restart.
+            let hold_to_talk = live.lock().expect("config").push_to_talk;
+            let echo = last_tap.is_some_and(|at| at.elapsed() < hotkey::TAP_ECHO);
             // Ending a session drops its ducker, so other apps come back to volume
             // as soon as recording stops rather than after transcription.
             let finished = match event {
+                // Tap to talk: the chord (and `flow start`) is a switch.
+                // Release - including Hyprland's USR2 bind on the same chord -
+                // must not end the session, or the setting does nothing.
+                event @ (hotkey::Event::Pressed | hotkey::Event::Start) if !hold_to_talk => {
+                    if let Some(watch) = chord_watch.take() {
+                        watch.disarm();
+                    }
+                    match hotkey::tap_action(event, session.is_some(), echo) {
+                        hotkey::TapAction::Ignore => None,
+                        hotkey::TapAction::Finish => {
+                            last_tap = Some(Instant::now());
+                            hold_started.take();
+                            session.take().map(|s| s.finish(&capture))
+                        }
+                        hotkey::TapAction::Begin => {
+                            last_tap = Some(Instant::now());
+                            hold_started = None;
+                            if begin(
+                                &capture,
+                                &mut session,
+                                live,
+                                &overlay,
+                                &reporter,
+                                early,
+                                &incoming,
+                            )
+                            .is_some()
+                            {
+                                last_tap = None;
+                            }
+                            None
+                        }
+                    }
+                }
+                hotkey::Event::Released { .. } | hotkey::Event::Stop if !hold_to_talk => None,
                 hotkey::Event::Pressed => {
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
@@ -643,8 +710,16 @@ fn daemon(
                     // then measure under MIN_HOLD and be discarded as a tap.
                     if session.is_none() {
                         hold_started = Some(Instant::now());
-                        if begin(&capture, &mut session, live, &overlay, &reporter, early, &incoming)
-                            .is_some()
+                        if begin(
+                            &capture,
+                            &mut session,
+                            live,
+                            &overlay,
+                            &reporter,
+                            early,
+                            &incoming,
+                        )
+                        .is_some()
                         {
                             hold_started = None;
                         }
@@ -659,8 +734,16 @@ fn daemon(
                         None
                     } else {
                         hold_started = Some(Instant::now());
-                        if begin(&capture, &mut session, live, &overlay, &reporter, early, &incoming)
-                            .is_none()
+                        if begin(
+                            &capture,
+                            &mut session,
+                            live,
+                            &overlay,
+                            &reporter,
+                            early,
+                            &incoming,
+                        )
+                        .is_none()
                         {
                             chord_watch = Some(hotkey::ChordWatch::arm(
                                 events.clone(),
@@ -822,7 +905,10 @@ fn begin(
     early: &std::sync::Mutex<Vec<String>>,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
 ) -> Option<Duration> {
-    let duck = live.lock().expect("config").ducking();
+    let (duck, hold_to_talk) = {
+        let config = live.lock().expect("config");
+        (config.ducking(), config.push_to_talk)
+    };
 
     // A new recording abandons whatever came before it, including anything already
     // transcribed early - otherwise those words would prepend to this dictation.
@@ -850,14 +936,25 @@ fn begin(
 
     while ducker.as_ref().is_some_and(|d| !d.settled()) {
         match incoming.recv_timeout(ARM_POLL) {
-            Ok(hotkey::Event::Released { held }) => {
+            // Only a hold can be released too early. In tap mode the key is
+            // let go a moment after the tap that started this, and treating
+            // that as an abort would cancel every dictation before the mic
+            // ever opened.
+            Ok(hotkey::Event::Released { held }) if hold_to_talk => {
                 *slot = None;
                 overlay.cancel();
                 reporter.ready();
                 eprintln!("released before the mic opened ({held:?}) - nothing recorded");
                 return Some(held);
             }
-            Ok(hotkey::Event::Cancelled | hotkey::Event::Stop) => {
+            Ok(hotkey::Event::Stop) if hold_to_talk => {
+                *slot = None;
+                overlay.cancel();
+                reporter.ready();
+                eprintln!("discarded: the hold ended before the mic opened");
+                return Some(started.elapsed());
+            }
+            Ok(hotkey::Event::Cancelled) => {
                 *slot = None;
                 overlay.cancel();
                 reporter.ready();
@@ -866,7 +963,7 @@ fn begin(
             }
             // Key-repeat or a duplicate start while already arming - the same
             // thing the top-level loop already ignores once a session exists.
-            Ok(hotkey::Event::Pressed | hotkey::Event::Start) | Err(_) => {}
+            Ok(_) | Err(_) => {}
         }
     }
 
@@ -976,9 +1073,9 @@ fn handle(
             if let Some(denoised) = denoised.as_ref()
                 && let Err(err) =
                     wav::write_16k_mono(dir.join(format!("{n:04}_denoised.wav")), denoised)
-                {
-                    eprintln!("record_debug: denoised wav write failed: {err:#}");
-                }
+            {
+                eprintln!("record_debug: denoised wav write failed: {err:#}");
+            }
         }
         engine.transcribe(denoised.unwrap_or(samples))?
     };
@@ -1075,7 +1172,10 @@ fn record_once(engine: &mut stt::Stt, seconds: u64) -> Result<()> {
     use cpal::traits::DeviceTrait;
 
     let device = audio::open_device()?;
-    eprintln!("input: {}", device.id().map(|i| i.to_string()).unwrap_or_default());
+    eprintln!(
+        "input: {}",
+        device.id().map(|i| i.to_string()).unwrap_or_default()
+    );
     eprintln!("recording {seconds}s - speak now...");
 
     let samples = audio::record(&device, Duration::from_secs(seconds))?;

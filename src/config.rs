@@ -1,11 +1,13 @@
 //! Three layers, in order: these defaults, then `~/.config/flow/config.toml`,
 //! then command-line flags. A fresh install has no config file and needs none.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// Hold the chord while speaking (`true`), or tap it to start and tap it
+    /// again to stop (`false`). The chord is watched either way.
     pub push_to_talk: bool,
     /// Percentage of its current volume each other app is held at while
     /// recording. 0 disables ducking.
@@ -15,7 +17,8 @@ pub struct Config {
     /// their sentences rewritten.
     pub cleanup: super::refine::Cleanup,
     pub terminal: bool,
-    /// Key combination held to dictate. Only consulted when `push_to_talk` is on.
+    /// Key combination that starts a dictation, held or tapped depending on
+    /// `push_to_talk`.
     pub chord: super::hotkey::Chord,
     /// Which GPU runs the refining model. `None` picks the roomiest discrete one,
     /// which is right on every machine tested so far; an index is the escape hatch
@@ -33,8 +36,10 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Push-to-talk is on out of the box: Flow watches the chord itself, so a
-    /// fresh install dictates with no compositor configuration at all.
+    /// Hold-to-talk is on out of the box: Flow watches the chord itself, so a
+    /// fresh install dictates with no compositor configuration at all. Off is
+    /// the same chord as a tap-on, tap-off switch, not a chord that does
+    /// nothing - the keys are watched either way.
     fn default() -> Self {
         Self {
             push_to_talk: true,
@@ -59,9 +64,7 @@ impl Config {
     /// that does nothing.
     pub fn load_from(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(text) => {
-                Self::parse(&text).with_context(|| format!("in {}", path.display()))
-            }
+            Ok(text) => Self::parse(&text).with_context(|| format!("in {}", path.display())),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(err) => Err(err).with_context(|| format!("reading {}", path.display())),
         }
@@ -88,7 +91,9 @@ impl Config {
                 "push_to_talk" => config.push_to_talk = boolean(&at, key, value)?,
                 "cleanup" => {
                     config.cleanup = super::refine::Cleanup::parse(value).ok_or_else(|| {
-                        anyhow::anyhow!("{at}: cleanup wants none, light, or medium, found {value:?}")
+                        anyhow::anyhow!(
+                            "{at}: cleanup wants none, light, or medium, found {value:?}"
+                        )
                     })?
                 }
                 // Accepted so an existing config keeps working across the rename.
@@ -133,7 +138,6 @@ impl Config {
     pub fn overridden_by(mut self, args: &[String]) -> Self {
         let present = |flag: &str| args.iter().any(|arg| arg == flag);
 
-        self.push_to_talk &= !present("--no-ptt");
         if present("--raw") {
             self.cleanup = super::refine::Cleanup::None;
         }
