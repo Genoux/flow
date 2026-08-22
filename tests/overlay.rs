@@ -1,6 +1,6 @@
 use flow::overlay::{
-    WINDOW, band_fraction, bar_height, fresh_window, mountain, rounded_rect_distance, smooth,
-    smooth_bar, sweep,
+    BLOOM, FADE, WINDOW, band_fraction, bar_height, bloom, fresh_window, mountain,
+    rounded_rect_distance, smooth, smooth_bar, sweep,
 };
 
 /// Regression, and the whole reason the scale is in decibels.
@@ -414,4 +414,67 @@ fn a_stray_finish_never_hides_anything() {
     assert!(!life.finish(), "nothing was ever queued");
     life.record();
     assert!(!life.finish(), "recording, not transcribing");
+}
+
+/// The whole point of the outro: a tap too short to record still gets its
+/// gesture. Cutting the island at the moment the key came back up left a
+/// half-grown shape blinking out of existence, which reads as a glitch rather
+/// than as a dictation that did not take.
+#[test]
+fn a_cancel_mid_bloom_lets_the_island_finish_growing_first() {
+    let cancelled_at = BLOOM / 3.0;
+
+    let mid = bloom(cancelled_at, Some(0.0));
+    assert!(
+        mid < 0.5,
+        "the island jumped to full the instant it was cancelled: {mid}"
+    );
+
+    let grown = bloom(BLOOM, Some(BLOOM - cancelled_at));
+    assert_eq!(grown, 1.0, "the growth was cut short by the cancel");
+}
+
+#[test]
+fn the_island_retracts_before_it_leaves() {
+    let opening = bloom(BLOOM + FADE / 2.0, Some(FADE / 2.0));
+    assert!(
+        (0.0..1.0).contains(&opening),
+        "half way out and not moving: {opening}"
+    );
+
+    assert_eq!(
+        bloom(BLOOM + FADE, Some(FADE)),
+        0.0,
+        "the island never reaches nothing, so it would never be dropped"
+    );
+}
+
+#[test]
+fn the_island_never_grows_back_once_it_is_leaving() {
+    let cancelled_at = BLOOM / 4.0;
+    let mut peaked = false;
+    let mut previous = 0.0;
+
+    for step in 0..80 {
+        let shown = step as f32 * (BLOOM + FADE) / 40.0;
+        let size = bloom(shown, Some((shown - cancelled_at).max(0.0)));
+        if size < previous {
+            peaked = true;
+        }
+        assert!(
+            !peaked || size <= previous,
+            "the island grew back at {shown}s: {size} after {previous}"
+        );
+        previous = size;
+    }
+
+    assert!(peaked, "the island never started leaving");
+    assert_eq!(previous, 0.0, "it is still on screen at the end");
+}
+
+#[test]
+fn an_island_nobody_cancelled_grows_and_stays() {
+    assert_eq!(bloom(0.0, None), 0.0, "the island starts as a dot");
+    assert_eq!(bloom(BLOOM, None), 1.0);
+    assert_eq!(bloom(600.0, None), 1.0, "a long dictation must not shrink");
 }

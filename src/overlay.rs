@@ -157,7 +157,29 @@ const GLOW_LAYERS: usize = 5;
 /// will now be heard, so it wants to be quick and definite rather than a
 /// gentle fade anyone could miss - but slow enough that the shape change
 /// registers as a shape change.
-const BLOOM: f32 = 0.05;
+pub const BLOOM: f32 = 0.05;
+
+/// How long the island takes to pull back into a dot and go.
+///
+/// Longer than the bloom on purpose. Arriving is an answer to something the
+/// user just did and wants to be instant; leaving is the island getting out of
+/// the way, and a retract as quick as the growth reads as the surface being
+/// yanked rather than withdrawn.
+pub const FADE: f32 = 0.14;
+
+/// How grown the island is: 0 a dot, 1 the full pill.
+///
+/// `shown` is seconds since the island appeared, `retiring` seconds since
+/// something asked it to leave. The growth always lands before the retract
+/// begins - a tap too short to record used to cut the island off mid-bloom,
+/// which reads as a flicker rather than as a gesture that did not take. Out
+/// and back is a shape the eye can follow; half a shape blinking away is not.
+pub fn bloom(shown: f32, retiring: Option<f32>) -> f32 {
+    let grown = (shown / BLOOM).min(1.0);
+    let Some(since) = retiring else { return grown };
+    let begins = (shown - since).max(BLOOM);
+    grown.min((begins + FADE - shown) / FADE).max(0.0)
+}
 
 /// Below this the island stays flat. Measured on the webcam mic: an idle room
 /// captures rms 0.000 to 0.004, so this clears the noise without clipping a
@@ -871,7 +893,10 @@ fn render(
     };
     for (index, band) in heights.iter().enumerate() {
         let height = if transcribing {
-            sweep(index, seconds)
+            // Scaled by the same wake as the bars, so a finish arriving mid-sweep
+            // pulls the crest in with the pill instead of leaving it at full
+            // height inside a shrinking shape.
+            sweep(index, seconds) * wake
         } else {
             // Rising from nothing on wake, so the microphone opening is a
             // visible event rather than a state the user has to infer.
@@ -1049,6 +1074,20 @@ fn shared_memory(size: usize) -> Result<OwnedFd> {
     Ok(fd)
 }
 
+/// When the bloom should be timed from for an island that is starting again.
+///
+/// Normally now - the island is not on screen, so it grows from a dot. Caught
+/// mid-retract it is back-dated to whatever is still showing, so a chord
+/// re-triggered inside the outro picks the growth up rather than collapsing to
+/// a dot first and regrowing.
+fn resume(grown: f32, retiring: Option<std::time::Instant>) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    match retiring {
+        Some(_) => now - Duration::from_secs_f32(grown.clamp(0.0, 1.0) * BLOOM),
+        None => now,
+    }
+}
+
 fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let connection = Connection::connect_to_env().context("no wayland display")?;
     let mut queue = connection.new_event_queue();
@@ -1093,7 +1132,13 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // flips on `SWEEP_DELAY` after, which is what let the bars keep answering
     // real room sound for a couple hundred ms after the key was released.
     let mut listening = false;
-    let mut woke: Option<std::time::Instant> = None;
+    let mut woke = std::time::Instant::now();
+    // Set when something asks the island to leave. It does not go at once: the
+    // bloom is allowed to land, then run backwards. See [`bloom`].
+    let mut retiring: Option<std::time::Instant> = None;
+    // Last drawn size, so a re-trigger mid-retract can pick the growth up from
+    // there instead of snapping back to a dot.
+    let mut grown = 0.0f32;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
     let mut lifecycle = Lifecycle::default();
@@ -1118,14 +1163,17 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 // The bloom starts on the keypress rather than waiting for the
                 // mic to actually open - press, open, and extend are meant to
                 // read as one motion, not a hold followed by a second growth.
-                woke = Some(std::time::Instant::now());
+                woke = resume(grown, retiring);
                 settling = false;
                 waiting_to_sweep = None;
+                retiring = None;
                 lifecycle.record();
-                started = std::time::Instant::now();
-                state.configured = false;
-                state.closed = false;
-                island = Some(Island::map(&compositor, &shell, &handle));
+                if island.is_none() {
+                    started = std::time::Instant::now();
+                    state.configured = false;
+                    state.closed = false;
+                    island = Some(Island::map(&compositor, &shell, &handle));
+                }
             }
             Ok(Command::Record) => {
                 heights = [0.0; BAR_COUNT];
@@ -1144,11 +1192,12 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 // now would snap a finished pill back to a circle and regrow
                 // it right as recording begins.
                 if !was_armed {
-                    woke = Some(std::time::Instant::now());
+                    woke = resume(grown, retiring);
                 }
                 // A sweep that had not started yet belongs to the dictation this
                 // one replaces, and must not appear over the new bars.
                 waiting_to_sweep = None;
+                retiring = None;
                 if !was_armed {
                     lifecycle.record();
                 }
@@ -1180,20 +1229,14 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             Ok(Command::Finish) => {
                 if lifecycle.finish() {
                     waiting_to_sweep = None;
-                    island = None;
-                    transcribing = false;
-                    queue.roundtrip(&mut state)?;
-                    continue;
+                    retiring.get_or_insert_with(std::time::Instant::now);
                 }
             }
             Ok(Command::Cancel) => {
                 waiting_to_sweep = None;
                 listening = false;
                 lifecycle.cancel();
-                island = None;
-                transcribing = false;
-                queue.roundtrip(&mut state)?;
-                continue;
+                retiring.get_or_insert_with(std::time::Instant::now);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
@@ -1263,17 +1306,27 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 }
             }
         }
+        grown = bloom(
+            woke.elapsed().as_secs_f32(),
+            retiring.map(|at| at.elapsed().as_secs_f32()),
+        );
         buffers.present(
             &mapped.surface,
             &heights,
             started.elapsed().as_secs_f32(),
             transcribing && !settling,
             arming,
-            // Full immediately when nothing armed - the unducked path opens the
-            // microphone on the keypress and has nothing to announce.
-            woke.map_or(1.0, |at| (at.elapsed().as_secs_f32() / BLOOM).min(1.0)),
+            grown,
         )?;
         connection.flush()?;
+
+        // Pulled all the way back in, so there is nothing left to show.
+        if retiring.is_some() && grown <= 0.0 {
+            retiring = None;
+            island = None;
+            transcribing = false;
+            settling = false;
+        }
     }
 }
 
