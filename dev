@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# Run the daemon from this checkout and rerun it every time you save.
+#
+# Nothing is built into ~/.local/bin and nothing is committed - this is the
+# working tree, so an edit to a constant is on screen a few seconds later.
+#
+# It exists mostly because a bare `cargo run` means different things depending
+# on where you are standing: the console is its own workspace (see the comment
+# in Cargo.toml), so in crates/console `cargo run` silently starts the settings
+# window instead of the daemon. This always runs the daemon, from anywhere.
+#
+#   ./dev                  the island for a chord that recorded nothing
+#   ./dev overlay 6        the island for a normal dictation
+#   ./dev daemon           the real thing, chord and all
+#   ./dev --once ...       run it once instead of watching
+#
+set -uo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+watch=1
+if [ "${1-}" = "--once" ]; then
+  watch=0
+  shift
+fi
+
+args=("$@")
+# The one being worked on. Anything else is worth naming.
+[ ${#args[@]} -eq 0 ] && args=(overlay missed)
+
+run() {
+  printf '\n\033[2m── flow %s ──\033[0m\n' "${args[*]}"
+  cargo run -q --manifest-path "$repo/Cargo.toml" -- "${args[@]}"
+}
+
+if [ $watch -eq 0 ]; then
+  run
+  exit $?
+fi
+
+if ! command -v inotifywait >/dev/null; then
+  echo "inotifywait not found - install inotify-tools, or use ./dev --once" >&2
+  exit 1
+fi
+
+while true; do
+  # Backgrounded so a long run - `./dev daemon` - is killed and restarted on a
+  # save rather than having to be interrupted by hand. A short one, like the
+  # overlay previews, is long gone by the time anything changes.
+  run &
+  running=$!
+
+  inotifywait -qq -r -e close_write -e moved_to \
+    "$repo/src" "$repo/Cargo.toml" "$repo/assets"
+
+  kill "$running" 2>/dev/null
+  wait "$running" 2>/dev/null
+done
