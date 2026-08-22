@@ -26,6 +26,7 @@ COMMANDS
                      Needs record_debug in the config.
     inject [TEXT]    Type text after 3s, to test injection on its own
     overlay [SECS]   Show the island on its own
+    overlay missed   Show a chord that recorded nothing
     SECONDS          Record, transcribe and print. Default 5.
     FILE.wav         Transcribe a file and time the recogniser
     help             This text
@@ -112,6 +113,22 @@ fn main() -> Result<()> {
     // isolates uinput: a compositor blur rule or a bar colour can be looked at
     // without dictating anything into whatever window happens to have focus.
     if args.first().map(String::as_str) == Some("overlay") {
+        // The tap too short to be a hold. Worth its own preview because it is
+        // the one sequence with no way to rehearse it deliberately: getting a
+        // real chord back up inside 200ms is mostly luck.
+        if args.get(1).is_some_and(|arg| arg == "missed") {
+            // Opened and never begun, which is the real arming path - this
+            // release lands before the microphone ever opens.
+            let capture = audio::Capture::open(&audio::open_device()?)?;
+            let overlay = overlay::Overlay::spawn(capture.monitor());
+            overlay.arm();
+            std::thread::sleep(Duration::from_millis(100));
+            overlay.missed();
+            eprintln!("let go after 100ms - the island blooms, retracts, then says so");
+            std::thread::sleep(Duration::from_secs(4));
+            return Ok(());
+        }
+
         let seconds = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
         let capture = audio::Capture::open(&audio::open_device()?)?;
         let overlay = overlay::Overlay::spawn(capture.monitor());
