@@ -17,7 +17,9 @@
 #
 set -uo pipefail
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolved through symlinks: crates/console/dev points here, because that is
+# the directory the trap this script exists for is easiest to fall into.
+repo="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 watch=1
 if [ "${1-}" = "--once" ]; then
