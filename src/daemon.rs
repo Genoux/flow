@@ -235,6 +235,9 @@ pub fn run(
                 },
             };
             let was_recording = session.is_some();
+            // Set by the paths where the user asked for a dictation and got
+            // nothing back. Distinct from a cancel, which they asked for.
+            let mut missed = false;
             // Hold or tap, read per event from the live config so switching
             // the two in the console lands on the next press. It cannot be
             // read once at startup: that is what used to make this setting
@@ -393,6 +396,7 @@ pub fn run(
                         Some(_) => {
                             early.lock().expect("early transcripts").clear();
                             eprintln!("discarded: {total:?} is too short to be a deliberate hold");
+                            missed = true;
                             None
                         }
                         None => None,
@@ -407,10 +411,16 @@ pub fn run(
                     overlay.queued();
                     reporter.working();
                 }
-                // A recording ended with nothing usable - a cancel, a tap too
-                // short. End the island here or it would sweep forever.
+                // A recording ended with nothing usable. End the island here or
+                // it would sweep forever - and say so, unless the user is the one
+                // who called it off. Another key turning the hold into a shortcut
+                // was deliberate; a tap too short to register was not, and leaves
+                // them waiting for text that is never coming.
                 (None, false, true) => {
-                    overlay.cancel();
+                    match missed {
+                        true => overlay.missed(),
+                        false => overlay.cancel(),
+                    }
                     reporter.ready();
                 }
                 // Nothing started and nothing ended: a stray `flow stop`, a
@@ -525,14 +535,14 @@ fn begin(
             // ever opened.
             Ok(hotkey::Event::Released { held }) if hold_to_talk => {
                 *slot = None;
-                overlay.cancel();
+                overlay.missed();
                 reporter.ready();
                 eprintln!("released before the mic opened ({held:?}) - nothing recorded");
                 return Some(held);
             }
             Ok(hotkey::Event::Stop) if hold_to_talk => {
                 *slot = None;
-                overlay.cancel();
+                overlay.missed();
                 reporter.ready();
                 eprintln!("discarded: the hold ended before the mic opened");
                 return Some(started.elapsed());

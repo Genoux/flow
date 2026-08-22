@@ -35,3 +35,4 @@ wl-clipboard-rs = "0.9.3"
 nnnoiseless = { version = "0.5", default-features = false }
 rubato = "0.15"
 whatlang = "0.18.0"
+fontdue = "0.9.4"

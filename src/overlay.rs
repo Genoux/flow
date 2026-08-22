@@ -23,8 +23,26 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 
 use crate::audio::Monitor;
 
+/// Inter Medium, subset to the characters the messages use. Vendored rather
+/// than found on the system: this daemon has no UI toolkit and no fontconfig,
+/// and a toast that silently loses its text on a machine missing some font is
+/// worse than no toast. See `assets/README.md`.
+static FONT: std::sync::LazyLock<fontdue::Font> = std::sync::LazyLock::new(|| {
+    fontdue::Font::from_bytes(
+        include_bytes!("../assets/Inter-Medium.ttf").as_slice(),
+        fontdue::FontSettings::default(),
+    )
+    .expect("the vendored font is built into the binary")
+});
+
+/// The pill. Not the surface: the toast that replaces it is wider, and a
+/// layer surface resized mid-animation costs a reconfigure per frame, so both
+/// are drawn into one buffer sized for the larger of them. Everything outside
+/// the shape being drawn is transparent, and the input region is empty, so the
+/// extra width costs nothing but the pixels it never touches.
 const WIDTH: u32 = 116;
 const HEIGHT: u32 = 40;
+pub const SURFACE_WIDTH: u32 = 268;
 /// Clear of the usual bottom bar without sitting in the middle of the screen.
 const MARGIN_BOTTOM: i32 = 96;
 
@@ -179,6 +197,53 @@ pub fn bloom(shown: f32, retiring: Option<f32>) -> f32 {
     let Some(since) = retiring else { return grown };
     let begins = (shown - since).max(BLOOM);
     grown.min((begins + FADE - shown) / FADE).max(0.0)
+}
+
+/// The message shown when a chord came and went without recording anything.
+///
+/// Not "error" and not an apology: the user pressed the keys, so something did
+/// happen - what they need is the one fact that no text is coming, and the one
+/// thing to do differently.
+pub const MISSED: &str = "Nothing recorded - hold a little longer";
+
+/// Type size and the room left around it inside the toast.
+const TOAST_TEXT: f32 = 12.5;
+const TOAST_PAD: f32 = 15.0;
+const TOAST_HEIGHT: f32 = 30.0;
+const TOAST_RADIUS: f32 = 10.0;
+const TOAST_TEXT_ALPHA: f32 = 0.88;
+
+/// Gentler than the island in both directions. The island answers a keypress
+/// and wants to be instant; the toast is telling the user something after the
+/// fact, and arriving with the same snap reads as an alarm.
+pub const TOAST_RISE: f32 = 0.16;
+pub const TOAST_FALL: f32 = 0.26;
+/// Long enough to read the message twice at a glance, short enough that it is
+/// gone before the next dictation. Nothing dismisses it - the surface is
+/// click-through by design - so this is the only way it ever leaves.
+pub const TOAST_HOLD: f32 = 1.7;
+
+/// How wide the toast box is at this scale: the message plus the room around
+/// it. Also what decides whether [`MISSED`] still fits the surface - see the
+/// test of the same name.
+pub fn toast_width(scale: f32) -> f32 {
+    let span: f32 = MISSED
+        .chars()
+        .map(|glyph| FONT.metrics(glyph, TOAST_TEXT * scale).advance_width)
+        .sum();
+    span + TOAST_PAD * 2.0 * scale
+}
+
+/// The whole life of a toast, rise through fall.
+pub const TOAST_LIFE: f32 = TOAST_RISE + TOAST_HOLD + TOAST_FALL;
+
+/// How present the toast is: 0 gone, 1 fully shown. `shown` is seconds since
+/// it appeared. Zero at both ends, so it is [`TOAST_LIFE`] and not this that
+/// says when the surface may go.
+pub fn toast_wake(shown: f32) -> f32 {
+    let risen = (shown / TOAST_RISE).min(1.0);
+    let left = TOAST_RISE + TOAST_HOLD + TOAST_FALL - shown;
+    risen.min(left / TOAST_FALL).max(0.0)
 }
 
 /// Below this the island stays flat. Measured on the webcam mic: an idle room
@@ -507,8 +572,13 @@ enum Command {
     Queued,
     /// Recognition found words, so there is real work to wait for.
     Working,
-    /// The recording was thrown away - a cancel, or a tap too short to count.
+    /// The recording was thrown away on purpose - another key turned the hold
+    /// into a shortcut. The user meant it, so nothing is said about it.
     Cancel,
+    /// The chord came and went without recording anything. Same retract as a
+    /// cancel, but the island is followed by [`MISSED`]: the user did press the
+    /// keys, and silence would leave them waiting for text that is not coming.
+    Missed,
     /// The transcript landed. Ignored once a new dictation has started, so a
     /// slow transcription cannot pull the island out from under the next one.
     Finish,
@@ -562,6 +632,11 @@ impl Overlay {
 
     pub fn cancel(&self) {
         let _ = self.commands.send(Command::Cancel);
+    }
+
+    /// Nothing was recorded and the user did not ask for that. Says so.
+    pub fn missed(&self) {
+        let _ = self.commands.send(Command::Missed);
     }
 
     pub fn finish(&self) {
@@ -732,6 +807,47 @@ impl Canvas {
     /// pixels alone, which is what turns the shape into a ring. `clip` is another
     /// rounded rect the drawing is masked to, for shapes that must never show
     /// past the island's own edge.
+    /// One line of text, centred on `at`, its baseline placed so the line sits
+    /// on the middle rather than hanging from it.
+    ///
+    /// Laid out by hand: fontdue's layout engine exists for paragraphs, and
+    /// every string here is one short line with no wrapping, no shaping and no
+    /// bidi. Kerning is skipped for the same reason - at this size and this
+    /// length nobody can see it, and asking for it means a shaping pass.
+    fn text(&mut self, line: &str, size: f32, at: (f32, f32), colour: (f32, f32, f32), alpha: f32) {
+        let span: f32 = line
+            .chars()
+            .map(|glyph| FONT.metrics(glyph, size).advance_width)
+            .sum();
+        // Centring on the cap height rather than the full line box: the line
+        // box is sized for descenders and accents most of these strings never
+        // use, and centring on it leaves the text visibly high in the pill.
+        let middle = FONT
+            .horizontal_line_metrics(size)
+            .map_or(size * 0.35, |line| line.ascent * 0.36);
+
+        let mut pen = at.0 - span / 2.0;
+        let baseline = at.1 + middle;
+        for glyph in line.chars() {
+            let (metrics, coverage) = FONT.rasterize(glyph, size);
+            let left = pen + metrics.xmin as f32;
+            let top = baseline - (metrics.height as f32 + metrics.ymin as f32);
+            for row in 0..metrics.height {
+                for column in 0..metrics.width {
+                    let ink = coverage[row * metrics.width + column] as f32 / 255.0;
+                    if ink > 0.0 {
+                        let x = (left + column as f32).round();
+                        let y = (top + row as f32).round();
+                        if x >= 0.0 && y >= 0.0 {
+                            self.blend(x as usize, y as usize, colour, ink * alpha);
+                        }
+                    }
+                }
+            }
+            pen += metrics.advance_width;
+        }
+    }
+
     // Eight parameters and a nested tuple, kept as they are on purpose. Folding
     // centre/half/radius into a RoundedRect would read better and satisfy both
     // lints, but nothing tests this function - tests/overlay.rs covers the bar
@@ -785,19 +901,74 @@ impl Canvas {
     }
 }
 
-fn render(
+/// The message the island leaves behind when a chord recorded nothing.
+///
+/// Its own shape rather than a wider island: the two are never on screen at
+/// once, and a pill that stretched into a sentence would read as the island
+/// still doing something. This appears after the island has gone.
+fn render_toast(canvas: &mut Canvas, wake: f32, scale: f32) {
+    let width = SURFACE_WIDTH as f32 * scale;
+    let height = HEIGHT as f32 * scale;
+    // Fades in while rising the last few pixels into place, which is what
+    // separates a message arriving from one that was always there.
+    let centre = (width / 2.0, height / 2.0 + (1.0 - wake) * 5.0 * scale);
+    let half = (toast_width(scale) / 2.0, TOAST_HEIGHT * scale / 2.0);
+    let corner = TOAST_RADIUS * scale;
+
+    canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA * wake);
+    canvas.rounded_ring(centre, half, corner, scale, EDGE, EDGE_ALPHA * wake);
+    canvas.text(
+        MISSED,
+        TOAST_TEXT * scale,
+        centre,
+        BAR,
+        TOAST_TEXT_ALPHA * wake,
+    );
+}
+
+/// What the surface is painting this frame.
+///
+/// The island and the message are never both up - one replaces the other - and
+/// an enum is what says so. Passed as parameters instead, a toast would sit
+/// beside five island fields it silently makes dead.
+enum Face<'a> {
+    Island {
+        heights: &'a [f32; BAR_COUNT],
+        seconds: f32,
+        transcribing: bool,
+        arming: bool,
+        /// 0 at the instant the microphone opened, 1 once the bars have risen.
+        wake: f32,
+    },
+    Toast {
+        wake: f32,
+    },
+}
+
+fn render(canvas: &mut Canvas, face: Face, scale: f32) {
+    canvas.clear();
+    match face {
+        Face::Island {
+            heights,
+            seconds,
+            transcribing,
+            arming,
+            wake,
+        } => render_island(canvas, heights, seconds, transcribing, arming, wake, scale),
+        Face::Toast { wake } => render_toast(canvas, wake, scale),
+    }
+}
+
+fn render_island(
     canvas: &mut Canvas,
     heights: &[f32; BAR_COUNT],
     seconds: f32,
     transcribing: bool,
     arming: bool,
-    // 0 at the instant the microphone opened, 1 once the bars have risen.
     wake: f32,
     scale: f32,
 ) {
-    canvas.clear();
-
-    let width = WIDTH as f32 * scale;
+    let width = SURFACE_WIDTH as f32 * scale;
     let height = HEIGHT as f32 * scale;
     let centre = (width / 2.0, height / 2.0);
     let corner = height / 2.0;
@@ -820,7 +991,7 @@ fn render(
     } else {
         wake
     };
-    let half_width = corner + (width / 2.0 - corner) * grown;
+    let half_width = corner + (WIDTH as f32 * scale / 2.0 - corner) * grown;
     let half = (half_width, height / 2.0);
     canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA);
     canvas.rounded_ring(centre, half, corner, scale, EDGE, EDGE_ALPHA);
@@ -950,7 +1121,7 @@ impl Island {
             queue,
             (),
         );
-        layer.set_size(WIDTH, HEIGHT);
+        layer.set_size(SURFACE_WIDTH, HEIGHT);
         layer.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
         layer.set_margin(0, 0, MARGIN_BOTTOM, 0);
         layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
@@ -985,7 +1156,7 @@ struct Buffers {
 
 impl Buffers {
     fn create(shm: &wl_shm::WlShm, queue: &QueueHandle<Wayland>, scale: i32) -> Result<Self> {
-        let width = WIDTH as i32 * scale;
+        let width = SURFACE_WIDTH as i32 * scale;
         let height = HEIGHT as i32 * scale;
         let stride = width * 4;
         let frame = stride * height;
@@ -1014,24 +1185,8 @@ impl Buffers {
         })
     }
 
-    fn present(
-        &mut self,
-        surface: &wl_surface::WlSurface,
-        heights: &[f32; BAR_COUNT],
-        seconds: f32,
-        transcribing: bool,
-        arming: bool,
-        wake: f32,
-    ) -> Result<()> {
-        render(
-            &mut self.canvas,
-            heights,
-            seconds,
-            transcribing,
-            arming,
-            wake,
-            self.scale as f32,
-        );
+    fn present(&mut self, surface: &wl_surface::WlSurface, face: Face) -> Result<()> {
+        render(&mut self.canvas, face, self.scale as f32);
 
         let slot = self.next;
         self.next = 1 - self.next;
@@ -1139,6 +1294,11 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // Last drawn size, so a re-trigger mid-retract can pick the growth up from
     // there instead of snapping back to a dot.
     let mut grown = 0.0f32;
+    // Set when the island has been asked to leave and owes the user a message.
+    // The toast waits for the retract: two shapes crossfading in one surface
+    // reads as a glitch, and the island leaving is what makes room for it.
+    let mut owed = false;
+    let mut toast: Option<std::time::Instant> = None;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
     let mut lifecycle = Lifecycle::default();
@@ -1167,6 +1327,8 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 settling = false;
                 waiting_to_sweep = None;
                 retiring = None;
+                owed = false;
+                toast = None;
                 lifecycle.record();
                 if island.is_none() {
                     started = std::time::Instant::now();
@@ -1198,6 +1360,8 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 // one replaces, and must not appear over the new bars.
                 waiting_to_sweep = None;
                 retiring = None;
+                owed = false;
+                toast = None;
                 if !was_armed {
                     lifecycle.record();
                 }
@@ -1232,10 +1396,11 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                     retiring.get_or_insert_with(std::time::Instant::now);
                 }
             }
-            Ok(Command::Cancel) => {
+            Ok(command @ (Command::Cancel | Command::Missed)) => {
                 waiting_to_sweep = None;
                 listening = false;
                 lifecycle.cancel();
+                owed |= matches!(command, Command::Missed);
                 retiring.get_or_insert_with(std::time::Instant::now);
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -1257,6 +1422,8 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         // unplugged mid-sentence. Recording carries on regardless.
         if state.closed {
             island = None;
+            toast = None;
+            owed = false;
             continue;
         }
         let Some(mapped) = island.as_ref() else {
@@ -1310,22 +1477,38 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             woke.elapsed().as_secs_f32(),
             retiring.map(|at| at.elapsed().as_secs_f32()),
         );
-        buffers.present(
-            &mapped.surface,
-            &heights,
-            started.elapsed().as_secs_f32(),
-            transcribing && !settling,
-            arming,
-            grown,
-        )?;
+        let face = match toast {
+            Some(at) => Face::Toast {
+                wake: toast_wake(at.elapsed().as_secs_f32()),
+            },
+            None => Face::Island {
+                heights: &heights,
+                seconds: started.elapsed().as_secs_f32(),
+                transcribing: transcribing && !settling,
+                arming,
+                wake: grown,
+            },
+        };
+        buffers.present(&mapped.surface, face)?;
         connection.flush()?;
 
-        // Pulled all the way back in, so there is nothing left to show.
+        // The island has pulled all the way back in. Either the message it owed
+        // takes the surface over, or there is nothing left to show.
         if retiring.is_some() && grown <= 0.0 {
             retiring = None;
-            island = None;
             transcribing = false;
             settling = false;
+            match std::mem::take(&mut owed) {
+                true => toast = Some(std::time::Instant::now()),
+                false => island = None,
+            }
+        }
+
+        // The message has had its time. Nothing dismisses it but this - the
+        // surface is click-through, so there is nothing to dismiss it with.
+        if toast.is_some_and(|at| at.elapsed().as_secs_f32() >= TOAST_LIFE) {
+            toast = None;
+            island = None;
         }
     }
 }
@@ -1403,3 +1586,76 @@ delegate_noop!(Wayland: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(Wayland: ignore wl_buffer::WlBuffer);
 delegate_noop!(Wayland: ignore wl_region::WlRegion);
 delegate_noop!(Wayland: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where the toast actually put ink, as (left, right, top, bottom).
+    fn ink(canvas: &Canvas, colour_floor: u8) -> (usize, usize, usize, usize) {
+        let (mut left, mut right, mut top, mut bottom) = (canvas.width, 0, canvas.height, 0);
+        for y in 0..canvas.height {
+            for x in 0..canvas.width {
+                // The text is the only near-white thing drawn; the pill behind
+                // it is dark and its edge ring is barely there.
+                if canvas.pixels[(y * canvas.width + x) * 4 + 1] > colour_floor {
+                    left = left.min(x);
+                    right = right.max(x);
+                    top = top.min(y);
+                    bottom = bottom.max(y);
+                }
+            }
+        }
+        (left, right, top, bottom)
+    }
+
+    /// The baseline and the pen advance are both hand-rolled, and both fail
+    /// quietly: text drawn a few pixels low still renders, it just sits wrong
+    /// in the pill. This is what notices.
+    #[test]
+    fn the_message_sits_centred_in_its_box() {
+        let scale = 2.0;
+        let mut canvas = Canvas::new(SURFACE_WIDTH as usize * 2, HEIGHT as usize * 2);
+        render(&mut canvas, Face::Toast { wake: 1.0 }, scale);
+
+        let (left, right, top, bottom) = ink(&canvas, 160);
+        assert!(left < right && top < bottom, "the message drew nothing");
+
+        let slack = 2.0 * scale;
+        let across = (left + right) as f32 / 2.0;
+        assert!(
+            (across - canvas.width as f32 / 2.0).abs() < slack,
+            "the text runs off centre: {left}..{right} in {} wide",
+            canvas.width
+        );
+        let down = (top + bottom) as f32 / 2.0;
+        assert!(
+            (down - canvas.height as f32 / 2.0).abs() < slack,
+            "the text hangs off the middle: {top}..{bottom} in {} tall",
+            canvas.height
+        );
+
+        let inside = (SURFACE_WIDTH as f32 * scale - toast_width(scale)) / 2.0 + TOAST_PAD * scale;
+        assert!(
+            left as f32 >= inside - slack && (right as f32) <= canvas.width as f32 - inside + slack,
+            "the text overruns the padding: {left}..{right}, box starts at {inside}"
+        );
+    }
+
+    /// Nothing on screen once it has left, or the surface would never unmap.
+    #[test]
+    fn a_finished_toast_draws_nothing() {
+        let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+        render(
+            &mut canvas,
+            Face::Toast {
+                wake: toast_wake(TOAST_LIFE),
+            },
+            1.0,
+        );
+        assert!(
+            canvas.pixels.iter().all(|channel| *channel == 0),
+            "the toast is still painting after its life ran out"
+        );
+    }
+}

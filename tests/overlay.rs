@@ -1,6 +1,7 @@
 use flow::overlay::{
-    BLOOM, FADE, WINDOW, band_fraction, bar_height, bloom, fresh_window, mountain,
-    rounded_rect_distance, smooth, smooth_bar, sweep,
+    BLOOM, FADE, SURFACE_WIDTH, TOAST_FALL, TOAST_HOLD, TOAST_RISE, WINDOW, band_fraction,
+    bar_height, bloom, fresh_window, mountain, rounded_rect_distance, smooth, smooth_bar, sweep,
+    toast_wake, toast_width,
 };
 
 /// Regression, and the whole reason the scale is in decibels.
@@ -477,4 +478,46 @@ fn an_island_nobody_cancelled_grows_and_stays() {
     assert_eq!(bloom(0.0, None), 0.0, "the island starts as a dot");
     assert_eq!(bloom(BLOOM, None), 1.0);
     assert_eq!(bloom(600.0, None), 1.0, "a long dictation must not shrink");
+}
+
+/// The toast is the only thing that tells a user their tap did not take, so it
+/// has to be readable: up, held long enough to read four words, then away
+/// without being dismissed.
+#[test]
+fn the_toast_rises_holds_and_leaves() {
+    assert_eq!(toast_wake(0.0), 0.0, "the toast starts hidden");
+    assert_eq!(toast_wake(TOAST_RISE), 1.0, "it never reaches full");
+    let held = toast_wake(TOAST_RISE + TOAST_HOLD);
+    assert!(
+        held > 0.999,
+        "it started leaving before the hold was over: {held}"
+    );
+
+    let done = TOAST_RISE + TOAST_HOLD + TOAST_FALL;
+    assert_eq!(toast_wake(done), 0.0, "it never leaves, so it never unmaps");
+    assert_eq!(toast_wake(done + 10.0), 0.0, "and it must stay gone");
+
+    let leaving = toast_wake(done - TOAST_FALL / 2.0);
+    assert!(
+        (0.0..1.0).contains(&leaving),
+        "the exit is a cut, not a fade: {leaving}"
+    );
+}
+
+/// The surface is a fixed size and the toast is drawn inside it, so copy that
+/// outgrows it does not overflow - it silently clips. Caught here instead.
+#[test]
+fn the_message_fits_the_surface() {
+    for scale in [1.0, 2.0, 3.0] {
+        let box_width = toast_width(scale);
+        let surface = SURFACE_WIDTH as f32 * scale;
+        assert!(
+            box_width <= surface,
+            "the toast is {box_width}px wide at scale {scale}, the surface only {surface}px"
+        );
+        assert!(
+            box_width > surface * 0.4,
+            "the surface is {surface}px for a {box_width}px toast - all that is wasted pixels"
+        );
+    }
 }
