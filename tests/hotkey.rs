@@ -1,7 +1,5 @@
 use evdev::KeyCode;
-use flow::hotkey::{
-    Chord, Event, Modifier, PttState, TapAction, chord_broken, chord_released, tap_action,
-};
+use flow::hotkey::{Chord, Event, Modifier, PttState, TapAction, chord_released, tap_action};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -131,22 +129,65 @@ fn releasing_the_trigger_ends_the_hold() {
     ));
 }
 
-/// The hold ends when any finger lifts, not only the letter. Hyprland's release
-/// bind is unreliable with modifier chords, which is why Flow watches this
-/// itself - and why lifting Super first has to stop the recording.
+/// What the compositor-driven watch waits for: every key it saw at press back
+/// up. An empty read before anything was seen is an unknown, not a release.
 #[test]
-fn releasing_any_modifier_ends_the_hold() {
+fn a_chord_is_released_only_when_every_key_it_saw_is_up() {
+    let chord = HashSet::from([
+        KeyCode::KEY_LEFTMETA,
+        KeyCode::KEY_LEFTSHIFT,
+        KeyCode::KEY_D,
+    ]);
+    assert!(!chord_released(&chord, &chord));
+
+    let mut after = chord.clone();
+    after.remove(&KeyCode::KEY_D);
+    assert!(!chord_released(&chord, &after), "shift/super still down");
+
+    assert!(chord_released(&chord, &HashSet::new()));
+    assert!(
+        !chord_released(&HashSet::new(), &HashSet::new()),
+        "nothing was ever seen down, so nothing was released"
+    );
+}
+
+/// A modifier lifting is not the user letting go. Three fingers come off a
+/// chord at three different moments, and ending on the first of them cut
+/// dictations off before their last word.
+#[test]
+fn releasing_a_modifier_keeps_the_hold() {
     for lifted in [SUPER, SHIFT] {
         let mut state = PttState::new(Chord::default());
         state.apply(SUPER, true);
         state.apply(SHIFT, true);
         state.apply(D, true);
-        assert!(
-            matches!(state.apply(lifted, false), Some(Event::Released { .. })),
-            "lifting {lifted:?} should end the hold"
+        assert_eq!(
+            state.apply(lifted, false),
+            None,
+            "lifting {lifted:?} ended a hold the trigger was still down for"
         );
-        assert_eq!(state.apply(D, false), None, "already ended");
+        assert!(
+            matches!(state.apply(D, false), Some(Event::Released { .. })),
+            "the trigger no longer ends the hold after {lifted:?} lifted"
+        );
     }
+}
+
+/// The safety net. A remapper that swallows the trigger's own release would
+/// otherwise leave the daemon recording until the process died.
+#[test]
+fn a_chord_that_empties_without_the_trigger_still_ends_the_hold() {
+    let mut state = PttState::new(Chord::default());
+    state.apply(SUPER, true);
+    state.apply(SHIFT, true);
+    state.apply(D, true);
+
+    // The trigger's release never arrives - only the modifiers report going up.
+    assert_eq!(state.apply(SUPER, false), None, "shift is still down");
+    assert!(
+        matches!(state.apply(SHIFT, false), Some(Event::Released { .. })),
+        "the hand has left the chord and it is still recording"
+    );
 }
 
 /// The keys of a chord do not arrive in the order they were pressed. keyd and
@@ -480,28 +521,6 @@ fn the_device_fallback_still_answers() {
         "device fallback: released={released} in {:?}",
         started.elapsed()
     );
-}
-
-/// Compositor hold ends when any finger of the original chord comes up - not
-/// only when every key is released, and not only when the letter key lifts.
-#[test]
-fn chord_breaks_when_any_held_key_lifts() {
-    let chord = HashSet::from([
-        KeyCode::KEY_LEFTMETA,
-        KeyCode::KEY_LEFTSHIFT,
-        KeyCode::KEY_D,
-    ]);
-    assert!(!chord_broken(&chord, &chord));
-
-    let mut after = chord.clone();
-    after.remove(&KeyCode::KEY_D);
-    assert!(chord_broken(&chord, &after));
-    assert!(!chord_released(&chord, &after), "shift/super still down");
-    assert!(
-        !chord_broken(&chord, &HashSet::new()),
-        "empty read is unknown, not a release"
-    );
-    assert!(chord_released(&chord, &HashSet::new()));
 }
 
 /// The modifier check runs before every paste. It once rediscovered every input

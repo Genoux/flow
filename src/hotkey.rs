@@ -163,6 +163,15 @@ impl Chord {
     }
 
     /// Every key of the chord is physically down, in any order.
+    /// Whether any modifier of the chord is still down. Not `satisfied`, which
+    /// wants all of them: this is the question of whether the hand is still on
+    /// the chord at all.
+    fn any_modifier_held(&self, held: &HashSet<KeyCode>) -> bool {
+        self.modifiers
+            .iter()
+            .any(|modifier| modifier.keys().iter().any(|key| held.contains(key)))
+    }
+
     fn fully_held(&self, held: &HashSet<KeyCode>) -> bool {
         held.contains(&self.trigger) && self.satisfied(held)
     }
@@ -436,10 +445,24 @@ impl PttState {
             return Some(Event::Pressed);
         }
 
-        // Lifting any finger of the chord ends the hold - not only the trigger.
-        // Hyprland's release binds are unreliable with modifier chords, so this
-        // is the path that actually stops a Super+Shift+D recording.
-        if !pressed && self.down_at.is_some() && self.chord.contains(key) {
+        // Only the trigger ends the hold. Reaching Super+Shift+D puts three
+        // fingers down and takes them off at three different moments, and
+        // stopping on the first of them cut recordings short of their last word
+        // - or off the moment a thumb drifted from Super mid-sentence. The
+        // chord is named for the trigger and the modifiers only qualify it, so
+        // the trigger is the key the hand thinks of as the button.
+        //
+        // The second arm is a safety net, not the intent. A remapper that
+        // swallows the trigger's own release leaves `held` believing the letter
+        // is still down forever, so the trigger alone cannot be the only way
+        // out. Every modifier being up is the other evidence that the hand has
+        // left the chord. A bare chord has no modifiers and no need of it - its
+        // one key is the trigger.
+        if !pressed
+            && self.down_at.is_some()
+            && self.chord.contains(key)
+            && (key == self.chord.trigger || !self.chord.any_modifier_held(&self.held))
+        {
             let start = self.down_at.take().expect("checked above");
             return (!self.cancelled).then(|| Event::Released {
                 held: start.elapsed(),
@@ -549,12 +572,6 @@ pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord
 
 pub fn was_long_enough(held: Duration) -> bool {
     held >= MIN_HOLD
-}
-
-/// True when a previously observed chord has actually broken.
-/// An empty `now` is unknown (fresh fd, transient ioctl miss), not a release.
-pub fn chord_broken(chord: &HashSet<KeyCode>, now: &HashSet<KeyCode>) -> bool {
-    !chord.is_empty() && !now.is_empty() && chord.iter().any(|key| !now.contains(key))
 }
 
 /// True when every key we saw at press is up. Empty `now` after we have seen
