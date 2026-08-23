@@ -1,6 +1,9 @@
 target
 crates/console/target/
+
 .atl
 .claude
 .cursor
+.engram
+.impeccable
 .serena
