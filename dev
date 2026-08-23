@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
 #
-# Run the daemon from this checkout and rerun it every time you save.
+# Run Flow from this checkout and restart it every time a file is saved.
 #
-# Nothing is built into ~/.local/bin and nothing is committed - this is the
-# working tree, so an edit to a constant is on screen a few seconds later.
+# The whole app by default: the real chord, the real models, the real paste.
+# Nothing is installed to ~/.local/bin and nothing is committed - this is the
+# working tree, so an edit is testable a few seconds later.
 #
-# It exists mostly because a bare `cargo run` means different things depending
-# on where you are standing: the console is its own workspace (see the comment
-# in Cargo.toml), so in crates/console `cargo run` silently starts the settings
-# window instead of the daemon. This always runs the daemon, from anywhere.
+# The installed copy is stopped while this runs and started again on the way
+# out, because two daemons both listening for Super+Shift+D means whichever one
+# grabs the chord first wins and it is never the one you are testing.
 #
-#   ./dev                  the island for a chord that recorded nothing
-#   ./dev overlay 6        the island for a normal dictation
-#   ./dev daemon           the real thing, chord and all
-#   ./dev --once ...       run it once instead of watching
+#   flow-dev                    the daemon
+#   flow-dev console            the daemon and the settings window, which is
+#                               what a user actually has open
+#   flow-dev overlay missed     just the island for a chord that recorded
+#                               nothing - no models, no hotkeys, nothing pasted
+#   flow-dev overlay 6          just the island for a normal dictation
+#   flow-dev --once ...         run it once instead of watching
 #
 set -uo pipefail
 
-# Resolved through symlinks: crates/console/dev points here, because that is
-# the directory the trap this script exists for is easiest to fall into.
+# Resolved through symlinks: this is normally reached as ~/.local/bin/flow-dev.
 repo="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 watch=1
@@ -27,35 +29,84 @@ if [ "${1-}" = "--once" ]; then
   shift
 fi
 
-args=("$@")
-# The one being worked on. Anything else is worth naming.
-[ ${#args[@]} -eq 0 ] && args=(overlay missed)
+# Not passed on to the binary: the console is its own workspace with its own
+# manifest and its own target directory, so it is a second build and a second
+# process rather than an argument.
+console=0
+if [ "${1-}" = "console" ]; then
+  console=1
+  shift
+fi
 
-run() {
+args=("$@")
+[ ${#args[@]} -eq 0 ] && args=(daemon)
+
+watched=("$repo/src" "$repo/Cargo.toml" "$repo/assets")
+[ $console = 1 ] && watched+=("$repo/crates/console/src")
+
+installed_was_running=0
+if systemctl --user is-active --quiet flow.service; then
+  installed_was_running=1
+  echo "stopping the installed flow.service - this checkout takes the chord"
+  systemctl --user stop flow.service
+fi
+
+running=""
+console_running=""
+
+stop() {
+  local pid
+  for pid in "$running" "$console_running"; do
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null
+  done
+  running=""
+  console_running=""
+}
+
+restore() {
+  stop
+  if [ "$installed_was_running" = 1 ]; then
+    echo
+    echo "starting the installed flow.service again"
+    systemctl --user start flow.service
+  fi
+}
+trap restore EXIT
+
+# Built rather than `cargo run` so the process this backgrounds is the daemon
+# itself. Under cargo it is cargo, and killing that on a save leaves the daemon
+# behind holding the chord.
+build_and_run() {
   printf '\n\033[2m── flow %s ──\033[0m\n' "${args[*]}"
-  cargo run -q --manifest-path "$repo/Cargo.toml" -- "${args[@]}"
+  cargo build -q --manifest-path "$repo/Cargo.toml" || return 1
+  "$repo/target/debug/flow" "${args[@]}" &
+  running=$!
+
+  [ $console = 0 ] && return 0
+
+  cargo build -q --manifest-path "$repo/crates/console/Cargo.toml" || return 1
+  # The console runs `flow` by name, so without this the window drives whatever
+  # release is sitting in ~/.local/bin instead of the binary just built - which
+  # looks like a console bug and never is.
+  PATH="$repo/target/debug:$PATH" \
+    "$repo/crates/console/target/debug/flow-console" &
+  console_running=$!
 }
 
 if [ $watch -eq 0 ]; then
-  run
+  build_and_run && wait "$running"
   exit $?
 fi
 
 if ! command -v inotifywait >/dev/null; then
-  echo "inotifywait not found - install inotify-tools, or use ./dev --once" >&2
+  echo "inotifywait not found - install inotify-tools, or use --once" >&2
   exit 1
 fi
 
 while true; do
-  # Backgrounded so a long run - `./dev daemon` - is killed and restarted on a
-  # save rather than having to be interrupted by hand. A short one, like the
-  # overlay previews, is long gone by the time anything changes.
-  run &
-  running=$!
+  build_and_run
 
-  inotifywait -qq -r -e close_write -e moved_to \
-    "$repo/src" "$repo/Cargo.toml" "$repo/assets"
+  inotifywait -qq -r -e close_write -e moved_to "${watched[@]}"
 
-  kill "$running" 2>/dev/null
-  wait "$running" 2>/dev/null
+  stop
 done
