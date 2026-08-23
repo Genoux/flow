@@ -18,7 +18,7 @@ use std::time::Duration;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::audio::Monitor;
@@ -42,7 +42,7 @@ static FONT: std::sync::LazyLock<fontdue::Font> = std::sync::LazyLock::new(|| {
 /// extra width costs nothing but the pixels it never touches.
 const WIDTH: u32 = 116;
 const HEIGHT: u32 = 40;
-pub const SURFACE_WIDTH: u32 = 268;
+pub const SURFACE_WIDTH: u32 = 300;
 /// Clear of the usual bottom bar without sitting in the middle of the screen.
 const MARGIN_BOTTOM: i32 = 96;
 
@@ -170,41 +170,82 @@ const GLOW_ALPHA: f32 = 0.16;
 /// is past the point where another one is visible.
 const GLOW_LAYERS: usize = 5;
 
-/// How long the island takes to grow from its loading circle into the full
-/// pill, with the bars rising as it goes. This is the cue that says speaking
-/// will now be heard, so it wants to be quick and definite rather than a
-/// gentle fade anyone could miss - but slow enough that the shape change
-/// registers as a shape change.
-pub const BLOOM: f32 = 0.05;
+/// How long the island takes to widen into the full pill, with the bars rising
+/// as it goes. This is the cue that says speaking will now be heard, so it
+/// wants to be definite rather than a gentle fade anyone could miss - but slow
+/// enough that the shape change registers as a shape change.
+pub const BLOOM: f32 = 0.16;
 
-/// How long the island takes to pull back into a dot and go.
+/// The narrowest the island is ever drawn, as a multiple of its corner radius.
 ///
-/// Longer than the bloom on purpose. Arriving is an answer to something the
-/// user just did and wants to be instant; leaving is the island getting out of
-/// the way, and a retract as quick as the growth reads as the surface being
-/// yanked rather than withdrawn.
-pub const FADE: f32 = 0.14;
+/// At 1.0 the pill is exactly a circle, which reads as a loading spinner by
+/// accident and is the one frame in this whole animation that says nothing
+/// about what is happening. The island fades in already wider than that and
+/// widens from there, so the movement reads as a pill opening and closing
+/// rather than as something collapsing to a point.
+///
+/// It also has to be wide enough to hold the wave, which is not clipped to it:
+/// at 1.7 the outermost bar hung a pixel past the rounded end while the pill
+/// was at its narrowest. See `no_bar_ever_hangs_outside_the_island`, which is
+/// what will say so if this or the bar geometry moves again.
+const NARROWEST: f32 = 1.9;
+
+/// How long the island sits fully open before an exit may take it away.
+///
+/// The island is deliberately not 1:1 with the chord. A toggle flicked on and
+/// off inside a tenth of a second would otherwise produce an island that
+/// flickers with it - the shape needs room to be one event rather than a
+/// stutter. Long enough to
+/// register as "in, held, out", short enough that nobody waits on it.
+pub const DWELL: f32 = 0.4;
+
+/// Whether the island has been up long enough to be taken away. `shown` is
+/// seconds since it appeared.
+///
+/// Every exit waits on this, not just the fast ones. A dictation that ran for
+/// seconds cleared it long ago and pays nothing; a tap that came and went
+/// inside the bloom is what it exists for.
+pub fn arrived(shown: f32) -> bool {
+    shown >= BLOOM + DWELL
+}
 
 /// How grown the island is: 0 a dot, 1 the full pill.
 ///
-/// `shown` is seconds since the island appeared, `retiring` seconds since
-/// something asked it to leave. The growth always lands before the retract
-/// begins - a tap too short to record used to cut the island off mid-bloom,
-/// which reads as a flicker rather than as a gesture that did not take. Out
-/// and back is a shape the eye can follow; half a shape blinking away is not.
-pub fn bloom(shown: f32, retiring: Option<f32>) -> f32 {
+/// `shown` is seconds since the island appeared, `leaving` seconds since it was
+/// told to go. Out is in, run backwards at the same speed: one movement the eye
+/// learns once and then recognises. The earlier version left over a separate,
+/// slower constant, and the mismatch was the whole reason the exit read as the
+/// island stalling as a dot rather than as the island leaving.
+pub fn bloom(shown: f32, leaving: Option<f32>) -> f32 {
     let grown = (shown / BLOOM).min(1.0);
-    let Some(since) = retiring else { return grown };
-    let begins = (shown - since).max(BLOOM);
-    grown.min((begins + FADE - shown) / FADE).max(0.0)
+    let Some(since) = leaving else { return grown };
+    (grown - since / BLOOM).max(0.0)
 }
 
-/// The message shown when a chord came and went without recording anything.
+/// The message shown when the microphone gives back a flat line.
 ///
-/// Not "error" and not an apology: the user pressed the keys, so something did
-/// happen - what they need is the one fact that no text is coming, and the one
-/// thing to do differently.
-pub const MISSED: &str = "Nothing recorded - hold a little longer";
+/// The island says nothing about an ordinary fumbled chord - arriving and
+/// leaving is the whole answer to that, and a sentence every time a tap comes
+/// up short is nagging. A message is for the case the user cannot fix by
+/// trying again: they did everything right, holding longer would not have
+/// helped, and the cause is almost always a muted source or the wrong default
+/// input.
+pub const SILENT: &str = "Microphone is silent - check it isn't muted";
+
+/// How long the microphone must give nothing before [`SILENT`] is said.
+///
+/// Said mid-hold, not after the release. The daemon can only reach this verdict
+/// once it has the finished recording, by which point the sentence is already
+/// spoken and lost and the message is a post-mortem. The island has the live
+/// monitor it draws the bars from, so it can reach the same verdict while the
+/// chord is still down and there is still something to save.
+///
+/// Not "you were quiet": [`crate::audio::SILENCE_RMS`] sits an order of
+/// magnitude below what a real room reads, so someone gathering their thought
+/// mid-hold clears it comfortably. Only a source delivering nothing at all
+/// stays under it, and the delay is here for a stream that takes a beat to
+/// produce its first real chunk.
+const DEAD_MIC: Duration = Duration::from_millis(1500);
 
 /// Type size and the room left around it inside the toast.
 const TOAST_TEXT: f32 = 12.5;
@@ -213,37 +254,47 @@ const TOAST_HEIGHT: f32 = 30.0;
 const TOAST_RADIUS: f32 = 10.0;
 const TOAST_TEXT_ALPHA: f32 = 0.88;
 
-/// Gentler than the island in both directions. The island answers a keypress
-/// and wants to be instant; the toast is telling the user something after the
-/// fact, and arriving with the same snap reads as an alarm.
+/// How far into the widening the text starts appearing, as a fraction of it.
+const TOAST_INK: f32 = 0.55;
+
+/// How long the island takes to widen into the message, and to narrow back out
+/// of it.
+///
+/// Gentler than the island's own bloom. The island answers a keypress and wants
+/// to be instant; the message is telling the user something after the fact, and
+/// arriving with the same snap reads as an alarm. One constant for both
+/// directions, for the same reason [`bloom`] has one.
 pub const TOAST_RISE: f32 = 0.16;
-pub const TOAST_FALL: f32 = 0.26;
 /// Long enough to read the message twice at a glance, short enough that it is
 /// gone before the next dictation. Nothing dismisses it - the surface is
 /// click-through by design - so this is the only way it ever leaves.
 pub const TOAST_HOLD: f32 = 1.7;
 
-/// How wide the toast box is at this scale: the message plus the room around
-/// it. Also what decides whether [`MISSED`] still fits the surface - see the
-/// test of the same name.
-pub fn toast_width(scale: f32) -> f32 {
-    let span: f32 = MISSED
+/// How wide the box for this message is at this scale: the text plus the room
+/// around it. Also what decides whether a message still fits the surface - see
+/// the test of the same name.
+pub fn toast_width(text: &str, scale: f32) -> f32 {
+    let span: f32 = text
         .chars()
         .map(|glyph| FONT.metrics(glyph, TOAST_TEXT * scale).advance_width)
         .sum();
     span + TOAST_PAD * 2.0 * scale
 }
 
-/// The whole life of a toast, rise through fall.
-pub const TOAST_LIFE: f32 = TOAST_RISE + TOAST_HOLD + TOAST_FALL;
+/// The whole life of a message, out of the pill and back into it.
+pub const TOAST_LIFE: f32 = TOAST_RISE + TOAST_HOLD + TOAST_RISE;
 
-/// How present the toast is: 0 gone, 1 fully shown. `shown` is seconds since
-/// it appeared. Zero at both ends, so it is [`TOAST_LIFE`] and not this that
-/// says when the surface may go.
-pub fn toast_wake(shown: f32) -> f32 {
-    let risen = (shown / TOAST_RISE).min(1.0);
-    let left = TOAST_RISE + TOAST_HOLD + TOAST_FALL - shown;
-    risen.min(left / TOAST_FALL).max(0.0)
+/// How far the message has widened out of the island: 0 still the pill, 1 the
+/// full box. `shown` is seconds since it started.
+///
+/// Symmetrical, and it never fades. The message is the island wearing a wider
+/// shape, so there is nothing to fade in or out of - it widens out of the pill,
+/// holds, and narrows back into it. What is left at the end is the island
+/// itself, which then leaves the way it arrived. One shape, start to finish.
+pub fn toast_grown(shown: f32) -> f32 {
+    let widened = shown / TOAST_RISE;
+    let left = (TOAST_LIFE - shown) / TOAST_RISE;
+    widened.min(left).clamp(0.0, 1.0)
 }
 
 /// Below this the island stays flat. Measured on the webcam mic: an idle room
@@ -304,6 +355,22 @@ pub const WINDOW: usize = 512;
 /// this many new samples means the first motion is the voice from this hold.
 pub fn fresh_window(heard: u64, since: u64) -> bool {
     heard.saturating_sub(since) >= WINDOW as u64
+}
+
+/// Whether the microphone gave nothing back this frame, from the same live
+/// monitor the bars are drawn from.
+///
+/// Two ways for a microphone to give nothing and both have to be caught. A
+/// muted source keeps delivering buffers that are all zero, which is `level`
+/// under [`crate::audio::SILENCE_RMS`]. A stream whose device went away stops
+/// delivering at all, which is `heard` standing still since the hold opened -
+/// and that one never reaches `level`, because the window waits on the very
+/// samples that stopped coming.
+///
+/// `level` is None until a window of fresh samples has arrived: before that the
+/// ring still holds the room from before the keypress.
+pub fn giving_nothing(heard: u64, opened: u64, level: Option<f32>) -> bool {
+    !fresh_window(heard, opened) || level.is_some_and(|rms| rms < crate::audio::SILENCE_RMS)
 }
 
 /// How many frequency bands the voice is split into. Fewer than there are
@@ -575,13 +642,51 @@ enum Command {
     /// The recording was thrown away on purpose - another key turned the hold
     /// into a shortcut. The user meant it, so nothing is said about it.
     Cancel,
-    /// The chord came and went without recording anything. Same retract as a
-    /// cancel, but the island is followed by [`MISSED`]: the user did press the
-    /// keys, and silence would leave them waiting for text that is not coming.
-    Missed,
+    /// Something failed in a way the user has to act on. The island widens into
+    /// the sentence rather than leaving - see [`SILENT`], the only one so far.
+    Say(&'static str),
     /// The transcript landed. Ignored once a new dictation has started, so a
     /// slow transcription cannot pull the island out from under the next one.
     Finish,
+}
+
+/// When the bloom should be timed from for an island that is starting again.
+///
+/// Normally now, from a dot. Caught on its way out it is back-dated to whatever
+/// is still on screen, so a chord re-triggered inside the outro picks the growth
+/// up instead of collapsing to a dot first and regrowing.
+fn resume(grown: f32) -> std::time::Instant {
+    std::time::Instant::now() - Duration::from_secs_f32(grown.clamp(0.0, 1.0) * BLOOM)
+}
+
+/// Drop the surface and push the destroy out to the compositor.
+///
+/// The roundtrip is the whole point. Dropping the [`Island`] only queues the
+/// destroy requests, and the next thing this loop does with no island up is
+/// block on `recv()` - so without a flush the surface stays on screen until the
+/// next chord arrives to wake the loop and send them.
+fn take_down(
+    island: &mut Option<Island>,
+    queue: &mut EventQueue<Wayland>,
+    state: &mut Wayland,
+) -> Result<()> {
+    *island = None;
+    queue.roundtrip(state)?;
+    Ok(())
+}
+
+/// What the island does once it has finished arriving.
+///
+/// Both wait for the same gate. An exit that fires mid-bloom leaves half a
+/// shape blinking out, which reads as a glitch rather than as a chord that came
+/// to nothing - and a message that starts widening out of a pill still growing
+/// reads as one twitch rather than two movements.
+#[derive(Clone, Copy)]
+enum Ending {
+    /// Go. The island having appeared at all is the answer.
+    Close,
+    /// Widen into this first, and go when it has had its time.
+    Say(&'static str),
 }
 
 /// Handle to the drawing thread. Every method is best-effort: on a compositor
@@ -634,9 +739,10 @@ impl Overlay {
         let _ = self.commands.send(Command::Cancel);
     }
 
-    /// Nothing was recorded and the user did not ask for that. Says so.
-    pub fn missed(&self) {
-        let _ = self.commands.send(Command::Missed);
+    /// The hold was long enough but the microphone delivered a flat line. Says
+    /// so, because trying again will not fix a mute.
+    pub fn silent(&self) {
+        let _ = self.commands.send(Command::Say(SILENT));
     }
 
     pub fn finish(&self) {
@@ -901,28 +1007,42 @@ impl Canvas {
     }
 }
 
-/// The message the island leaves behind when a chord recorded nothing.
+/// The message a chord that recorded nothing turns into.
 ///
-/// Its own shape rather than a wider island: the two are never on screen at
-/// once, and a pill that stretched into a sentence would read as the island
-/// still doing something. This appears after the island has gone.
-fn render_toast(canvas: &mut Canvas, wake: f32, scale: f32) {
+/// Not a second shape that replaces the island: the same rounded rect, drawn
+/// from the island's own pill out to the width of the sentence. The chord did
+/// do something, and one continuous expansion is what says so - the island
+/// retracting to a dot first said the opposite, that the gesture had come to
+/// nothing, a moment before the words arrived to say it had not.
+fn render_toast(canvas: &mut Canvas, text: &str, grown: f32, scale: f32) {
     let width = SURFACE_WIDTH as f32 * scale;
     let height = HEIGHT as f32 * scale;
-    // Fades in while rising the last few pixels into place, which is what
-    // separates a message arriving from one that was always there.
-    let centre = (width / 2.0, height / 2.0 + (1.0 - wake) * 5.0 * scale);
-    let half = (toast_width(scale) / 2.0, TOAST_HEIGHT * scale / 2.0);
-    let corner = TOAST_RADIUS * scale;
+    let centre = (width / 2.0, height / 2.0);
 
-    canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA * wake);
-    canvas.rounded_ring(centre, half, corner, scale, EDGE, EDGE_ALPHA * wake);
+    let widen = |from: f32, to: f32| from + (to - from) * grown;
+    let half = (
+        widen(WIDTH as f32 * scale / 2.0, toast_width(text, scale) / 2.0),
+        widen(height / 2.0, TOAST_HEIGHT * scale / 2.0),
+    );
+    let corner = widen(height / 2.0, TOAST_RADIUS * scale);
+
+    canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA);
+    canvas.rounded_ring(centre, half, corner, scale, EDGE, EDGE_ALPHA);
+
+    // Held back until the box is nearly the right width. The sentence is wider
+    // than the island it grows from, so ink any earlier is glyphs hanging off
+    // both ends of the shape that is supposed to contain them.
+    // Held back until the box is nearly the right width, and gone again before
+    // it narrows. The sentence is wider than the island it grows from, so ink
+    // outside that window is glyphs hanging off both ends of the shape that is
+    // supposed to contain them.
+    let ink = ((grown - TOAST_INK) / (1.0 - TOAST_INK)).clamp(0.0, 1.0);
     canvas.text(
-        MISSED,
+        text,
         TOAST_TEXT * scale,
         centre,
         BAR,
-        TOAST_TEXT_ALPHA * wake,
+        TOAST_TEXT_ALPHA * ink,
     );
 }
 
@@ -941,7 +1061,9 @@ enum Face<'a> {
         wake: f32,
     },
     Toast {
-        wake: f32,
+        text: &'a str,
+        /// 0 still the island's pill, 1 the full message box.
+        grown: f32,
     },
 }
 
@@ -955,7 +1077,7 @@ fn render(canvas: &mut Canvas, face: Face, scale: f32) {
             arming,
             wake,
         } => render_island(canvas, heights, seconds, transcribing, arming, wake, scale),
-        Face::Toast { wake } => render_toast(canvas, wake, scale),
+        Face::Toast { text, grown } => render_toast(canvas, text, grown, scale),
     }
 }
 
@@ -991,17 +1113,23 @@ fn render_island(
     } else {
         wake
     };
-    let half_width = corner + (WIDTH as f32 * scale / 2.0 - corner) * grown;
-    let half = (half_width, height / 2.0);
-    canvas.rounded_rect(centre, half, corner, ISLAND, ISLAND_ALPHA);
-    canvas.rounded_ring(centre, half, corner, scale, EDGE, EDGE_ALPHA);
+    // Never narrower than [`NARROWEST`], and already fading by the time it is
+    // that narrow: the island is a pill widening and narrowing, and it is never
+    // caught being a circle with a dot in it at either end.
+    let stub = corner * NARROWEST;
+    let half_width = stub + (WIDTH as f32 * scale / 2.0 - stub) * grown;
+    let pill = (half_width, height / 2.0);
+    // Opacity is the growth, not a slice of it. Fading over a fraction meant the
+    // whole fade was spent inside the first few frames of an already short
+    // bloom - forty milliseconds, which is not a fade anybody sees. Widening and
+    // lighting up now take exactly as long as each other.
+    let visible = grown;
+    canvas.rounded_rect(centre, pill, corner, ISLAND, ISLAND_ALPHA * visible);
+    canvas.rounded_ring(centre, pill, corner, scale, EDGE, EDGE_ALPHA * visible);
 
     let pitch = (BAR_WIDTH + BAR_GAP) * scale;
     let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
     let first = (width - span) / 2.0 + BAR_WIDTH * scale / 2.0;
-    // Bars spread from the centre as the pill grows, so they arrive with the
-    // shape rather than appearing inside a shape that is already there.
-    let spread = |x: f32| centre.0 + (x - centre.0) * grown;
 
     // ponytail: shelved, not deleted (SHOW_ARM_SPINNER). A spinner needs
     // something to be indeterminate about; there no longer is one - the pill
@@ -1030,51 +1158,55 @@ fn render_island(
     // never gets bright enough to compete with them. It should register as the
     // island warming to your voice, not as a second indicator.
     if !transcribing {
-        let level = heights.iter().sum::<f32>() / BAR_COUNT as f32;
-        let level = (level * wake).clamp(0.0, 1.0);
+        let level = (heights.iter().sum::<f32>() / BAR_COUNT as f32).clamp(0.0, 1.0);
         if level > 0.01 {
             // Anchored above the middle so the light breaks over the top edge.
             // Each layer is both larger and higher than the last, so the
             // falloff runs upward as well as outward - a halo rather than a
             // blob sitting behind the bars.
-            let crown = centre.1 - half.1 * GLOW_RISE;
+            let crown = centre.1 - pill.1 * GLOW_RISE;
             for layer in 0..GLOW_LAYERS {
                 let out = layer as f32 / GLOW_LAYERS as f32;
                 let reach = 0.45 + (GLOW_REACH - 0.45) * out;
-                let size = (half.0 * reach, half.1 * reach);
-                let at = (centre.0, crown - half.1 * GLOW_RISE * out * 0.5);
+                let size = (pill.0 * reach, pill.1 * reach);
+                let at = (centre.0, crown - pill.1 * GLOW_RISE * out * 0.5);
                 // Clipped to the island's own shape: the light brightens the
                 // pill from within rather than spilling past its edge.
                 canvas.clipped_rect(
                     at,
                     size,
                     size.1,
-                    (centre, half, corner),
+                    (centre, pill, corner),
                     BAR,
-                    level * GLOW_ALPHA * (1.0 - out) / GLOW_LAYERS as f32,
+                    level * GLOW_ALPHA * (1.0 - out) / GLOW_LAYERS as f32 * visible,
                 );
             }
         }
     }
 
-    let alpha = if transcribing {
-        BAR_WORKING_ALPHA
-    } else {
-        BAR_ALPHA
-    };
+    // The same fade the island itself uses, because they are one movement: the
+    // pill opens and the wave lights up inside it over the same span. Clipping
+    // the bars to the pill instead made the shape a hole they slid out from
+    // behind, which is a different and busier idea than an island turning on.
+    let alpha = visible
+        * if transcribing {
+            BAR_WORKING_ALPHA
+        } else {
+            BAR_ALPHA
+        };
+    // The wave never moves and never collapses. Every bar keeps its own place
+    // and its own height from the first frame to the last, and only its opacity
+    // changes. Scaling the bars into the centre instead made the shape and its
+    // contents two animations fighting over one movement, and left the island
+    // ending on a dot with everything piled inside it.
     for (index, band) in heights.iter().enumerate() {
         let height = if transcribing {
-            // Scaled by the same wake as the bars, so a finish arriving mid-sweep
-            // pulls the crest in with the pill instead of leaving it at full
-            // height inside a shrinking shape.
-            sweep(index, seconds) * wake
+            sweep(index, seconds)
         } else {
-            // Rising from nothing on wake, so the microphone opening is a
-            // visible event rather than a state the user has to infer.
-            band * wake
+            *band
         };
         let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
-        let at = (spread(first + pitch * index as f32), centre.1);
+        let at = (first + pitch * index as f32, centre.1);
         let half = (BAR_WIDTH * scale / 2.0, bar / 2.0);
         let rim = RIM_WIDTH * scale;
 
@@ -1229,20 +1361,6 @@ fn shared_memory(size: usize) -> Result<OwnedFd> {
     Ok(fd)
 }
 
-/// When the bloom should be timed from for an island that is starting again.
-///
-/// Normally now - the island is not on screen, so it grows from a dot. Caught
-/// mid-retract it is back-dated to whatever is still showing, so a chord
-/// re-triggered inside the outro picks the growth up rather than collapsing to
-/// a dot first and regrowing.
-fn resume(grown: f32, retiring: Option<std::time::Instant>) -> std::time::Instant {
-    let now = std::time::Instant::now();
-    match retiring {
-        Some(_) => now - Duration::from_secs_f32(grown.clamp(0.0, 1.0) * BLOOM),
-        None => now,
-    }
-}
-
 fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let connection = Connection::connect_to_env().context("no wayland display")?;
     let mut queue = connection.new_event_queue();
@@ -1279,6 +1397,12 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // Samples already in the ring when this hold began. None once a fresh
     // window has arrived and the bars may follow the voice.
     let mut born: Option<u64> = None;
+    // The same count, kept past the point `born` clears: a stream that has died
+    // is one whose count never moves, and that has to stay checkable for the
+    // whole hold rather than only until the bars wake up.
+    let mut opened = 0u64;
+    // When the microphone last gave anything. None while it is delivering.
+    let mut flat_since: Option<std::time::Instant> = None;
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
     let mut arming = false;
@@ -1288,17 +1412,15 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // real room sound for a couple hundred ms after the key was released.
     let mut listening = false;
     let mut woke = std::time::Instant::now();
-    // Set when something asks the island to leave. It does not go at once: the
-    // bloom is allowed to land, then run backwards. See [`bloom`].
-    let mut retiring: Option<std::time::Instant> = None;
-    // Last drawn size, so a re-trigger mid-retract can pick the growth up from
-    // there instead of snapping back to a dot.
+    // Last drawn size. The message waits on it to reach full before widening,
+    // and a chord re-triggered on the way out picks the growth back up from it.
     let mut grown = 0.0f32;
-    // Set when the island has been asked to leave and owes the user a message.
-    // The toast waits for the retract: two shapes crossfading in one surface
-    // reads as a glitch, and the island leaving is what makes room for it.
-    let mut owed = false;
-    let mut toast: Option<std::time::Instant> = None;
+    // Set when the island has started leaving. It runs [`bloom`] backwards and
+    // the surface goes when it reaches its dot.
+    let mut leaving: Option<std::time::Instant> = None;
+    // How this dictation ends, once the island has finished arriving.
+    let mut ending: Option<Ending> = None;
+    let mut toast: Option<(std::time::Instant, &'static str)> = None;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
     let mut lifecycle = Lifecycle::default();
@@ -1317,30 +1439,39 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             Ok(Command::Arm) => {
                 heights = [0.0; BAR_COUNT];
                 window.clear();
-                born = Some(monitor.heard());
+                opened = monitor.heard();
+                born = Some(opened);
+                flat_since = None;
                 transcribing = false;
                 arming = true;
-                // The bloom starts on the keypress rather than waiting for the
-                // mic to actually open - press, open, and extend are meant to
-                // read as one motion, not a hold followed by a second growth.
-                woke = resume(grown, retiring);
                 settling = false;
                 waiting_to_sweep = None;
-                retiring = None;
-                owed = false;
+                ending = None;
                 toast = None;
                 lifecycle.record();
                 if island.is_none() {
+                    grown = 0.0;
                     started = std::time::Instant::now();
                     state.configured = false;
                     state.closed = false;
                     island = Some(Island::map(&compositor, &shell, &handle));
                 }
+                // The bloom starts on the keypress rather than waiting for the
+                // mic to actually open - press, open, and extend are meant to
+                // read as one motion, not a hold followed by a second growth.
+                //
+                // Back-dated to whatever is still on screen, so a chord caught
+                // during the outro carries on from the size it is rather than
+                // collapsing to a dot and regrowing.
+                woke = resume(grown);
+                leaving = None;
             }
             Ok(Command::Record) => {
                 heights = [0.0; BAR_COUNT];
                 window.clear();
-                born = Some(monitor.heard());
+                opened = monitor.heard();
+                born = Some(opened);
+                flat_since = None;
                 transcribing = false;
                 settling = false;
                 // Waking from armed: the island is already up, so this is the
@@ -1354,13 +1485,13 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 // now would snap a finished pill back to a circle and regrow
                 // it right as recording begins.
                 if !was_armed {
-                    woke = resume(grown, retiring);
+                    woke = resume(grown);
                 }
+                leaving = None;
                 // A sweep that had not started yet belongs to the dictation this
                 // one replaces, and must not appear over the new bars.
                 waiting_to_sweep = None;
-                retiring = None;
-                owed = false;
+                ending = None;
                 toast = None;
                 if !was_armed {
                     lifecycle.record();
@@ -1390,18 +1521,31 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // Only the finish that leaves nothing in flight takes the island
             // down, so the feedback outlives the paste rather than the other way
             // round. See [`Lifecycle`].
+            // `get_or_insert`, not an assignment: the silent-microphone path
+            // says its piece and is then finished like any other dictation, and
+            // a plain close arriving second must not talk over it.
             Ok(Command::Finish) => {
                 if lifecycle.finish() {
                     waiting_to_sweep = None;
-                    retiring.get_or_insert_with(std::time::Instant::now);
+                    ending.get_or_insert(Ending::Close);
                 }
             }
-            Ok(command @ (Command::Cancel | Command::Missed)) => {
+            // A tap too short to record ends here too. The island arriving and
+            // going is the whole answer to it - the chord did something, the
+            // user saw that it did, and nothing is owed beyond that.
+            Ok(Command::Cancel) => {
                 waiting_to_sweep = None;
                 listening = false;
                 lifecycle.cancel();
-                owed |= matches!(command, Command::Missed);
-                retiring.get_or_insert_with(std::time::Instant::now);
+                ending.get_or_insert(Ending::Close);
+            }
+            // The one ending that is not a leaving: the island stays out and
+            // widens into the message instead - see [`toast_grown`].
+            Ok(Command::Say(message)) => {
+                waiting_to_sweep = None;
+                listening = false;
+                lifecycle.cancel();
+                ending = Some(Ending::Say(message));
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
@@ -1423,7 +1567,9 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         if state.closed {
             island = None;
             toast = None;
-            owed = false;
+            ending = None;
+            leaving = None;
+            grown = 0.0;
             continue;
         }
         let Some(mapped) = island.as_ref() else {
@@ -1472,14 +1618,32 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                     *held = smooth_bar(index, *held, bar_height(index, &measured));
                 }
             }
+
+            let level = born.is_none().then(|| crate::audio::rms(&window));
+            if giving_nothing(monitor.heard(), opened, level) {
+                flat_since.get_or_insert_with(std::time::Instant::now);
+            } else {
+                flat_since = None;
+            }
+        }
+
+        // Nothing is reaching the microphone, so nothing the user says next can
+        // be heard either. Ends the dictation here rather than letting them
+        // finish a sentence into a dead line - see [`DEAD_MIC`].
+        if listening && flat_since.is_some_and(|since| since.elapsed() >= DEAD_MIC) {
+            flat_since = None;
+            listening = false;
+            lifecycle.cancel();
+            ending = Some(Ending::Say(SILENT));
         }
         grown = bloom(
             woke.elapsed().as_secs_f32(),
-            retiring.map(|at| at.elapsed().as_secs_f32()),
+            leaving.map(|at| at.elapsed().as_secs_f32()),
         );
         let face = match toast {
-            Some(at) => Face::Toast {
-                wake: toast_wake(at.elapsed().as_secs_f32()),
+            Some((at, text)) => Face::Toast {
+                text,
+                grown: toast_grown(at.elapsed().as_secs_f32()),
             },
             None => Face::Island {
                 heights: &heights,
@@ -1492,23 +1656,36 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         buffers.present(&mapped.surface, face)?;
         connection.flush()?;
 
-        // The island has pulled all the way back in. Either the message it owed
-        // takes the surface over, or there is nothing left to show.
-        if retiring.is_some() && grown <= 0.0 {
-            retiring = None;
+        // Only now, with the finished shape already on its way to the
+        // compositor, may the island act on how this dictation ends. Nothing
+        // leaves mid-bloom and nothing interrupts a message that is up.
+        if toast.is_none()
+            && leaving.is_none()
+            && arrived(woke.elapsed().as_secs_f32())
+            && let Some(end) = ending.take()
+        {
             transcribing = false;
             settling = false;
-            match std::mem::take(&mut owed) {
-                true => toast = Some(std::time::Instant::now()),
-                false => island = None,
+            match end {
+                Ending::Say(message) => toast = Some((std::time::Instant::now(), message)),
+                Ending::Close => leaving = Some(std::time::Instant::now()),
             }
         }
 
-        // The message has had its time. Nothing dismisses it but this - the
-        // surface is click-through, so there is nothing to dismiss it with.
-        if toast.is_some_and(|at| at.elapsed().as_secs_f32() >= TOAST_LIFE) {
+        // The message has had its time and has narrowed back into the pill it
+        // came out of. Nothing dismisses it but this - the surface is
+        // click-through, so there is nothing to dismiss it with. What is left is
+        // the island, which now leaves the way it arrived.
+        if toast.is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= TOAST_LIFE) {
             toast = None;
-            island = None;
+            ending = None;
+            leaving = Some(std::time::Instant::now());
+        }
+
+        // Pulled all the way back into its dot, so there is nothing left to show.
+        if leaving.is_some() && grown <= 0.0 {
+            leaving = None;
+            take_down(&mut island, &mut queue, &mut state)?;
         }
     }
 }
@@ -1616,7 +1793,14 @@ mod tests {
     fn the_message_sits_centred_in_its_box() {
         let scale = 2.0;
         let mut canvas = Canvas::new(SURFACE_WIDTH as usize * 2, HEIGHT as usize * 2);
-        render(&mut canvas, Face::Toast { wake: 1.0 }, scale);
+        render(
+            &mut canvas,
+            Face::Toast {
+                text: SILENT,
+                grown: 1.0,
+            },
+            scale,
+        );
 
         let (left, right, top, bottom) = ink(&canvas, 160);
         assert!(left < right && top < bottom, "the message drew nothing");
@@ -1635,27 +1819,191 @@ mod tests {
             canvas.height
         );
 
-        let inside = (SURFACE_WIDTH as f32 * scale - toast_width(scale)) / 2.0 + TOAST_PAD * scale;
+        let inside =
+            (SURFACE_WIDTH as f32 * scale - toast_width(SILENT, scale)) / 2.0 + TOAST_PAD * scale;
         assert!(
             left as f32 >= inside - slack && (right as f32) <= canvas.width as f32 - inside + slack,
             "the text overruns the padding: {left}..{right}, box starts at {inside}"
         );
     }
 
-    /// Nothing on screen once it has left, or the surface would never unmap.
+    /// The wave does not animate. Bars keep their height while the island opens
+    /// and closes around them - scaling them with the pill made the shape and
+    /// its contents two movements competing for one gesture.
     #[test]
-    fn a_finished_toast_draws_nothing() {
-        let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+    fn the_bars_keep_their_height_while_the_island_opens() {
+        let heights = [0.8; BAR_COUNT];
+        // Relative to the brightest thing on the canvas, not a fixed number:
+        // the bars are drawn at whatever opacity the fade is at, so an absolute
+        // threshold measures the fade rather than the geometry.
+        let extent = |wake: f32| {
+            let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+            render(
+                &mut canvas,
+                Face::Island {
+                    heights: &heights,
+                    seconds: 0.0,
+                    transcribing: false,
+                    arming: false,
+                    wake,
+                },
+                1.0,
+            );
+            let peak = canvas
+                .pixels
+                .chunks(4)
+                .map(|pixel| pixel[1])
+                .max()
+                .expect("a painted canvas");
+            let (_, _, top, bottom) = ink(&canvas, peak / 2);
+            (top, bottom)
+        };
+
+        // The bars are drawn at both, so the two frames differ only in how wide
+        // the pill is - any change in the bars themselves is the wave animating.
+        let part_open = extent(0.5);
+        assert!(part_open.0 < part_open.1, "no bars drawn to compare");
+        assert_eq!(
+            part_open,
+            extent(1.0),
+            "the bars changed height as the island widened"
+        );
+    }
+
+    /// The wave is not clipped to the pill, so nothing structural stops a bar
+    /// hanging outside it. What keeps them in is arithmetic between five
+    /// constants ([`NARROWEST`], `BAR_MAX`, `BAR_COUNT`, `BAR_WIDTH`, `HEIGHT`),
+    /// and arithmetic nobody wrote down is arithmetic that breaks quietly. Tall
+    /// bars at every width, checked against the shape they sit in.
+    #[test]
+    fn no_bar_ever_hangs_outside_the_island() {
+        let scale = 1.0;
+        for step in 0..=40 {
+            let wake = step as f32 / 40.0;
+            let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+            render(
+                &mut canvas,
+                Face::Island {
+                    heights: &[1.0; BAR_COUNT],
+                    seconds: 0.0,
+                    transcribing: false,
+                    arming: false,
+                    wake,
+                },
+                scale,
+            );
+
+            // The same pill render_island draws, so a disagreement here is the
+            // two of them having drifted apart.
+            let height = HEIGHT as f32 * scale;
+            let corner = height / 2.0;
+            let centre = (SURFACE_WIDTH as f32 * scale / 2.0, height / 2.0);
+            let stub = corner * NARROWEST;
+            let pill = (
+                stub + (WIDTH as f32 * scale / 2.0 - stub) * wake,
+                height / 2.0,
+            );
+
+            for y in 0..canvas.height {
+                for x in 0..canvas.width {
+                    let at = (y * canvas.width + x) * 4;
+                    // Above the antialiasing fringe: an edge pixel sitting a
+                    // hair outside the shape is the rasteriser, not a stray bar.
+                    if canvas.pixels[at + 3] <= 8 {
+                        continue;
+                    }
+                    let point = (x as f32 + 0.5, y as f32 + 0.5);
+                    let outside = rounded_rect_distance(point, centre, pill, corner);
+                    assert!(
+                        outside <= 0.5,
+                        "at wake {wake} a pixel at {point:?} is {outside}px outside the island"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Never a circle with a dot in it. Whatever the island is drawn at, it is
+    /// wider than it is tall - a pill - or it is not drawn at all. The shape it
+    /// used to pass through on the way out was a ring with the bars collapsed to
+    /// its centre, which reads as a spinner and says nothing.
+    #[test]
+    fn the_island_is_never_caught_being_a_circle() {
+        for step in 0..=40 {
+            let wake = step as f32 / 40.0;
+            let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+            render(
+                &mut canvas,
+                Face::Island {
+                    heights: &[0.0; BAR_COUNT],
+                    seconds: 0.0,
+                    transcribing: false,
+                    arming: false,
+                    wake,
+                },
+                1.0,
+            );
+
+            let lit = |x: usize| {
+                (0..canvas.height).any(|y| canvas.pixels[(y * canvas.width + x) * 4 + 3] > 0)
+            };
+            let drawn = (0..canvas.width).filter(|x| lit(*x)).count();
+            if drawn == 0 {
+                continue;
+            }
+            assert!(
+                drawn > HEIGHT as usize,
+                "at wake {wake} the island is {drawn}px wide and {HEIGHT}px tall - a circle"
+            );
+        }
+    }
+
+    /// A finished message is the island again, not a blank surface: it narrows
+    /// all the way back into the pill it came out of, and the pill is what then
+    /// leaves. The text has to be gone by then, or glyphs would be left hanging
+    /// off both ends of a shape too small to hold them.
+    #[test]
+    fn a_finished_message_is_the_island_again() {
+        let mut ended = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
         render(
-            &mut canvas,
+            &mut ended,
             Face::Toast {
-                wake: toast_wake(TOAST_LIFE),
+                text: SILENT,
+                grown: toast_grown(TOAST_LIFE),
             },
             1.0,
         );
         assert!(
-            canvas.pixels.iter().all(|channel| *channel == 0),
-            "the toast is still painting after its life ran out"
+            ended.pixels.iter().any(|channel| *channel != 0),
+            "the message vanished instead of narrowing back into the island"
+        );
+
+        let (left, right, ..) = ink(&ended, 160);
+        assert!(left > right, "the text is still painting at full width");
+
+        let mut island = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+        render(
+            &mut island,
+            Face::Island {
+                heights: &[0.0; BAR_COUNT],
+                seconds: 0.0,
+                transcribing: false,
+                arming: false,
+                wake: 1.0,
+            },
+            1.0,
+        );
+        let width = |canvas: &Canvas| {
+            (0..canvas.width)
+                .filter(|x| {
+                    (0..canvas.height).any(|y| canvas.pixels[(y * canvas.width + x) * 4 + 3] > 0)
+                })
+                .count()
+        };
+        assert_eq!(
+            width(&ended),
+            width(&island),
+            "the message did not end at the island's own width"
         );
     }
 }

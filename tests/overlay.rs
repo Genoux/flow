@@ -1,7 +1,7 @@
 use flow::overlay::{
-    BLOOM, FADE, SURFACE_WIDTH, TOAST_FALL, TOAST_HOLD, TOAST_RISE, WINDOW, band_fraction,
-    bar_height, bloom, fresh_window, mountain, rounded_rect_distance, smooth, smooth_bar, sweep,
-    toast_wake, toast_width,
+    BLOOM, DWELL, SILENT, SURFACE_WIDTH, TOAST_HOLD, TOAST_LIFE, TOAST_RISE, WINDOW, arrived,
+    band_fraction, bar_height, bloom, fresh_window, giving_nothing, mountain,
+    rounded_rect_distance, smooth, smooth_bar, sweep, toast_grown, toast_width,
 };
 
 /// Regression, and the whole reason the scale is in decibels.
@@ -417,107 +417,157 @@ fn a_stray_finish_never_hides_anything() {
     assert!(!life.finish(), "recording, not transcribing");
 }
 
-/// The whole point of the outro: a tap too short to record still gets its
-/// gesture. Cutting the island at the moment the key came back up left a
-/// half-grown shape blinking out of existence, which reads as a glitch rather
-/// than as a dictation that did not take.
+/// A tap let go of inside the bloom still gets a whole island. Unmapping on the
+/// frame the growth lands can take the surface away before the compositor has
+/// shown the finished shape at all - which is the flicker that finishing the
+/// bloom was meant to remove, arriving by a different door.
 #[test]
-fn a_cancel_mid_bloom_lets_the_island_finish_growing_first() {
-    let cancelled_at = BLOOM / 3.0;
-
-    let mid = bloom(cancelled_at, Some(0.0));
+fn a_tap_released_mid_bloom_still_opens_fully() {
+    assert!(!arrived(BLOOM / 3.0), "it closed part-grown");
+    assert!(!arrived(BLOOM), "it closed on the frame the growth landed");
     assert!(
-        mid < 0.5,
-        "the island jumped to full the instant it was cancelled: {mid}"
+        arrived(BLOOM + DWELL),
+        "it never opens long enough to be seen"
     );
-
-    let grown = bloom(BLOOM, Some(BLOOM - cancelled_at));
-    assert_eq!(grown, 1.0, "the growth was cut short by the cancel");
-}
-
-#[test]
-fn the_island_retracts_before_it_leaves() {
-    let opening = bloom(BLOOM + FADE / 2.0, Some(FADE / 2.0));
-    assert!(
-        (0.0..1.0).contains(&opening),
-        "half way out and not moving: {opening}"
-    );
-
     assert_eq!(
-        bloom(BLOOM + FADE, Some(FADE)),
-        0.0,
-        "the island never reaches nothing, so it would never be dropped"
+        bloom(BLOOM + DWELL, None),
+        1.0,
+        "it is allowed to go before it is fully open"
     );
 }
 
+/// The same gate every exit waits on, so it has to be free for the ones that
+/// have been on screen for a while.
 #[test]
-fn the_island_never_grows_back_once_it_is_leaving() {
-    let cancelled_at = BLOOM / 4.0;
-    let mut peaked = false;
-    let mut previous = 0.0;
+fn a_real_dictation_is_never_held_back() {
+    assert!(arrived(3.0), "a finished dictation waited on the dwell");
+}
 
-    for step in 0..80 {
-        let shown = step as f32 * (BLOOM + FADE) / 40.0;
-        let size = bloom(shown, Some((shown - cancelled_at).max(0.0)));
-        if size < previous {
-            peaked = true;
-        }
+/// Out is in, run backwards at the same speed. The old exit ran over its own
+/// slower constant, and the mismatch is what made a leaving island read as one
+/// stalling as a dot.
+#[test]
+fn the_island_leaves_the_way_it_arrived() {
+    let up = BLOOM + DWELL;
+    for step in 0..=20 {
+        let into = BLOOM * step as f32 / 20.0;
+        let growing = bloom(into, None);
+        let leaving = bloom(up, Some(BLOOM - into));
         assert!(
-            !peaked || size <= previous,
-            "the island grew back at {shown}s: {size} after {previous}"
+            (growing - leaving).abs() < 1e-5,
+            "{into}s into the bloom is {growing}, the mirror of it leaving is {leaving}"
         );
-        previous = size;
     }
-
-    assert!(peaked, "the island never started leaving");
-    assert_eq!(previous, 0.0, "it is still on screen at the end");
 }
 
 #[test]
-fn an_island_nobody_cancelled_grows_and_stays() {
+fn an_island_nobody_sent_away_grows_and_stays() {
     assert_eq!(bloom(0.0, None), 0.0, "the island starts as a dot");
     assert_eq!(bloom(BLOOM, None), 1.0);
     assert_eq!(bloom(600.0, None), 1.0, "a long dictation must not shrink");
 }
 
-/// The toast is the only thing that tells a user their tap did not take, so it
-/// has to be readable: up, held long enough to read four words, then away
-/// without being dismissed.
+/// It has to reach nothing, or the surface would never be dropped.
 #[test]
-fn the_toast_rises_holds_and_leaves() {
-    assert_eq!(toast_wake(0.0), 0.0, "the toast starts hidden");
-    assert_eq!(toast_wake(TOAST_RISE), 1.0, "it never reaches full");
-    let held = toast_wake(TOAST_RISE + TOAST_HOLD);
+fn a_departed_island_reaches_its_dot() {
+    assert_eq!(bloom(BLOOM + DWELL, Some(BLOOM)), 0.0);
+    assert_eq!(bloom(BLOOM + DWELL, Some(BLOOM + 10.0)), 0.0, "and stays");
+    let midway = bloom(BLOOM + DWELL, Some(BLOOM / 2.0));
+    assert!(
+        (0.0..1.0).contains(&midway),
+        "half way out and not moving: {midway}"
+    );
+}
+
+/// The message is the only thing that tells a user a dictation is not coming,
+/// so it has to be readable: out, held long enough to read it, then back.
+#[test]
+fn the_message_widens_holds_and_narrows_back() {
+    assert_eq!(toast_grown(0.0), 0.0, "it starts as the island's own pill");
+    assert_eq!(toast_grown(TOAST_RISE), 1.0, "it never reaches full width");
+
+    let held = toast_grown(TOAST_RISE + TOAST_HOLD);
     assert!(
         held > 0.999,
-        "it started leaving before the hold was over: {held}"
+        "it started narrowing before the hold was over: {held}"
     );
 
-    let done = TOAST_RISE + TOAST_HOLD + TOAST_FALL;
-    assert_eq!(toast_wake(done), 0.0, "it never leaves, so it never unmaps");
-    assert_eq!(toast_wake(done + 10.0), 0.0, "and it must stay gone");
-
-    let leaving = toast_wake(done - TOAST_FALL / 2.0);
-    assert!(
-        (0.0..1.0).contains(&leaving),
-        "the exit is a cut, not a fade: {leaving}"
+    assert_eq!(
+        toast_grown(TOAST_LIFE),
+        0.0,
+        "it has to end as the pill it grew out of, or the island cannot leave"
     );
+    assert_eq!(toast_grown(TOAST_LIFE + 10.0), 0.0, "and stay there");
+}
+
+/// Out is in, run backwards - the same rule the island itself follows.
+#[test]
+fn the_message_narrows_the_way_it_widened() {
+    for step in 0..=20 {
+        let into = TOAST_RISE * step as f32 / 20.0;
+        let widening = toast_grown(into);
+        let narrowing = toast_grown(TOAST_LIFE - into);
+        assert!(
+            (widening - narrowing).abs() < 1e-5,
+            "{into}s in is {widening}, its mirror on the way out is {narrowing}"
+        );
+    }
 }
 
 /// The surface is a fixed size and the toast is drawn inside it, so copy that
 /// outgrows it does not overflow - it silently clips. Caught here instead.
 #[test]
 fn the_message_fits_the_surface() {
-    for scale in [1.0, 2.0, 3.0] {
-        let box_width = toast_width(scale);
+    for (message, scale) in [SILENT]
+        .into_iter()
+        .flat_map(|message| [1.0, 2.0, 3.0].map(|scale| (message, scale)))
+    {
+        let box_width = toast_width(message, scale);
         let surface = SURFACE_WIDTH as f32 * scale;
         assert!(
             box_width <= surface,
-            "the toast is {box_width}px wide at scale {scale}, the surface only {surface}px"
+            "{message:?} is {box_width}px wide at scale {scale}, the surface only {surface}px"
         );
         assert!(
             box_width > surface * 0.4,
             "the surface is {surface}px for a {box_width}px toast - all that is wasted pixels"
         );
     }
+}
+
+/// The two ways a microphone gives nothing back, and the one way a quiet room
+/// must not be mistaken for either.
+///
+/// The room-tone case is the whole reason this lives on the island rather than
+/// on the finished recording: it fires mid-hold, and firing on someone pausing
+/// to think would cut a real dictation short.
+#[test]
+fn a_dead_microphone_is_not_a_quiet_room() {
+    let opened = 100;
+    let delivering = opened + WINDOW as u64;
+
+    // The device went away: nothing has arrived since the hold opened, so
+    // there is no window to measure at all.
+    assert!(giving_nothing(opened, opened, None), "stream stopped");
+    assert!(
+        giving_nothing(delivering - 1, opened, None),
+        "not a full window yet"
+    );
+
+    // Muted: buffers keep coming, every sample flat.
+    assert!(
+        giving_nothing(delivering, opened, Some(0.0)),
+        "muted source"
+    );
+
+    // Room tone with nobody speaking. An order of magnitude above the floor -
+    // this is the case that must survive.
+    assert!(
+        !giving_nothing(delivering, opened, Some(0.046)),
+        "a pause to think is not a dead microphone"
+    );
+    assert!(
+        !giving_nothing(delivering, opened, Some(0.2)),
+        "speech is obviously alive"
+    );
 }

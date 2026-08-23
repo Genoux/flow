@@ -6,8 +6,8 @@
 //! from `tests/`, which it was not while it lived in the binary.
 
 use crate::{
-    audio, config, denoise, duck, history, hotkey, inject, ipc, notify, overlay, refine, status,
-    stt, wav,
+    audio, config, denoise, duck, history, hotkey, inject, ipc, notify, overlay, refine,
+    status, stt, wav,
 };
 use anyhow::Result;
 use std::time::{Duration, Instant};
@@ -237,7 +237,6 @@ pub fn run(
             let was_recording = session.is_some();
             // Set by the paths where the user asked for a dictation and got
             // nothing back. Distinct from a cancel, which they asked for.
-            let mut missed = false;
             // Hold or tap, read per event from the live config so switching
             // the two in the console lands on the next press. It cannot be
             // read once at startup: that is what used to make this setting
@@ -396,7 +395,6 @@ pub fn run(
                         Some(_) => {
                             early.lock().expect("early transcripts").clear();
                             eprintln!("discarded: {total:?} is too short to be a deliberate hold");
-                            missed = true;
                             None
                         }
                         None => None,
@@ -411,16 +409,13 @@ pub fn run(
                     overlay.queued();
                     reporter.working();
                 }
-                // A recording ended with nothing usable. End the island here or
-                // it would sweep forever - and say so, unless the user is the one
-                // who called it off. Another key turning the hold into a shortcut
-                // was deliberate; a tap too short to register was not, and leaves
-                // them waiting for text that is never coming.
+                // A recording ended with nothing usable - a tap too short to
+                // register, or another key turning the hold into a shortcut. End
+                // the island here or it would sweep forever. Nothing is said
+                // either way: the island opened and closed, which is the whole
+                // of what happened.
                 (None, false, true) => {
-                    match missed {
-                        true => overlay.missed(),
-                        false => overlay.cancel(),
-                    }
+                    overlay.cancel();
                     reporter.ready();
                 }
                 // Nothing started and nothing ended: a stray `flow stop`, a
@@ -535,14 +530,14 @@ fn begin(
             // ever opened.
             Ok(hotkey::Event::Released { held }) if hold_to_talk => {
                 *slot = None;
-                overlay.missed();
+                overlay.cancel();
                 reporter.ready();
                 eprintln!("released before the mic opened ({held:?}) - nothing recorded");
                 return Some(held);
             }
             Ok(hotkey::Event::Stop) if hold_to_talk => {
                 *slot = None;
-                overlay.missed();
+                overlay.cancel();
                 reporter.ready();
                 eprintln!("discarded: the hold ended before the mic opened");
                 return Some(started.elapsed());
@@ -638,14 +633,10 @@ fn handle(
     // have ended in the pause that let its earlier half be transcribed already.
     let tail = if rms < audio::SILENCE_RMS {
         if early.is_empty() {
-            // Not "you were quiet" - the samples are flat, so nothing reached
-            // the mic at all. The user deliberately held the chord past
-            // MIN_HOLD expecting text, and a muted source is the usual cause.
-            notify::failure(
-                "Flow heard nothing",
-                "The microphone delivered silence. Check it isn't muted, and \
-                 that the system default input is the one you're speaking into.",
-            );
+            // Nothing said here. The island watches the same microphone live
+            // and has already said its piece mid-hold - see overlay::DEAD_MIC.
+            // Repeating it now would be a second message for one dead line, and
+            // arriving after the release it could only ever be a post-mortem.
             eprintln!("({spoken:.1}s, {level}, no signal - skipped)");
             return Ok(());
         }

@@ -26,7 +26,8 @@ COMMANDS
                      Needs record_debug in the config.
     inject [TEXT]    Type text after 3s, to test injection on its own
     overlay [SECS]   Show the island on its own
-    overlay missed   Show a chord that recorded nothing
+    overlay missed   Show a chord that recorded nothing - opens and closes
+    overlay silent   Show a hold the microphone gave nothing back for
     SECONDS          Record, transcribe and print. Default 5.
     FILE.wav         Transcribe a file and time the recogniser
     help             This text
@@ -116,15 +117,24 @@ fn main() -> Result<()> {
         // The tap too short to be a hold. Worth its own preview because it is
         // the one sequence with no way to rehearse it deliberately: getting a
         // real chord back up inside 200ms is mostly luck.
-        if args.get(1).is_some_and(|arg| arg == "missed") {
+        let ending = args.get(1).map(String::as_str);
+        if matches!(ending, Some("missed" | "silent")) {
             // Opened and never begun, which is the real arming path - this
             // release lands before the microphone ever opens.
             let capture = audio::Capture::open(&audio::open_device()?)?;
             let overlay = overlay::Overlay::spawn(capture.monitor());
             overlay.arm();
             std::thread::sleep(Duration::from_millis(100));
-            overlay.missed();
-            eprintln!("let go after 100ms - the island blooms, retracts, then says so");
+            match ending {
+                Some("silent") => {
+                    overlay.silent();
+                    eprintln!("the island opens, then widens into: {}", overlay::SILENT);
+                }
+                _ => {
+                    overlay.cancel();
+                    eprintln!("let go after 100ms - the island opens fully, then closes");
+                }
+            }
             std::thread::sleep(Duration::from_secs(4));
             return Ok(());
         }
