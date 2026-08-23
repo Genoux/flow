@@ -31,6 +31,41 @@ fn a_player_that_jumps_back_up_has_escaped() {
     assert!(!flow::duck::escaped(52, 100, 50));
 }
 
+/// The chime that says the microphone is open must not be faded out by the
+/// ducking that follows it half a beat later.
+#[test]
+fn flows_own_chime_is_never_ducked() {
+    let payload = serde_json::json!([
+        {
+            "index": 7,
+            "properties": { "application.name": "Spotify" },
+            "volume": { "front-left": { "value_percent": "100%" } }
+        },
+        {
+            "index": 8,
+            "properties": { "application.name": flow::chime::CLIENT },
+            "volume": { "front-left": { "value_percent": "100%" } }
+        }
+    ]);
+
+    assert_eq!(flow::duck::duckable(&payload), vec![(7, 100)]);
+}
+
+/// A stream whose channels disagree is left alone: restoring it would need a
+/// channel order pactl does not promise.
+#[test]
+fn an_unbalanced_stream_is_left_alone() {
+    let payload = serde_json::json!([{
+        "index": 3,
+        "volume": {
+            "front-left": { "value_percent": "80%" },
+            "front-right": { "value_percent": "40%" }
+        }
+    }]);
+
+    assert!(flow::duck::duckable(&payload).is_empty());
+}
+
 /// Ducking is process-global state, and cargo runs tests as parallel threads,
 /// so two of these at once would fight over the same streams.
 fn exclusive() -> MutexGuard<'static, ()> {

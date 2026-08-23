@@ -6,7 +6,7 @@
 //! from `tests/`, which it was not while it lived in the binary.
 
 use crate::{
-    audio, config, denoise, duck, history, hotkey, inject, ipc, notify, overlay, refine,
+    audio, chime, config, denoise, duck, history, hotkey, inject, ipc, notify, overlay, refine,
     status, stt, wav,
 };
 use anyhow::Result;
@@ -493,10 +493,14 @@ fn begin(
     early: &std::sync::Mutex<Vec<String>>,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
 ) -> Option<Duration> {
-    let (duck, hold_to_talk) = {
+    let (duck, hold_to_talk, sound) = {
         let config = live.lock().expect("config");
-        (config.ducking(), config.push_to_talk)
+        (config.ducking(), config.push_to_talk, config.sound)
     };
+    // Before the island is asked for, since arming it is what makes the sound.
+    // Read per dictation so the console's switch lands on the next chord rather
+    // than the next restart, the same way the chord itself does.
+    chime::set_enabled(sound);
 
     // A new recording abandons whatever came before it, including anything already
     // transcribed early - otherwise those words would prepend to this dictation.

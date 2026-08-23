@@ -201,6 +201,7 @@ enum Message {
     SetCleanup(settings::Cleanup),
     Terminal(bool),
     Denoise(bool),
+    Sound(bool),
     Autostart(bool),
     Duck(u32),
     OpenConfig,

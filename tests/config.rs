@@ -37,6 +37,7 @@ fn file_overrides_every_key() {
             chord: Default::default(),
             gpu: None,
             denoise: false,
+            sound: true,
             record_debug: false,
         }
     );
@@ -179,6 +180,7 @@ fn flags_win_over_the_file() {
         chord: Default::default(),
         gpu: None,
         denoise: false,
+        sound: true,
         record_debug: false,
     };
     let flags = ["daemon", "--raw", "--duck", "20", "--terminal"]
@@ -216,6 +218,7 @@ fn absent_flags_leave_the_file_alone() {
         chord: Default::default(),
         gpu: None,
         denoise: false,
+        sound: true,
         record_debug: false,
     };
     assert_eq!(
@@ -254,4 +257,15 @@ fn the_shipped_template_parses_and_matches_the_defaults() {
         Config::parse(template).expect("template"),
         Config::default()
     );
+}
+
+/// The chime is on out of the box, and the only thing the switch does is
+/// silence it. Default-on because a dictation with no window focus is
+/// otherwise unacknowledged until the text lands.
+#[test]
+fn the_dictation_sound_is_on_until_turned_off() {
+    assert!(flow::config::Config::default().sound);
+    assert!(flow::config::Config::parse("sound = true").unwrap().sound);
+    assert!(!flow::config::Config::parse("sound = false").unwrap().sound);
+    assert!(flow::config::Config::parse("sound = maybe").is_err());
 }

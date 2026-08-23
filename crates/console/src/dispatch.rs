@@ -81,6 +81,11 @@ impl Console {
                 self.toggled_at.insert("denoise", std::time::Instant::now());
                 self.persist();
             }
+            Message::Sound(on) => {
+                self.settings.sound = on;
+                self.toggled_at.insert("sound", std::time::Instant::now());
+                self.persist();
+            }
             Message::Duck(value) => {
                 self.settings.duck = value;
                 self.persist();

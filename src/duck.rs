@@ -62,10 +62,28 @@ fn streams() -> Result<Vec<(u32, u32)>> {
         .output()
         .context("running pactl - is PipeWire or PulseAudio available?")?;
 
-    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    Ok(duckable(&serde_json::from_slice(&output.stdout)?))
+}
+
+/// The streams in a `pactl list sink-inputs` payload that Flow may touch, as
+/// `(index, volume percent)`. Split from the call above so the two ways a
+/// stream is passed over - Flow's own chime, and an unbalanced player - can be
+/// tested without an audio server.
+pub fn duckable(parsed: &serde_json::Value) -> Vec<(u32, u32)> {
     let mut found = Vec::new();
 
     for stream in parsed.as_array().into_iter().flatten() {
+        // Flow's own island chime. Ducking it would fade out the very sound
+        // saying the microphone is open - see [`crate::chime::CLIENT`].
+        if stream
+            .get("properties")
+            .and_then(|properties| properties.get("application.name"))
+            .and_then(serde_json::Value::as_str)
+            == Some(crate::chime::CLIENT)
+        {
+            continue;
+        }
+
         let Some(index) = stream.get("index").and_then(serde_json::Value::as_u64) else {
             continue;
         };
@@ -85,7 +103,7 @@ fn streams() -> Result<Vec<(u32, u32)>> {
             found.push((index as u32, *first));
         }
     }
-    Ok(found)
+    found
 }
 
 fn set_volume(index: u32, percent: u32) {

@@ -28,6 +28,10 @@ pub struct Config {
     /// case is the current, known-good behaviour; on, it runs the utterance
     /// through nnnoiseless to strip hiss and fan noise before Parakeet sees it.
     pub denoise: bool,
+    /// Play the island's arrive and leave chimes. On by default: the island is
+    /// silent feedback, and a dictation started over a full-screen window is
+    /// otherwise unacknowledged until the text lands.
+    pub sound: bool,
     /// Save every dictation's audio as WAV files to `~/.local/share/flow/recordings/`,
     /// one raw and (when denoise is on) one denoised. Off by default because
     /// long sessions add up on disk fast; on, it is the only way to A/B the
@@ -49,6 +53,7 @@ impl Default for Config {
             chord: super::hotkey::Chord::default(),
             gpu: None,
             denoise: false,
+            sound: true,
             record_debug: false,
         }
     }
@@ -108,6 +113,7 @@ impl Config {
                 }
                 "terminal" => config.terminal = boolean(&at, key, value)?,
                 "denoise" => config.denoise = boolean(&at, key, value)?,
+                "sound" => config.sound = boolean(&at, key, value)?,
                 "record_debug" => config.record_debug = boolean(&at, key, value)?,
                 "hotkey" => {
                     config.chord = super::hotkey::Chord::parse(value)

@@ -173,7 +173,8 @@ const GLOW_LAYERS: usize = 5;
 /// How long the island takes to widen into the full pill, with the bars rising
 /// as it goes. This is the cue that says speaking will now be heard, so it
 /// wants to be definite rather than a gentle fade anyone could miss - but slow
-/// enough that the shape change registers as a shape change.
+/// enough that the shape change registers as a shape change, and slow enough
+/// that the chime riding it has something to ride.
 pub const BLOOM: f32 = 0.16;
 
 /// The narrowest the island is ever drawn, as a multiple of its corner radius.
@@ -194,8 +195,8 @@ const NARROWEST: f32 = 1.9;
 ///
 /// The island is deliberately not 1:1 with the chord. A toggle flicked on and
 /// off inside a tenth of a second would otherwise produce an island that
-/// flickers with it - the shape needs room to be one event rather than a
-/// stutter. Long enough to
+/// flickers with it, and two chimes on top of each other - the shape and the
+/// sound both need room to be one event rather than a stutter. Long enough to
 /// register as "in, held, out", short enough that nobody waits on it.
 pub const DWELL: f32 = 0.4;
 
@@ -1239,11 +1240,17 @@ struct Island {
 }
 
 impl Island {
+    /// Also the moment the island is heard. Both callers reach the surface
+    /// through here, so the chime lives with the mapping rather than at each
+    /// one - and it goes first, ahead of the Wayland round trips and well
+    /// ahead of the ducking that follows the arm.
     fn map(
         compositor: &wl_compositor::WlCompositor,
         shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
         queue: &QueueHandle<Wayland>,
     ) -> Self {
+        crate::chime::show();
+
         let surface = compositor.create_surface(queue, ());
         let layer = shell.get_layer_surface(
             &surface,
@@ -1668,7 +1675,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             settling = false;
             match end {
                 Ending::Say(message) => toast = Some((std::time::Instant::now(), message)),
-                Ending::Close => leaving = Some(std::time::Instant::now()),
+                Ending::Close => {
+                    crate::chime::hide();
+                    leaving = Some(std::time::Instant::now());
+                }
             }
         }
 
@@ -1679,6 +1689,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         if toast.is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= TOAST_LIFE) {
             toast = None;
             ending = None;
+            crate::chime::hide();
             leaving = Some(std::time::Instant::now());
         }
 

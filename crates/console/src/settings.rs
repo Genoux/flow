@@ -87,6 +87,8 @@ pub struct Settings {
     pub cleanup: Cleanup,
     pub terminal: bool,
     pub denoise: bool,
+    /// Play the island's arrive and leave chimes.
+    pub sound: bool,
     pub duck: u32,
     /// Which GPU runs the refining model. `None` means the daemon picks, and is
     /// written as no line at all rather than a value - the daemon's default is
@@ -115,6 +117,7 @@ impl Default for Settings {
             cleanup: Cleanup::default(),
             terminal: false,
             denoise: false,
+            sound: true,
             duck: 50,
             gpu: None,
             hotkey: DEFAULT_HOTKEY.to_string(),
@@ -153,6 +156,7 @@ impl Settings {
                 }
                 "terminal" => settings.terminal = value == "true",
                 "denoise" => settings.denoise = value == "true",
+                "sound" => settings.sound = value == "true",
                 "duck" => {
                     if let Ok(parsed) = value.parse() {
                         settings.duck = parsed;
@@ -181,7 +185,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 8] = [
+        let wanted: [(&str, Option<String>); 9] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.as_str().to_string())),
             // Deleted rather than left alone. The daemon still understands
@@ -191,6 +195,7 @@ impl Settings {
             ("refine", None),
             ("terminal", Some(self.terminal.to_string())),
             ("denoise", Some(self.denoise.to_string())),
+            ("sound", Some(self.sound.to_string())),
             ("duck", Some(self.duck.to_string())),
             ("gpu", self.gpu.map(|index| index.to_string())),
             ("hotkey", Some(self.hotkey.clone())),
@@ -309,11 +314,21 @@ mod tests {
             cleanup: Cleanup::Medium,
             terminal: true,
             denoise: true,
+            sound: false,
             duck: 0,
             gpu: Some(0),
             hotkey: "ctrl+alt+space".to_string(),
         };
         assert_eq!(Settings::parse(&settings.render("")), settings);
+    }
+
+    /// The window has to agree with the daemon on the default, or opening it
+    /// once would write `sound = false` over a chime nobody turned off.
+    #[test]
+    fn the_sound_switch_starts_on() {
+        assert!(Settings::default().sound);
+        assert!(!Settings::parse("sound = false").sound);
+        assert!(Settings::default().render("").contains("sound = true"));
     }
 
     /// The daemon applies keys in file order, so a `refine` line left below the

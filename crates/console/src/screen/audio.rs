@@ -35,6 +35,11 @@ impl Console {
                 ),
             ),
             setting(
+                "Dictation sound",
+                "A short chime when the island appears, and another when it goes.",
+                toggle(self.settings.sound, self.travel("sound"), Message::Sound),
+            ),
+            setting(
                 "Noise suppression",
                 "Runs RNNoise over the audio. Can blunt consonants on a weak mic.",
                 toggle(
