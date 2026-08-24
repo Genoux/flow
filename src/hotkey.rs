@@ -162,7 +162,6 @@ impl Chord {
             .all(|modifier| modifier.keys().iter().any(|key| held.contains(key)))
     }
 
-    /// Every key of the chord is physically down, in any order.
     /// Whether any modifier of the chord is still down. Not `satisfied`, which
     /// wants all of them: this is the question of whether the hand is still on
     /// the chord at all.
@@ -172,6 +171,7 @@ impl Chord {
             .any(|modifier| modifier.keys().iter().any(|key| held.contains(key)))
     }
 
+    /// Every key of the chord is physically down, in any order.
     fn fully_held(&self, held: &HashSet<KeyCode>) -> bool {
         held.contains(&self.trigger) && self.satisfied(held)
     }
@@ -458,6 +458,14 @@ impl PttState {
         // out. Every modifier being up is the other evidence that the hand has
         // left the chord. A bare chord has no modifiers and no need of it - its
         // one key is the trigger.
+        //
+        // This briefly read "any key of the chord ends it", to agree with
+        // `chord_released` below and to close that remapper hang. The hang was
+        // already closed - by the second arm, which is what it is for - and the
+        // agreement was not worth buying: the two answer different questions.
+        // This path sees exact key events and can afford to be precise; that
+        // one polls a snapshot that can be stale, where a missed release must
+        // not mean recording forever. Precision here, safety there.
         if !pressed
             && self.down_at.is_some()
             && self.chord.contains(key)
@@ -574,10 +582,11 @@ pub fn was_long_enough(held: Duration) -> bool {
     held >= MIN_HOLD
 }
 
-/// True when every key we saw at press is up. Empty `now` after we have seen
-/// keys down means the chord is gone; empty `now` before that is unknown.
+/// True once any key we saw at press has gone up: breaking the chord anywhere
+/// breaks all of it. An empty `chord` is the state before anything was seen
+/// down, which is unknown rather than released.
 pub fn chord_released(chord: &HashSet<KeyCode>, now: &HashSet<KeyCode>) -> bool {
-    !chord.is_empty() && chord.iter().all(|key| !now.contains(key))
+    !chord.is_empty() && chord.iter().any(|key| !now.contains(key))
 }
 
 /// Prefer keyd's virtual keyboard: it is what Hyprland sees after remap, and

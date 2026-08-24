@@ -129,10 +129,11 @@ fn releasing_the_trigger_ends_the_hold() {
     ));
 }
 
-/// What the compositor-driven watch waits for: every key it saw at press back
-/// up. An empty read before anything was seen is an unknown, not a release.
+/// What the compositor-driven watch waits for: the first key it saw at press
+/// going up. An empty read before anything was seen is an unknown, not a
+/// release.
 #[test]
-fn a_chord_is_released_only_when_every_key_it_saw_is_up() {
+fn a_chord_is_released_as_soon_as_one_key_it_saw_is_up() {
     let chord = HashSet::from([
         KeyCode::KEY_LEFTMETA,
         KeyCode::KEY_LEFTSHIFT,
@@ -140,9 +141,11 @@ fn a_chord_is_released_only_when_every_key_it_saw_is_up() {
     ]);
     assert!(!chord_released(&chord, &chord));
 
-    let mut after = chord.clone();
-    after.remove(&KeyCode::KEY_D);
-    assert!(!chord_released(&chord, &after), "shift/super still down");
+    for lifted in &chord {
+        let mut after = chord.clone();
+        after.remove(lifted);
+        assert!(chord_released(&chord, &after), "{lifted:?} went up");
+    }
 
     assert!(chord_released(&chord, &HashSet::new()));
     assert!(
@@ -173,20 +176,32 @@ fn releasing_a_modifier_keeps_the_hold() {
     }
 }
 
-/// The safety net. A remapper that swallows the trigger's own release would
-/// otherwise leave the daemon recording until the process died.
+/// The safety net, asserted rather than assumed.
+///
+/// A remapper can swallow the trigger's own release, leaving `held` certain the
+/// letter is still down for as long as the process lives. The hold must still
+/// end, and every modifier coming up is the other evidence that the hand has
+/// left the chord. This was believed broken once and the release rule was
+/// widened to "any key ends it" to close it - which cost a hold every time a
+/// thumb drifted off Super. The net was always here; it just had no test
+/// saying so.
 #[test]
-fn a_chord_that_empties_without_the_trigger_still_ends_the_hold() {
+fn a_swallowed_trigger_release_still_ends_the_hold() {
     let mut state = PttState::new(Chord::default());
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
 
-    // The trigger's release never arrives - only the modifiers report going up.
-    assert_eq!(state.apply(SUPER, false), None, "shift is still down");
+    // The remapper eats this one: the daemon never sees D go up.
+    assert_eq!(
+        state.apply(SUPER, false),
+        None,
+        "one modifier up is not the hand leaving the chord"
+    );
     assert!(
         matches!(state.apply(SHIFT, false), Some(Event::Released { .. })),
-        "the hand has left the chord and it is still recording"
+        "with every modifier up and the trigger's release swallowed, the hold \
+         ran forever"
     );
 }
 
