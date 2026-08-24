@@ -70,12 +70,6 @@ impl Console {
                 self.toggled_at.insert("cleanup", std::time::Instant::now());
                 self.persist();
             }
-            Message::Terminal(on) => {
-                self.settings.terminal = on;
-                self.toggled_at
-                    .insert("terminal", std::time::Instant::now());
-                self.persist();
-            }
             Message::Denoise(on) => {
                 self.settings.denoise = on;
                 self.toggled_at.insert("denoise", std::time::Instant::now());

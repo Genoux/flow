@@ -8,8 +8,8 @@
 use crate::control::{copy_btn, hairline};
 use crate::format::{clip_tail, display_path};
 use crate::theme::{
-    mix, BG, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, FOOT_PAD, LABEL_GAP, MUTED, PAGE_TOP, RAIL_ON,
-    ROW_PAD, SCROLL_PAD,
+    mix, BG, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, FOOT_PAD, GROUP_GAP, GROUP_PAD, LABEL_GAP,
+    MUTED, PAGE_TOP, RAIL_ON, ROW_PAD, SCROLL_PAD,
 };
 use crate::{history, Message, Section};
 use iced::widget::{
@@ -182,6 +182,11 @@ pub(crate) fn section_shell<'a>(
     rows: Vec<Element<'a, Message>>,
     foot: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
+    page_shell(title, subtitle, hairlined(rows), foot)
+}
+
+/// Rows with a rule between each pair and none at either end.
+fn hairlined<'a>(rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     let mut list = column![];
     let count = rows.len();
     for (index, entry) in rows.into_iter().enumerate() {
@@ -190,8 +195,36 @@ pub(crate) fn section_shell<'a>(
             list = list.push(hairline());
         }
     }
+    list.into()
+}
 
-    let body = column![heading(title, subtitle), list];
+/// A labelled block of rows, for a page that edits more than one thing.
+///
+/// The label is what makes a long settings page readable: without it the rows
+/// are one undifferentiated list and you have to read every one to find the
+/// section you wanted. Groups are told apart by air and a label rather than by
+/// a rule, because a rule between groups reads as just another row boundary -
+/// which is the one thing it must not look like.
+pub(crate) fn group<'a>(label: &'a str, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    column![
+        Space::new().height(GROUP_PAD),
+        text(label).size(11.5).color(MUTED),
+        Space::new().height(GROUP_GAP),
+        hairlined(rows),
+    ]
+    .into()
+}
+
+/// The shape every settings screen shares: a heading and a body that scroll
+/// together, and a footer docked to the pane. The title yields its room in a
+/// short window; the path and its action do not ride under the last row.
+pub(crate) fn page_shell<'a>(
+    title: &'a str,
+    subtitle: &'a str,
+    content: Element<'a, Message>,
+    foot: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let body = column![heading(title, subtitle), content];
 
     match foot {
         // The footer sits below the scrollable, not inside it, so it never

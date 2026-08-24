@@ -49,8 +49,8 @@ use crate::control::{
 };
 use crate::format::{clip, commas, plural, trend};
 use crate::layout::{
-    entry_list, entry_row, fact_path, fact_row, heading, inert, nav, scroll, scroll_inset,
-    section_shell, setting,
+    entry_list, entry_row, fact_path, fact_row, group, heading, inert, nav, page_shell, scroll,
+    scroll_inset, section_shell, setting,
 };
 use crate::theme::{
     mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE, FAINT,
@@ -122,24 +122,29 @@ const FRAME_CAP: f32 = 1.0 / 30.0;
 enum Section {
     Overview,
     History,
-    Dictation,
-    Audio,
     Vocabulary,
     /// What used to be Models. Both models now arrive with the install, so the
     /// screen that asked which to fetch has no question left on it - what it
     /// has instead is the one choice that changes what Flow writes.
     Style,
+    /// Dictation and Audio merged. Eight rows across two rail sections meant a
+    /// click to discover which one held the switch you wanted; they are labelled
+    /// groups on one page now.
+    ///
+    /// Last but for About, because it is where you go to change something rather
+    /// than where you start - the screens above it are the ones with your words
+    /// on them.
+    Settings,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 7] = [
+    const ALL: [Section; 6] = [
         Section::Overview,
         Section::History,
-        Section::Dictation,
-        Section::Audio,
         Section::Vocabulary,
         Section::Style,
+        Section::Settings,
         Section::About,
     ];
 
@@ -183,10 +188,9 @@ impl Section {
         match self {
             Section::Overview => "Overview",
             Section::History => "History",
-            Section::Dictation => "Dictation",
-            Section::Audio => "Audio",
             Section::Vocabulary => "Vocabulary",
             Section::Style => "Style",
+            Section::Settings => "Settings",
             Section::About => "About",
         }
     }
@@ -199,7 +203,6 @@ enum Message {
     /// A cleanup card on the Style screen. Picking a level is the whole of that
     /// screen, so it saves immediately rather than behind a confirm.
     SetCleanup(settings::Cleanup),
-    Terminal(bool),
     Denoise(bool),
     Sound(bool),
     Autostart(bool),
@@ -691,9 +694,9 @@ mod tests {
 
     #[test]
     fn the_name_is_forgiving_but_not_a_guess() {
-        assert_eq!(Section::from_label("  audio "), Some(Section::Audio));
-        assert_eq!(Section::from_label("AUDIO"), Some(Section::Audio));
-        assert_eq!(Section::from_label("aud"), None);
+        assert_eq!(Section::from_label("  settings "), Some(Section::Settings));
+        assert_eq!(Section::from_label("SETTINGS"), Some(Section::Settings));
+        assert_eq!(Section::from_label("set"), None);
         assert_eq!(Section::from_label(""), None);
     }
 

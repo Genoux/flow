@@ -171,6 +171,14 @@ pub(crate) const LABEL_GAP: f32 = 4.0;
 /// footer's, for one - uses this too, so a divider always has the same air
 /// whichever two things it happens to be sitting between.
 pub(crate) const ROW_PAD: f32 = 16.0;
+
+/// Air above a group's label on a page that edits more than one thing. Wider
+/// than the gap between two rows, because that is the whole job: the eye has to
+/// see where one group ends and the next begins without a rule to tell it.
+pub(crate) const GROUP_PAD: f32 = 26.0;
+
+/// Between a group's label and the first row under it.
+pub(crate) const GROUP_GAP: f32 = 6.0;
 /// The docked footer's band, above and below its content. Equal on both
 /// sides, because a bar reads as a bar only when its content sits in the
 /// middle of it - the old pairing borrowed `ROW_PAD` above and the page's

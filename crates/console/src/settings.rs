@@ -85,7 +85,6 @@ impl Cleanup {
 pub struct Settings {
     pub push_to_talk: bool,
     pub cleanup: Cleanup,
-    pub terminal: bool,
     pub denoise: bool,
     /// Play the island's arrive and leave chimes.
     pub sound: bool,
@@ -115,7 +114,6 @@ impl Default for Settings {
         Self {
             push_to_talk: true,
             cleanup: Cleanup::default(),
-            terminal: false,
             denoise: false,
             sound: true,
             duck: 50,
@@ -154,7 +152,6 @@ impl Settings {
                         Cleanup::None
                     }
                 }
-                "terminal" => settings.terminal = value == "true",
                 "denoise" => settings.denoise = value == "true",
                 "sound" => settings.sound = value == "true",
                 "duck" => {
@@ -185,7 +182,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 9] = [
+        let wanted: [(&str, Option<String>); 8] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.as_str().to_string())),
             // Deleted rather than left alone. The daemon still understands
@@ -193,7 +190,6 @@ impl Settings {
             // line sitting below `cleanup` would silently undo the level the
             // user just picked.
             ("refine", None),
-            ("terminal", Some(self.terminal.to_string())),
             ("denoise", Some(self.denoise.to_string())),
             ("sound", Some(self.sound.to_string())),
             ("duck", Some(self.duck.to_string())),
@@ -312,7 +308,6 @@ mod tests {
         let settings = Settings {
             push_to_talk: false,
             cleanup: Cleanup::Medium,
-            terminal: true,
             denoise: true,
             sound: false,
             duck: 0,

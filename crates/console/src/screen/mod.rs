@@ -10,29 +10,32 @@ use iced::widget::{column, container, row, stack, text, Space};
 use iced::{Element, Fill, Font, Length};
 
 mod about;
-mod audio;
-mod dictation;
 mod history;
 mod overview;
+mod preferences;
 mod style;
 mod vocabulary;
 
 impl Console {
-    /// The line under a settings screen. The daemon watches the config file, so
-    /// almost everything here is live and the note says so; the exceptions name
-    /// themselves on their own row rather than making every screen apologise.
-    fn save_note(&self) -> Element<'_, Message> {
+    /// The line under a settings screen, when there is one.
+    ///
+    /// `None` most of the time, and the footer goes with it. This used to fall
+    /// back to the path of the config file, which meant a permanent bar at the
+    /// bottom of the page stating something you read once and never again -
+    /// About names the same path, in the company of the other paths. A footer
+    /// that is always there stops being read; one that appears when a save
+    /// lands, or fails, is the only time it has anything to say.
+    fn save_note(&self) -> Option<Element<'_, Message>> {
         match (&self.save_error, self.saved) {
-            (Some(err), _) => text(format!("Couldn't save: {err}")).size(12).color(ERR),
-            (None, true) => text("Saved. Applies to your next dictation.")
-                .size(12)
-                .color(FAINT),
-            (None, false) => text(settings::config_path().display().to_string())
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(FAINT),
+            (Some(err), _) => Some(text(format!("Couldn't save: {err}")).size(12).color(ERR)),
+            (None, true) => Some(
+                text("Saved. Applies to your next dictation.")
+                    .size(12)
+                    .color(FAINT),
+            ),
+            (None, false) => None,
         }
-        .into()
+        .map(Element::from)
     }
 
     pub(crate) fn view(&self) -> Element<'_, Message> {
@@ -121,8 +124,7 @@ impl Console {
         let content = match section {
             Section::Overview => self.overview_section(),
             Section::History => self.history_section(),
-            Section::Dictation => self.dictation_section(),
-            Section::Audio => self.audio_section(),
+            Section::Settings => self.preferences_section(),
             Section::Vocabulary => self.vocabulary_section(),
             Section::Style => self.style_section(),
             Section::About => self.about_section(),
