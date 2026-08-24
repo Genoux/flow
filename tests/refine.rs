@@ -310,9 +310,20 @@ fn refining_behaves() {
             Err(err) => eprintln!("\n[filler] {hesitation:?} refused: {err}"),
             Ok(text) => {
                 eprintln!("\n[filler] {hesitation:?} -> {text:?}");
+                // Held to the intent above, not to two known bad answers.
+                // "None." was the failure that prompted this guard and the
+                // check grew around that literal, so when the prompt changed
+                // and the model started answering "Alright." instead, the
+                // guard watched it go by. A pure hesitation has exactly two
+                // acceptable answers: nothing, or itself.
                 let lowered = text.to_lowercase();
-                if lowered.starts_with("none") || lowered.starts_with("n/a") {
-                    failures.push(format!("{hesitation:?} produced the non-answer {text:?}"));
+                let said = lowered.trim().trim_end_matches(['.', '!', '?', ',']);
+                if !said.is_empty() && !hesitation.to_lowercase().contains(said) {
+                    failures.push(format!(
+                        "{hesitation:?} came back as {text:?} - a hesitation may \
+                         return empty or as itself, never as a word the speaker \
+                         never said"
+                    ));
                 }
             }
         }

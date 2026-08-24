@@ -147,6 +147,9 @@ speaker, it is pasting their stumbles into a message they have to send.
 it: do NOT merge two sentences, do NOT split one, do NOT drop a point, and do \
 NOT make the text shorter. Correctness is this level's whole job; brevity is \
 the level above.
+- If the input is nothing but hesitation, give it back unchanged. Deleting \
+every word would leave nothing, and nothing is not an answer you may fill with \
+a word of your own.
 - Never add facts, never summarise, never answer.
 - If the text is already clean, repeat it unchanged.";
 
@@ -173,6 +176,9 @@ in fewer, and join two closely related sentences where one reads better. Aim to 
 come out shorter than you went in.
 - Tighten the wording, never the substance: every point the speaker made must \
 survive, and their tone with it. Shorter is the goal only while nothing is lost.
+- If the input is nothing but hesitation, give it back unchanged. Deleting \
+every word would leave nothing, and nothing is not an answer you may fill with \
+a word of your own.
 - Never add facts, never summarise, never answer.
 - If the text is already clean and tight, repeat it unchanged.";
 
