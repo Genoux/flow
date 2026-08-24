@@ -334,6 +334,18 @@ pub const SILENT: &str = "Microphone is silent - check it isn't muted";
 /// produce its first real chunk.
 const DEAD_MIC: Duration = Duration::from_millis(1500);
 
+/// Whether a dictation should be ended because nothing is reaching the
+/// microphone.
+///
+/// Only a hold. A tap session is bounded by the toggle that started it - the
+/// user may sit quiet for as long as they like before they start speaking, and
+/// taking the island away mid-pause says the app stopped listening when it had
+/// not. A hold is different: the key is down, the user is talking into it, and
+/// the sooner they are told the line is dead the less breath they waste.
+pub fn dead_line(holding: bool, flat_for: Option<Duration>) -> bool {
+    holding && flat_for.is_some_and(|flat| flat >= DEAD_MIC)
+}
+
 /// Type size and the room left around it inside the toast.
 const TOAST_TEXT: f32 = 11.0;
 const TOAST_PAD: f32 = 13.0;
@@ -747,7 +759,12 @@ enum Command {
     /// Shown, but the microphone is not open yet - other apps are still being
     /// turned down. See [`Overlay::arm`].
     Arm,
-    Record,
+    Record {
+        /// Hold to talk. The island's life is the key's, so a line that has gone
+        /// dead ends it; in tap mode the toggle is what ends it and nothing else
+        /// may - see [`dead_line`].
+        holding: bool,
+    },
     /// The audio went to the worker. Counted so a finish cannot outrun it, but it
     /// says nothing about whether there is anything to transcribe yet.
     Queued,
@@ -833,8 +850,8 @@ impl Overlay {
         let _ = self.commands.send(Command::Arm);
     }
 
-    pub fn record(&self) {
-        let _ = self.commands.send(Command::Record);
+    pub fn record(&self, holding: bool) {
+        let _ = self.commands.send(Command::Record { holding });
     }
 
     /// Audio handed over. Does not draw anything: until recognition has run, a
@@ -1773,6 +1790,9 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // flips on `SWEEP_DELAY` after, which is what let the bars keep answering
     // real room sound for a couple hundred ms after the key was released.
     let mut listening = false;
+    // Hold to talk, carried from the command that opened the microphone. A tap
+    // session is the user's to end - see [`dead_line`].
+    let mut holding = true;
     let mut woke = std::time::Instant::now();
     // Last drawn size. The message waits on it to reach full before widening,
     // and a chord re-triggered on the way out picks the growth back up from it.
@@ -1828,7 +1848,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 woke = resume(grown);
                 leaving = None;
             }
-            Ok(Command::Record) => {
+            Ok(Command::Record { holding: held }) => {
                 heights = [0.0; BAR_COUNT];
                 window.clear();
                 opened = monitor.heard();
@@ -1841,6 +1861,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 let was_armed = arming;
                 arming = false;
                 listening = true;
+                holding = held;
                 // Only start a fresh bloom here for the unducked path, which
                 // never arms - it jumps straight to Record. An armed hold
                 // already started its bloom on the keypress; restarting it
@@ -1992,7 +2013,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         // Nothing is reaching the microphone, so nothing the user says next can
         // be heard either. Ends the dictation here rather than letting them
         // finish a sentence into a dead line - see [`DEAD_MIC`].
-        if listening && flat_since.is_some_and(|since| since.elapsed() >= DEAD_MIC) {
+        if listening && dead_line(holding, flat_since.map(|since| since.elapsed())) {
             flat_since = None;
             listening = false;
             lifecycle.cancel();

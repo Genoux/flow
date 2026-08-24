@@ -152,7 +152,7 @@ fn main() -> Result<()> {
         eprintln!("arming for 2s - the spinner turns while the mic is still shut");
         std::thread::sleep(Duration::from_secs(2));
         capture.begin();
-        overlay.record();
+        overlay.record(true);
         eprintln!("island shown for {seconds}s - speak to move the bars");
         std::thread::sleep(Duration::from_secs(seconds));
         overlay.queued();

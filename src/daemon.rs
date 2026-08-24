@@ -580,7 +580,7 @@ fn begin(
     // start answering, which is the only honest signal that speaking will be
     // heard - and it lands here rather than on the keypress precisely because
     // that is when it became true.
-    overlay.record();
+    overlay.record(hold_to_talk);
     None
 }
 

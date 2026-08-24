@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use flow::overlay::{
     BLOOM, DWELL, SILENT, SURFACE_WIDTH, TOAST_HOLD, TOAST_LIFE, TOAST_RISE, WINDOW, arrived,
-    band_fraction, bar_height, bloom, fresh_window, giving_nothing, mountain, resting,
+    band_fraction, bar_height, bloom, dead_line, fresh_window, giving_nothing, mountain, resting,
     rounded_rect_distance, smooth, smooth_bar, sweep, toast_grown, toast_width,
 };
 
@@ -571,6 +573,43 @@ fn a_dead_microphone_is_not_a_quiet_room() {
     assert!(
         !giving_nothing(delivering, opened, Some(0.2)),
         "speech is obviously alive"
+    );
+}
+
+/// A tap session is the user's to end.
+///
+/// Toggling on and then thinking for a moment is ordinary use of tap to talk,
+/// and the microphone reads as flat for the whole of that pause. Ending the
+/// dictation there took the island away mid-thought and said the microphone was
+/// muted, which it was not.
+#[test]
+fn a_tap_session_is_never_ended_by_a_quiet_moment() {
+    let long = Duration::from_secs(60);
+    assert!(
+        !dead_line(false, Some(long)),
+        "a minute of quiet ended a tap session"
+    );
+    assert!(
+        !dead_line(false, None),
+        "a tap session ended with the microphone delivering"
+    );
+}
+
+/// A hold is still cut short, because the user is talking into it and every
+/// second they are not told is a second of breath wasted on a dead line.
+#[test]
+fn a_hold_into_a_dead_line_is_still_stopped() {
+    assert!(
+        !dead_line(true, None),
+        "a hold ended while the microphone was still delivering"
+    );
+    assert!(
+        !dead_line(true, Some(Duration::from_millis(200))),
+        "a hold ended on a pause far shorter than the dead-mic window"
+    );
+    assert!(
+        dead_line(true, Some(Duration::from_secs(5))),
+        "a hold on a dead line was left running"
     );
 }
 
