@@ -40,18 +40,20 @@ static FONT: std::sync::LazyLock<fontdue::Font> = std::sync::LazyLock::new(|| {
 /// are drawn into one buffer sized for the larger of them. Everything outside
 /// the shape being drawn is transparent, and the input region is empty, so the
 /// extra width costs nothing but the pixels it never touches.
-const WIDTH: u32 = 116;
-const HEIGHT: u32 = 40;
+const WIDTH: u32 = 92;
+const PILL_HEIGHT: u32 = 30;
+const HEIGHT: u32 = PILL_HEIGHT;
 pub const SURFACE_WIDTH: u32 = 300;
-/// Clear of the usual bottom bar without sitting in the middle of the screen.
-const MARGIN_BOTTOM: i32 = 96;
+/// Anchored to the bottom edge, clear of it by just enough that the pill does
+/// not read as cut off by the screen.
+const MARGIN_BOTTOM: i32 = 8;
 
-const BAR_COUNT: usize = 7;
-const BAR_WIDTH: f32 = 5.0;
-const BAR_GAP: f32 = 5.0;
+pub const BAR_COUNT: usize = 7;
+const BAR_WIDTH: f32 = 4.0;
+const BAR_GAP: f32 = 4.0;
 /// Equal to the bar width, so silence rests as a row of dots rather than slivers.
-const BAR_MIN: f32 = 5.0;
-const BAR_MAX: f32 = 26.0;
+const BAR_MIN: f32 = 4.0;
+const BAR_MAX: f32 = 19.0;
 
 /// How fast the bars fall away when the sweep is about to take over, and how flat
 /// counts as flat.
@@ -100,7 +102,7 @@ const ISLAND: (f32, f32, f32) = (0.04, 0.045, 0.055);
 /// stops blurring behind the surface and the island becomes a hole in the screen.
 /// Hyprland also needs the rule itself to frost anything: without
 /// `layerrule = blur, flow` this is a faint tint over a sharp desktop.
-const ISLAND_ALPHA: f32 = 0.32;
+const ISLAND_ALPHA: f32 = 0.55;
 
 /// A hairline ring around the edge, one pixel wide and one flat alpha.
 ///
@@ -112,7 +114,7 @@ const ISLAND_ALPHA: f32 = 0.32;
 /// down its height. It is an actual ring now, so the fill is the only thing
 /// filling anything.
 const EDGE: (f32, f32, f32) = (1.0, 1.0, 1.0);
-const EDGE_ALPHA: f32 = 0.13;
+const EDGE_ALPHA: f32 = 0.09;
 const BAR: (f32, f32, f32) = (1.0, 1.0, 1.0);
 const BAR_ALPHA: f32 = 0.92;
 /// A dark rim drawn under each bar. The island is glass, so whatever is behind
@@ -169,6 +171,90 @@ const GLOW_ALPHA: f32 = 0.16;
 /// Soft layers the glow is built from. More is smoother and costs more; five
 /// is past the point where another one is visible.
 const GLOW_LAYERS: usize = 5;
+
+/// The shade the island casts, so it sits above the desktop rather than on it.
+/// Built from concentric copies rather than a blur, because the rasteriser has
+/// none: each layer is larger, lower and fainter than the last, and the overlaps
+/// are the falloff.
+const SHADOW: (f32, f32, f32) = (0.0, 0.0, 0.0);
+const SHADOW_ALPHA: f32 = 0.45;
+const SHADOW_DROP: f32 = 3.0;
+const SHADOW_SPREAD: f32 = 6.0;
+const SHADOW_LAYERS: usize = 3;
+
+/// Light spilling past the island's edge while you speak - the outward half of
+/// the glow, which otherwise only exists inside the pill.
+const HALO_ALPHA: f32 = 0.11;
+const HALO_SPREAD: f32 = 10.0;
+const HALO_LAYERS: usize = 3;
+
+/// Light catching the top of the capsule. Each layer is the pill itself lifted
+/// and clipped back to the real one, so the light hugs the top curve instead of
+/// lying across it as a straight band.
+const SHEEN_ALPHA: f32 = 0.05;
+const SHEEN_LAYERS: usize = 3;
+
+/// A brighter cap on each bar, with the body dimmed to make room for it, so the
+/// wave reads as lit rods rather than flat strokes.
+const BAR_SHEEN: f32 = 0.42;
+const BAR_SHEEN_CAP: f32 = 0.34;
+const BAR_DIMMED: f32 = 0.78;
+
+/// Room above and below the pill for anything it casts. The live surface is
+/// exactly as tall as the island, so a shadow or a halo drawn there would be cut
+/// off at the buffer edge - only the strip has somewhere to put them.
+const HALO_ROOM: u32 = 14;
+
+/// What `flow overlay styles` puts on screen. Each entry is today's island plus
+/// exactly one change, so what a layer costs and what it buys are both visible.
+const VARIATIONS: [(&str, Style); 6] = [
+    ("now", Style::LIVE),
+    (
+        "shade",
+        Style {
+            shade: true,
+            ..Style::LIVE
+        },
+    ),
+    (
+        "sheen",
+        Style {
+            sheen: true,
+            ..Style::LIVE
+        },
+    ),
+    (
+        "caps",
+        Style {
+            caps: true,
+            bar: BAR_DIMMED,
+            ..Style::LIVE
+        },
+    ),
+    (
+        "halo",
+        Style {
+            halo: true,
+            ..Style::LIVE
+        },
+    ),
+    (
+        "all",
+        Style {
+            shade: true,
+            halo: true,
+            sheen: true,
+            caps: true,
+            bar: BAR_DIMMED,
+            ..Style::LIVE
+        },
+    ),
+];
+/// Wide enough that neighbours do not bleed their shade into each other - the
+/// whole point is one variation at a time.
+const STRIP_PITCH: u32 = 124;
+const STRIP_LABEL: f32 = 20.0;
+const STRIP_TEXT: f32 = 10.0;
 
 /// How long the island takes to widen into the full pill, with the bars rising
 /// as it goes. This is the cue that says speaking will now be heard, so it
@@ -249,10 +335,10 @@ pub const SILENT: &str = "Microphone is silent - check it isn't muted";
 const DEAD_MIC: Duration = Duration::from_millis(1500);
 
 /// Type size and the room left around it inside the toast.
-const TOAST_TEXT: f32 = 12.5;
-const TOAST_PAD: f32 = 15.0;
-const TOAST_HEIGHT: f32 = 30.0;
-const TOAST_RADIUS: f32 = 10.0;
+const TOAST_TEXT: f32 = 11.0;
+const TOAST_PAD: f32 = 13.0;
+const TOAST_HEIGHT: f32 = 24.0;
+const TOAST_RADIUS: f32 = 9.0;
 const TOAST_TEXT_ALPHA: f32 = 0.88;
 
 /// How far into the widening the text starts appearing, as a fraction of it.
@@ -581,6 +667,33 @@ pub fn sweep(bar: usize, seconds: f32) -> f32 {
     let travelled = (seconds * SWEEP_SPEED) % (BAR_COUNT as f32 + 2.0) - 1.0;
     let reach = (bar as f32 - travelled).abs() / SWEEP_REACH;
     (1.0 - reach).max(0.0) * SWEEP_HEIGHT
+}
+
+/// Bars per second the resting swell travels. Close enough to [`SWEEP_SPEED`]
+/// now that height, not pace, is what tells listening apart from working - a
+/// third of the way up the bars against nearly three quarters. Slower than this
+/// and a glance at the island caught the swell standing still.
+const REST_SPEED: f32 = 4.2;
+/// How far the swell reaches either side of its centre, in bars. Narrower than
+/// it was, because a wide reach lifts most of the wave at once and reads as the
+/// whole island breathing rather than as something moving across it.
+const REST_REACH: f32 = 2.0;
+/// Enough to be seen moving and not enough to be read as a level. Against a
+/// resting bar it is about half again its height - at 0.35 the island looked
+/// like it was hearing something, which is a lie while nobody is speaking.
+const REST_HEIGHT: f32 = 0.22;
+
+/// The lift under a bar while the island is listening and nobody is speaking.
+///
+/// The same travelling crest as [`sweep`], at a fraction of the height and a
+/// fraction of the speed, so a resting island breathes instead of sitting as a
+/// row of dead dots. Shaped by [`mountain`] like the voice is, or the swell
+/// would cross a flat island and the voice would arrive on a curved one.
+pub fn resting(bar: usize, seconds: f32) -> f32 {
+    // A pause at each end, so the swell re-enters instead of bouncing.
+    let travelled = (seconds * REST_SPEED) % (BAR_COUNT as f32 + 2.0) - 1.0;
+    let reach = (bar as f32 - travelled).abs() / REST_REACH;
+    (1.0 - reach).max(0.0) * REST_HEIGHT * mountain(bar)
 }
 
 /// How much of the previous level survives one frame, rising and falling.
@@ -1016,9 +1129,8 @@ impl Canvas {
 /// retracting to a dot first said the opposite, that the gesture had come to
 /// nothing, a moment before the words arrived to say it had not.
 fn render_toast(canvas: &mut Canvas, text: &str, grown: f32, scale: f32) {
-    let width = SURFACE_WIDTH as f32 * scale;
-    let height = HEIGHT as f32 * scale;
-    let centre = (width / 2.0, height / 2.0);
+    let height = PILL_HEIGHT as f32 * scale;
+    let centre = (canvas.width as f32 / 2.0, canvas.height as f32 / 2.0);
 
     let widen = |from: f32, to: f32| from + (to - from) * grown;
     let half = (
@@ -1047,12 +1159,78 @@ fn render_toast(canvas: &mut Canvas, text: &str, grown: f32, scale: f32) {
     );
 }
 
+/// Which polish layers an island wears.
+///
+/// Named one at a time because they are judged one at a time: `flow overlay
+/// styles` draws an island per variation so each can be seen on its own rather
+/// than as part of a pile. [`Style::LIVE`] is what dictation draws today.
+#[derive(Clone, Copy)]
+struct Style {
+    shade: bool,
+    halo: bool,
+    sheen: bool,
+    caps: bool,
+    fill: f32,
+    edge: f32,
+    bar: f32,
+}
+
+impl Style {
+    const LIVE: Self = Self {
+        shade: false,
+        halo: false,
+        sheen: false,
+        caps: false,
+        fill: ISLAND_ALPHA,
+        edge: EDGE_ALPHA,
+        bar: BAR_ALPHA,
+    };
+}
+
+/// The shade under the shape, and the light along its top edge. Shared because
+/// the island and the message are the same object at two widths, and drawn
+/// apart they drift: the message widened out of a lifted pill into a box lying
+/// flat on the desktop.
+fn cast_shade(canvas: &mut Canvas, shape: ((f32, f32), (f32, f32), f32), scale: f32, alpha: f32) {
+    let (centre, half, corner) = shape;
+    for layer in 0..SHADOW_LAYERS {
+        let out = (layer + 1) as f32 / SHADOW_LAYERS as f32;
+        let spread = SHADOW_SPREAD * scale * out;
+        canvas.rounded_rect(
+            (centre.0, centre.1 + SHADOW_DROP * scale * out),
+            (half.0 + spread, half.1 + spread),
+            corner + spread,
+            SHADOW,
+            SHADOW_ALPHA * (1.0 - out) / SHADOW_LAYERS as f32 * alpha,
+        );
+    }
+}
+
+fn top_sheen(canvas: &mut Canvas, shape: ((f32, f32), (f32, f32), f32), alpha: f32) {
+    let (centre, half, corner) = shape;
+    for layer in 0..SHEEN_LAYERS {
+        let lift = half.1 * (layer + 1) as f32 / SHEEN_LAYERS as f32;
+        canvas.clipped_rect(
+            (centre.0, centre.1 - lift),
+            half,
+            corner,
+            shape,
+            EDGE,
+            SHEEN_ALPHA * alpha,
+        );
+    }
+}
+
 /// What the surface is painting this frame.
 ///
 /// The island and the message are never both up - one replaces the other - and
 /// an enum is what says so. Passed as parameters instead, a toast would sit
 /// beside five island fields it silently makes dead.
 enum Face<'a> {
+    /// Every variation at once, over the wallpaper. A translucent layer is
+    /// judged against what is behind it, so a picture on a page would lie about
+    /// all of them.
+    Strip,
     Island {
         heights: &'a [f32; BAR_COUNT],
         seconds: f32,
@@ -1068,20 +1246,65 @@ enum Face<'a> {
     },
 }
 
+/// One island per variation, labelled, at the size dictation draws them.
+fn render_strip(canvas: &mut Canvas, scale: f32) {
+    // Loud enough for the halo to have something to answer, uneven enough that
+    // the bar caps are not seven copies of one rectangle.
+    let heights = [0.35, 0.62, 0.94, 1.0, 0.8, 0.5, 0.28];
+    let pitch = canvas.width as f32 / VARIATIONS.len() as f32;
+    let middle = (canvas.height as f32 - STRIP_LABEL * scale) / 2.0;
+
+    for (index, (label, style)) in VARIATIONS.iter().enumerate() {
+        let at = pitch * (index as f32 + 0.5);
+        render_island(
+            canvas,
+            &heights,
+            0.0,
+            false,
+            false,
+            1.0,
+            scale,
+            (at, middle),
+            *style,
+        );
+        canvas.text(
+            label,
+            STRIP_TEXT * scale,
+            (at, canvas.height as f32 - STRIP_LABEL * scale / 2.0),
+            BAR,
+            TOAST_TEXT_ALPHA,
+        );
+    }
+}
+
 fn render(canvas: &mut Canvas, face: Face, scale: f32) {
     canvas.clear();
     match face {
+        Face::Strip => render_strip(canvas, scale),
         Face::Island {
             heights,
             seconds,
             transcribing,
             arming,
             wake,
-        } => render_island(canvas, heights, seconds, transcribing, arming, wake, scale),
+        } => render_island(
+            canvas,
+            heights,
+            seconds,
+            transcribing,
+            arming,
+            wake,
+            scale,
+            (canvas.width as f32 / 2.0, canvas.height as f32 / 2.0),
+            Style::LIVE,
+        ),
         Face::Toast { text, grown } => render_toast(canvas, text, grown, scale),
     }
 }
 
+/// `centre` is where the pill sits rather than something derived from the
+/// surface, because the style strip draws several across one canvas.
+#[allow(clippy::too_many_arguments)]
 fn render_island(
     canvas: &mut Canvas,
     heights: &[f32; BAR_COUNT],
@@ -1090,10 +1313,10 @@ fn render_island(
     arming: bool,
     wake: f32,
     scale: f32,
+    centre: (f32, f32),
+    style: Style,
 ) {
-    let width = SURFACE_WIDTH as f32 * scale;
-    let height = HEIGHT as f32 * scale;
-    let centre = (width / 2.0, height / 2.0);
+    let height = PILL_HEIGHT as f32 * scale;
     let corner = height / 2.0;
 
     // While loading the island is a circle; once the microphone opens it grows
@@ -1125,12 +1348,43 @@ fn render_island(
     // bloom - forty milliseconds, which is not a fade anybody sees. Widening and
     // lighting up now take exactly as long as each other.
     let visible = grown;
-    canvas.rounded_rect(centre, pill, corner, ISLAND, ISLAND_ALPHA * visible);
-    canvas.rounded_ring(centre, pill, corner, scale, EDGE, EDGE_ALPHA * visible);
+
+    // How loud you are, in one number. Hoisted because both halves of the glow
+    // want it: the halo outside the pill and the light inside it are one
+    // response to your voice, not two.
+    let level = if transcribing {
+        0.0
+    } else {
+        (heights.iter().sum::<f32>() / BAR_COUNT as f32).clamp(0.0, 1.0)
+    };
+    let shape = (centre, pill, corner);
+
+    if style.shade {
+        cast_shade(canvas, shape, scale, visible);
+    }
+    if style.halo && level > 0.01 {
+        for layer in 0..HALO_LAYERS {
+            let out = (layer + 1) as f32 / HALO_LAYERS as f32;
+            let spread = HALO_SPREAD * scale * out;
+            canvas.rounded_rect(
+                (centre.0, centre.1 - pill.1 * GLOW_RISE * out * 0.4),
+                (pill.0 + spread, pill.1 + spread),
+                corner + spread,
+                BAR,
+                level * HALO_ALPHA * (1.0 - out) / HALO_LAYERS as f32 * visible,
+            );
+        }
+    }
+
+    canvas.rounded_rect(centre, pill, corner, ISLAND, style.fill * visible);
+    if style.sheen {
+        top_sheen(canvas, shape, visible);
+    }
+    canvas.rounded_ring(centre, pill, corner, scale, EDGE, style.edge * visible);
 
     let pitch = (BAR_WIDTH + BAR_GAP) * scale;
     let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
-    let first = (width - span) / 2.0 + BAR_WIDTH * scale / 2.0;
+    let first = centre.0 - span / 2.0 + BAR_WIDTH * scale / 2.0;
 
     // ponytail: shelved, not deleted (SHOW_ARM_SPINNER). A spinner needs
     // something to be indeterminate about; there no longer is one - the pill
@@ -1158,8 +1412,7 @@ fn render_island(
     // Deliberately below the bars in both senses: it is drawn first, and it
     // never gets bright enough to compete with them. It should register as the
     // island warming to your voice, not as a second indicator.
-    if !transcribing {
-        let level = (heights.iter().sum::<f32>() / BAR_COUNT as f32).clamp(0.0, 1.0);
+    {
         if level > 0.01 {
             // Anchored above the middle so the light breaks over the top edge.
             // Each layer is both larger and higher than the last, so the
@@ -1193,7 +1446,7 @@ fn render_island(
         * if transcribing {
             BAR_WORKING_ALPHA
         } else {
-            BAR_ALPHA
+            style.bar
         };
     // The wave never moves and never collapses. Every bar keeps its own place
     // and its own height from the first frame to the last, and only its opacity
@@ -1201,10 +1454,12 @@ fn render_island(
     // contents two animations fighting over one movement, and left the island
     // ending on a dot with everything piled inside it.
     for (index, band) in heights.iter().enumerate() {
+        // The voice always wins: the swell is a floor under a resting island,
+        // not something mixed into what is being said.
         let height = if transcribing {
             sweep(index, seconds)
         } else {
-            *band
+            band.max(resting(index, seconds))
         };
         let bar = (BAR_MIN + (BAR_MAX - BAR_MIN) * height) * scale;
         let at = (first + pitch * index as f32, centre.1);
@@ -1219,7 +1474,38 @@ fn render_island(
             RIM_ALPHA * alpha,
         );
         canvas.rounded_rect(at, half, half.0, BAR, alpha);
+        if style.caps {
+            // Never shorter than the bar is wide, so silence is a brighter dot
+            // rather than a sliver balanced on top of one.
+            let cap = (half.1 * BAR_SHEEN_CAP).max(half.0);
+            canvas.rounded_rect(
+                (at.0, at.1 - half.1 + cap),
+                (half.0, cap),
+                half.0,
+                BAR,
+                alpha * BAR_SHEEN,
+            );
+        }
     }
+}
+
+/// How big the surface is. Dictation uses [`Size::LIVE`]; the strip needs room
+/// for every variation, their labels, and the light they cast.
+#[derive(Clone, Copy)]
+struct Size {
+    width: u32,
+    height: u32,
+}
+
+impl Size {
+    const LIVE: Self = Self {
+        width: SURFACE_WIDTH,
+        height: HEIGHT,
+    };
+    const STRIP: Self = Self {
+        width: STRIP_PITCH * VARIATIONS.len() as u32,
+        height: PILL_HEIGHT + HALO_ROOM * 2 + STRIP_LABEL as u32,
+    };
 }
 
 #[derive(Default)]
@@ -1248,6 +1534,7 @@ impl Island {
         compositor: &wl_compositor::WlCompositor,
         shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
         queue: &QueueHandle<Wayland>,
+        size: Size,
     ) -> Self {
         crate::chime::show();
 
@@ -1260,7 +1547,7 @@ impl Island {
             queue,
             (),
         );
-        layer.set_size(SURFACE_WIDTH, HEIGHT);
+        layer.set_size(size.width, size.height);
         layer.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
         layer.set_margin(0, 0, MARGIN_BOTTOM, 0);
         layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
@@ -1294,9 +1581,14 @@ struct Buffers {
 }
 
 impl Buffers {
-    fn create(shm: &wl_shm::WlShm, queue: &QueueHandle<Wayland>, scale: i32) -> Result<Self> {
-        let width = SURFACE_WIDTH as i32 * scale;
-        let height = HEIGHT as i32 * scale;
+    fn create(
+        shm: &wl_shm::WlShm,
+        queue: &QueueHandle<Wayland>,
+        scale: i32,
+        size: Size,
+    ) -> Result<Self> {
+        let width = size.width as i32 * scale;
+        let height = size.height as i32 * scale;
         let stride = width * 4;
         let frame = stride * height;
 
@@ -1368,7 +1660,17 @@ fn shared_memory(size: usize) -> Result<OwnedFd> {
     Ok(fd)
 }
 
-fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
+/// A connected display with everything the island needs off the registry.
+struct Display {
+    connection: Connection,
+    queue: EventQueue<Wayland>,
+    state: Wayland,
+    compositor: wl_compositor::WlCompositor,
+    shm: wl_shm::WlShm,
+    shell: zwlr_layer_shell_v1::ZwlrLayerShellV1,
+}
+
+fn connect() -> Result<Display> {
     let connection = Connection::connect_to_env().context("no wayland display")?;
     let mut queue = connection.new_event_queue();
     let handle = queue.handle();
@@ -1392,6 +1694,59 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         .layer_shell
         .clone()
         .ok_or_else(|| anyhow!("compositor does not support wlr-layer-shell"))?;
+
+    Ok(Display {
+        connection,
+        queue,
+        state,
+        compositor,
+        shm,
+        shell,
+    })
+}
+
+/// Hold the variations on screen so they can be compared where they are drawn -
+/// over the wallpaper, through whatever blur the compositor applies to us.
+pub fn styles(seconds: f32) -> Result<()> {
+    let Display {
+        connection,
+        mut queue,
+        mut state,
+        compositor,
+        shm,
+        shell,
+    } = connect()?;
+    let handle = queue.handle();
+
+    let island = Island::map(&compositor, &shell, &handle, Size::STRIP);
+    while !state.configured {
+        queue.blocking_dispatch(&mut state)?;
+    }
+
+    let mut buffers = Buffers::create(&shm, &handle, state.scale, Size::STRIP)?;
+    let until = std::time::Instant::now() + Duration::from_secs_f32(seconds);
+    while std::time::Instant::now() < until && !state.closed {
+        buffers.present(&island.surface, Face::Strip)?;
+        connection.flush()?;
+        queue.blocking_dispatch(&mut state)?;
+    }
+
+    drop(buffers);
+    drop(island);
+    queue.roundtrip(&mut state)?;
+    Ok(())
+}
+
+fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
+    let Display {
+        connection,
+        mut queue,
+        mut state,
+        compositor,
+        shm,
+        shell,
+    } = connect()?;
+    let handle = queue.handle();
 
     let mut island: Option<Island> = None;
     // Set when the audio is handed over, cleared when the sweep starts or the
@@ -1461,7 +1816,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                     started = std::time::Instant::now();
                     state.configured = false;
                     state.closed = false;
-                    island = Some(Island::map(&compositor, &shell, &handle));
+                    island = Some(Island::map(&compositor, &shell, &handle, Size::LIVE));
                 }
                 // The bloom starts on the keypress rather than waiting for the
                 // mic to actually open - press, open, and extend are meant to
@@ -1509,7 +1864,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                     // any delay here reads as the island lagging the response.
                     state.configured = false;
                     state.closed = false;
-                    island = Some(Island::map(&compositor, &shell, &handle));
+                    island = Some(Island::map(&compositor, &shell, &handle, Size::LIVE));
                 }
             }
             // The island stays mapped through the handover, so the bars turn
@@ -1590,7 +1945,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             .as_ref()
             .is_none_or(|held| held.scale != state.scale)
         {
-            buffers = Some(Buffers::create(&shm, &handle, state.scale)?);
+            buffers = Some(Buffers::create(&shm, &handle, state.scale, Size::LIVE)?);
         }
         let Some(buffers) = buffers.as_mut() else {
             continue;
@@ -1892,16 +2247,19 @@ mod tests {
         for step in 0..=40 {
             let wake = step as f32 / 40.0;
             let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
-            render(
+            render_island(
                 &mut canvas,
-                Face::Island {
-                    heights: &[1.0; BAR_COUNT],
-                    seconds: 0.0,
-                    transcribing: false,
-                    arming: false,
-                    wake,
-                },
+                &[1.0; BAR_COUNT],
+                0.0,
+                false,
+                false,
+                wake,
                 scale,
+                (
+                    SURFACE_WIDTH as f32 * scale / 2.0,
+                    HEIGHT as f32 * scale / 2.0,
+                ),
+                Style::LIVE,
             );
 
             // The same pill render_island draws, so a disagreement here is the
@@ -1967,6 +2325,70 @@ mod tests {
                 "at wake {wake} the island is {drawn}px wide and {HEIGHT}px tall - a circle"
             );
         }
+    }
+
+    /// Six variations, six islands, none of them touching. The strip is only
+    /// useful if each can be looked at on its own, and neighbours whose shade or
+    /// halo run together are one smear rather than a comparison.
+    #[test]
+    fn every_variation_gets_its_own_island() {
+        let size = Size::STRIP;
+        let mut canvas = Canvas::new(size.width as usize, size.height as usize);
+        render(&mut canvas, Face::Strip, 1.0);
+
+        // Pill rows only - the labels underneath would bridge the gaps.
+        let rows = 0..(size.height - STRIP_LABEL as u32) as usize;
+        let lit = |x: usize| {
+            rows.clone()
+                .any(|y| canvas.pixels[(y * canvas.width + x) * 4 + 3] > 0)
+        };
+        let islands = (0..canvas.width)
+            .filter(|x| lit(*x) && (*x == 0 || !lit(x - 1)))
+            .count();
+        assert_eq!(
+            islands,
+            VARIATIONS.len(),
+            "the strip drew {islands} separated islands, not one per variation"
+        );
+    }
+
+    /// What the polish costs, against the island without any of it.
+    ///
+    /// A ratio rather than a wall clock, because the number that matters is how
+    /// much decoration multiplies a frame, and a ratio survives a slow machine
+    /// or a debug build - which is what `flow-dev` runs. It is here because the
+    /// first version of these layers was 5x, built from eleven fills each
+    /// covering more area than the island itself.
+    #[test]
+    fn the_polish_costs_what_it_is_worth() {
+        let cost = |style: Style| {
+            let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+            let middle = (canvas.width as f32 / 2.0, canvas.height as f32 / 2.0);
+            let rounds = 40;
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                canvas.clear();
+                render_island(
+                    &mut canvas,
+                    &[0.6; BAR_COUNT],
+                    0.0,
+                    false,
+                    false,
+                    1.0,
+                    1.0,
+                    middle,
+                    style,
+                );
+            }
+            started.elapsed().as_secs_f64() / rounds as f64
+        };
+
+        let (_, everything) = VARIATIONS[VARIATIONS.len() - 1];
+        let over = cost(everything) / cost(Style::LIVE);
+        assert!(
+            over < 3.5,
+            "every layer at once costs {over:.1}x today's island - too many large fills"
+        );
     }
 
     /// A finished message is the island again, not a blank surface: it narrows

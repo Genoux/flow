@@ -16,6 +16,8 @@
 #   flow-dev overlay missed     just the island for a chord that recorded
 #                               nothing - no models, no hotkeys, nothing pasted
 #   flow-dev overlay 6          just the island for a normal dictation
+#   flow-dev overlay styles     every island variation side by side, to
+#                               compare them over the wallpaper
 #   flow-dev --once ...         run it once instead of watching
 #
 set -uo pipefail

@@ -28,6 +28,7 @@ COMMANDS
     overlay [SECS]   Show the island on its own
     overlay missed   Show a chord that recorded nothing - opens and closes
     overlay silent   Show a hold the microphone gave nothing back for
+    overlay styles   Show every island variation side by side, to compare them
     SECONDS          Record, transcribe and print. Default 5.
     FILE.wav         Transcribe a file and time the recogniser
     help             This text
@@ -116,6 +117,11 @@ fn main() -> Result<()> {
         // the one sequence with no way to rehearse it deliberately: getting a
         // real chord back up inside 200ms is mostly luck.
         let ending = args.get(1).map(String::as_str);
+        if ending == Some("styles") {
+            let seconds = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(30.0);
+            eprintln!("every island variation, side by side, for {seconds}s");
+            return overlay::styles(seconds);
+        }
         if matches!(ending, Some("missed" | "silent")) {
             // Opened and never begun, which is the real arming path - this
             // release lands before the microphone ever opens.

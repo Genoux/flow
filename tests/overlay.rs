@@ -1,6 +1,6 @@
 use flow::overlay::{
     BLOOM, DWELL, SILENT, SURFACE_WIDTH, TOAST_HOLD, TOAST_LIFE, TOAST_RISE, WINDOW, arrived,
-    band_fraction, bar_height, bloom, fresh_window, giving_nothing, mountain,
+    band_fraction, bar_height, bloom, fresh_window, giving_nothing, mountain, resting,
     rounded_rect_distance, smooth, smooth_bar, sweep, toast_grown, toast_width,
 };
 
@@ -105,7 +105,9 @@ fn the_silhouette_is_a_mountain() {
 #[test]
 fn a_flat_voice_still_draws_a_mountain() {
     let bands = [0.8; 4];
-    let heights: Vec<f32> = (0..7).map(|bar| bar_height(bar, &bands)).collect();
+    let heights: Vec<f32> = (0..flow::overlay::BAR_COUNT)
+        .map(|bar| bar_height(bar, &bands))
+        .collect();
     assert!(
         heights[0] < heights[1] && heights[1] < heights[2] && heights[2] < heights[3],
         "flat speech did not rise to a crest: {heights:?}"
@@ -569,5 +571,55 @@ fn a_dead_microphone_is_not_a_quiet_room() {
     assert!(
         !giving_nothing(delivering, opened, Some(0.2)),
         "speech is obviously alive"
+    );
+}
+
+/// The resting island breathes, and the swell travels one way.
+///
+/// A wave that only rises and falls in place reads as a level meter with
+/// nothing to meter. What says "listening" is movement across the island, and
+/// movement has a direction: the crest has to be further right later than it
+/// was earlier.
+#[test]
+fn the_resting_swell_travels_left_to_right() {
+    let crest = |seconds: f32| {
+        (0..flow::overlay::BAR_COUNT)
+            .max_by(|a, b| {
+                resting(*a, seconds)
+                    .partial_cmp(&resting(*b, seconds))
+                    .expect("a real height")
+            })
+            .expect("a bar")
+    };
+    let early = crest(0.6);
+    let later = crest(1.8);
+    assert!(
+        later > early,
+        "the crest sat at bar {early} and then bar {later} - it is not travelling right"
+    );
+}
+
+/// The swell must never be mistakable for a voice, or a resting island claims to
+/// be hearing something.
+///
+/// The ceiling is loose on purpose: it guards against the swell growing into a
+/// level, and is not a lock on a chosen height. What it has to stay under is
+/// what an ordinary speaking voice puts on the same bars, and that fills most of
+/// them - a swell a third of the way up cannot be read as speech.
+#[test]
+fn the_resting_swell_is_never_as_tall_as_a_voice() {
+    let tallest = (0..200)
+        .flat_map(|step| {
+            let seconds = step as f32 / 10.0;
+            (0..flow::overlay::BAR_COUNT).map(move |bar| resting(bar, seconds))
+        })
+        .fold(0.0f32, f32::max);
+    assert!(
+        tallest < 0.5,
+        "the resting swell reaches {tallest}, tall enough to read as speech"
+    );
+    assert!(
+        tallest > 0.12,
+        "the resting swell is too faint to be seen at {tallest}"
     );
 }
