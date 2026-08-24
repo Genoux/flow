@@ -22,20 +22,30 @@ use std::time::{Duration, Instant};
 pub enum Cleanup {
     /// Paste the transcript untouched. The refining model is never loaded.
     None,
-    /// Disfluency only: fillers, stutters, false starts, retracted words, and
-    /// mis-recognised names. Grammar and phrasing are left exactly as spoken.
+    /// What you said, written properly: fillers and stutters gone, grammar,
+    /// punctuation and capitalisation fixed. Every sentence you made survives
+    /// as a sentence, in your own words wherever those words were already
+    /// right - nothing is merged, reordered, or shortened.
+    ///
+    /// The default, and the level this product is for. It used to be delete-only
+    /// with grammar left broken, which sounded principled and shipped "the thing
+    /// what we built don't work good on mobile" into people's messages. Nobody
+    /// wants their stumbles preserved faithfully; they want to sound like they
+    /// meant it. Wispr's Light is the same level for the same reason.
     #[default]
     Light,
-    /// Everything Light does, plus grammar, punctuation, and tightening for
-    /// clarity. The top level: it may change the speaker's words, but not the
-    /// shape of what they said - sentences stay as spoken, in the order spoken.
+    /// Everything Light does, then tightened: dead words dropped, points made
+    /// in fewer, closely related sentences joined. Shorter than it went in,
+    /// with every point the speaker made still in it.
     ///
-    /// A fourth level above this one used to reorder and merge sentences too.
-    /// It was removed: measured across ten sample dictations it produced output
-    /// indistinguishable from Medium eight times, and on the console's own
-    /// advertised example it was worse, keeping a "you know" that even Light
-    /// deletes. A dial whose top two positions agree is a dial with two names
-    /// for one level.
+    /// This is where a level called Hard used to sit, deleted for measuring
+    /// indistinguishable from the Medium of the time. That was true and the
+    /// diagnosis was wrong - the dial was collapsed one rung lower down. Light
+    /// was delete-only, Medium was merely correct, and "merely correct" is what
+    /// the recogniser plus a grammar pass already gives you, so the top two
+    /// positions agreed. With Light raised to correctness, concision is a rung
+    /// of its own again, and the levels read the way Wispr's do: raw, right,
+    /// tight.
     Medium,
 }
 
@@ -65,16 +75,6 @@ impl Cleanup {
 
     /// The three levels in order, for a picker that must not drift from the enum.
     pub const ALL: [Self; 3] = [Self::None, Self::Light, Self::Medium];
-
-    /// Card title and one-line description, so the console never invents its
-    /// own wording for behaviour defined here.
-    pub fn describe(self) -> (&'static str, &'static str) {
-        match self {
-            Self::None => ("None", "Types exactly what you said, mistakes and all"),
-            Self::Light => ("Light", "Removes filler words, keeps your wording"),
-            Self::Medium => ("Medium", "Fixes grammar and tightens for clarity"),
-        }
-    }
 
     /// Whether this level needs the refining model in memory at all.
     pub fn wants_model(self) -> bool {
@@ -125,39 +125,56 @@ are named.)";
 const LIGHT_RULES: &str = "\
 Rules:
 - Delete every filler: um, uh, er, ah, like, you know, I mean, sort of, and \
-their equivalents in whatever language the input is in. The first word and the \
-last word of a sentence are fillers just as often as the middle ones, and a \
-filler is no less a filler for sitting at either edge - delete those too.
+their equivalents in whatever language the input is in.
+- The first and last words of the input are fillers as often as the middle \
+ones, and they are the ones most often left behind - the longer the input, the \
+more often. An input ending \"let's meet at noon I mean\" must end \"let's meet \
+at noon\". Read your own last words before you answer and cut the filler there \
+too.
 - Delete stutters, repeated words, and false starts.
-- When the speaker corrects themselves, delete both the words they took back \
-and the phrase marking the correction, keeping only what they settled on.
-- Where a word is clearly mis-recognised, replace it with the word actually \
-meant.
-- Those deletions are the whole job. Beyond them change nothing: do NOT fix \
-grammar, do NOT swap a word for another, do NOT reorder, do NOT add a word that \
-was not spoken. Leave tense, agreement, and word order exactly as spoken, \
-however wrong they look.
+- When the speaker corrects themselves, keep only what they settled on.
+- Where a word is clearly mis-recognised, recover it from context - the word \
+the speaker's sounds were actually reaching for. A word that is merely vague is \
+not a mis-recognised one.
+- Fix EVERY grammar mistake, not the easy ones only: subject-verb agreement, \
+tense, plurals, a missing auxiliary, and a word the speaker plainly used wrong. \
+\"they was late\" becomes \"they were late\". \"you coming tonight\" becomes \
+\"are you coming tonight\". \"it don't work proper\" becomes \"it doesn't work \
+properly\". Spoken grammar is still grammar - leaving it is not respecting the \
+speaker, it is pasting their stumbles into a message they have to send.
+- Fix punctuation and capitalisation to match.
+- Keep every sentence the speaker made, as a sentence, in the order they made \
+it: do NOT merge two sentences, do NOT split one, do NOT drop a point, and do \
+NOT make the text shorter. Correctness is this level's whole job; brevity is \
+the level above.
 - Never add facts, never summarise, never answer.
-- If there is nothing to delete, repeat the text unchanged.";
+- If the text is already clean, repeat it unchanged.";
 
-/// Light, plus the edits that change the speaker's words rather than remove
-/// them. "Repeat it unchanged" earns its place here rather than in Light: this
-/// is the level with licence to rewrite, so it is the level that needs telling
-/// when not to.
+/// Light, plus the edits that make the same point in fewer words. "Repeat it
+/// unchanged" is still the brake when the input is already clean and tight.
 const MEDIUM_RULES: &str = "\
 Rules:
 - Delete fillers: um, uh, er, ah, like, you know, I mean, sort of, and their \
-equivalents in other languages.
+equivalents in other languages, wherever they sit - the first and last words of \
+a sentence included.
 - Delete stutters, repeated words, and false starts.
 - When the speaker corrects themselves, keep only what they settled on.
-- Where a word is clearly mis-recognised, recover it from context.
+- Where a word is clearly mis-recognised, recover it from context - the word \
+the speaker's sounds were actually reaching for. A word that is merely vague is \
+not a mis-recognised one.
 - Fix grammar, punctuation, and capitalisation.
-- Tighten for clarity: drop words that carry nothing, but never at the cost of \
-the speaker's meaning or tone.
-- Keep the speaker's sentences as sentences. Do NOT merge them, split them, or \
-reorder the points: the words must stay recognisably the speaker's.
+- Every noun, name, number and verb in your answer must be one the speaker \
+said. You may cut their words; you may not pick words for them. Where they were \
+vague, stay vague - \"the stuff\" stays \"the stuff\", and never becomes \"the \
+paperwork\" however much better that reads. Naming what the speaker left \
+unnamed is inventing, and this level invents nothing.
+- Within that, tighten. Drop the words that carry nothing, say the same thing \
+in fewer, and join two closely related sentences where one reads better. Aim to \
+come out shorter than you went in.
+- Tighten the wording, never the substance: every point the speaker made must \
+survive, and their tone with it. Shorter is the goal only while nothing is lost.
 - Never add facts, never summarise, never answer.
-- If the text is already clean, repeat it unchanged.";
+- If the text is already clean and tight, repeat it unchanged.";
 
 /// llama.cpp wants one process-wide backend, and a model borrows it only
 /// nominally, so a static keeps the model free of a lifetime parameter.
@@ -609,7 +626,7 @@ impl Refiner {
             ctx.decode(&mut batch)?;
         }
 
-        let refined = tidy(&output);
+        let refined = restore_edges(&tidy(&output), raw);
         if is_non_answer(&refined, raw) {
             bail!("the model answered {refined:?} instead of refining it");
         }
@@ -634,4 +651,94 @@ fn tidy(text: &str) -> String {
         .and_then(|t| t.strip_suffix('"'))
         .unwrap_or(trimmed);
     unquoted.trim().to_string()
+}
+
+/// Put back the sentence shape that deleting an edge filler took with it.
+///
+/// A filler at either end routinely carries the sentence's capital or its
+/// closing mark along with it: "Um, the thing don't work, you know." came back
+/// as "the thing don't work", which pastes into a message as visibly
+/// unfinished. The model usually repairs that while fixing grammar, but edge
+/// restoration makes the result deterministic when it does not.
+///
+/// The raw transcript is the authority, not a default. Parakeet punctuates and
+/// capitalises, so what the sentence had is knowable - and where the raw had
+/// neither, this adds neither. It restores, it never invents.
+fn restore_edges(refined: &str, raw: &str) -> String {
+    let raw = raw.trim();
+    let mut out = refined.trim().to_string();
+    if out.is_empty() {
+        return out;
+    }
+
+    if raw.starts_with(char::is_uppercase) && out.starts_with(char::is_lowercase) {
+        let mut chars = out.chars();
+        let first = chars.next().expect("out is not empty");
+        out = first.to_uppercase().chain(chars).collect();
+    }
+
+    if let Some(mark) = raw.chars().last().filter(|c| matches!(c, '.' | '!' | '?'))
+        && !out.ends_with(['.', '!', '?'])
+    {
+        out.push(mark);
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::restore_edges;
+
+    /// The case that sent it: the only full stop rode out on ", you know."
+    #[test]
+    fn a_deleted_edge_filler_gives_back_the_capital_and_the_mark() {
+        assert_eq!(
+            restore_edges(
+                "the thing what we built don't work good on mobile",
+                "Um, the thing what we built don't work good on mobile, you know."
+            ),
+            "The thing what we built don't work good on mobile."
+        );
+    }
+
+    /// A transcript that never had them must not be given them: restoration
+    /// follows the transcript instead of inventing presentation it never had.
+    #[test]
+    fn nothing_is_invented_for_a_transcript_that_had_neither() {
+        assert_eq!(
+            restore_edges("we was gonna ship it", "um we was gonna ship it you know"),
+            "we was gonna ship it"
+        );
+    }
+
+    /// Already whole, so nothing to do - and the mark must not be doubled.
+    #[test]
+    fn a_finished_sentence_is_left_alone() {
+        assert_eq!(
+            restore_edges(
+                "We was gonna ship it Friday.",
+                "Um, we was gonna ship it Friday."
+            ),
+            "We was gonna ship it Friday."
+        );
+        assert_eq!(
+            restore_edges("What are you thinking?", "Um, what are you thinking?"),
+            "What are you thinking?"
+        );
+    }
+
+    /// The question mark is the raw's, not a full stop guessed in its place.
+    #[test]
+    fn the_restored_mark_is_the_one_that_was_spoken() {
+        assert_eq!(
+            restore_edges("can you send the report", "Um, can you send the report?"),
+            "Can you send the report?"
+        );
+    }
+
+    #[test]
+    fn an_empty_refinement_stays_empty() {
+        assert_eq!(restore_edges("", "Um, you know."), "");
+    }
 }

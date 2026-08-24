@@ -28,12 +28,13 @@ impl Console {
 
         scroll_inset(
             column![
-                container(heading(
-                    "Style",
-                    "How much Flow may change what you said. It never leaves this machine.",
-                ))
-                .padding([0.0, ENTRY_INSET])
-                .width(Fill),
+                // "It never leaves this machine" used to close this line and
+                // said the same thing About's subtitle already says. A promise
+                // repeated on every page reads as a product that is anxious
+                // about it.
+                container(heading("Style", "How much Flow edits what you said."))
+                    .padding([0.0, ENTRY_INSET])
+                    .width(Fill),
                 list,
             ],
             PAGE_TOP,

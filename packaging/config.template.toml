@@ -26,8 +26,19 @@
 # keeps the speakers out of the microphone; too low just mutes your music.
 # duck = 50
 
-# Pass the raw transcript through the local refining model. This is the point of
-# the tool, so off is only for comparing against what the recogniser heard.
+# How much the local model may change what you said, matching the Style screen
+# in the Flow window:
+#
+#   none     types exactly what you said
+#   light    removes filler words
+#   medium   fixes grammar and punctuation
+#
+# cleanup = light
+
+# The old spelling of the key above, still read so a config written before the
+# levels existed keeps working: true means light, false means none. Do not set
+# both - keys apply in file order, so a `refine` line below `cleanup` overrides
+# the level you picked in the window.
 # refine = true
 
 # Which GPU runs the refining model. Left unset, Flow picks the discrete card with

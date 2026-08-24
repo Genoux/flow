@@ -23,8 +23,14 @@ pub fn config_path() -> PathBuf {
 ///
 /// A mirror of `refine::Cleanup` in the daemon, spelled out again because this
 /// window is its own workspace on purpose - depending on the daemon crate would
-/// drag llama.cpp and Vulkan into a settings window. The strings are the
-/// contract between the two, so they must match the daemon's `Cleanup::parse`.
+/// drag llama.cpp and Vulkan into a settings window.
+///
+/// Only [`Cleanup::as_str`] and [`Cleanup::parse`] are a contract: they are the
+/// spellings written to and read from the config file, so they must match the
+/// daemon's. The card wording below is this window's alone. The daemon used to
+/// carry a copy of it captioned "so the console never invents its own wording",
+/// which no code on this side could reach across the crate boundary - it drifted
+/// the first time these cards were rewritten, and has been deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cleanup {
     None,
@@ -61,20 +67,50 @@ impl Cleanup {
     /// not for someone who already knows what the levels do.
     pub fn describe(self) -> (&'static str, &'static str) {
         match self {
-            Self::None => ("None", "Types exactly what you said, mistakes and all"),
-            Self::Light => ("Light", "Removes filler words, keeps your wording"),
-            Self::Medium => ("Medium", "Fixes grammar and tightens for clarity"),
+            // "including mistakes" is the only reason anyone would not pick
+            // None, so it earns its two words - Wispr's own None card keeps
+            // the same clause. What went was "mistakes and all", which said it
+            // in a folksier voice than the two levels beside it.
+            Self::None => ("None", "Types exactly what you said, including mistakes."),
+            // Three words that have to carry the whole reason this is the
+            // default: fillers out, grammar right, nothing else touched.
+            Self::Light => ("Light", "Removes fillers and fixes grammar."),
+            Self::Medium => ("Medium", "Edits for clarity and concision."),
         }
     }
 
     /// The same sentence at each level, so the cards show the difference rather
     /// than describing it. Wispr's own screen does this and it is the reason
     /// their levels are legible at a glance.
+    ///
+    /// These are measured, not written. The set they replaced was invented, and
+    /// it was inventing the wrong thing: it showed None as lowercase and
+    /// unpunctuated, which the recogniser never produces - Parakeet punctuates
+    /// and capitalises, so what reaches the refiner is already sentences. That
+    /// made Light look like it pastes lowercase rubbish when what it actually
+    /// pastes is the middle line below, and it is the reason this screen read as
+    /// a worse product than it is.
+    ///
+    /// Kept in step with `ADVERTISED_INPUT` in tests/refine.rs, which feeds the
+    /// None line to the real model and checks the split these lines claim.
+    ///
+    /// Chosen because it is the shortest sentence found that shows both steps:
+    /// "what we built don't work good" becomes "we built doesn't work well"
+    /// between None and Light, which is the grammar fix Light is sold on, and
+    /// "I think" goes between Light and Medium, which is the concision Medium
+    /// is sold on. A hedge is what Medium cuts most readily - it will not cut a
+    /// real subject, so an example built on "me and him were thinking" showed
+    /// almost no difference at the top of the dial.
+    ///
+    /// Measured on both of this machine's GPUs, which do not always agree - see
+    /// `FLOW_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
     pub fn example(self) -> &'static str {
         match self {
-            Self::None => "um so me and him was gonna ship the the feature friday you know",
-            Self::Light => "so me and him was gonna ship the feature friday",
-            Self::Medium => "Me and him were gonna ship the feature Friday.",
+            Self::None => {
+                "Um, I think the thing what we built don't work good on mobile, you know."
+            }
+            Self::Light => "I think the thing we built doesn't work well on mobile.",
+            Self::Medium => "The thing we built doesn't work well on mobile.",
         }
     }
 }

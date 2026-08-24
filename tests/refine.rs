@@ -23,7 +23,12 @@ struct Case {
 /// The exact sentence the console prints on its Style cards, at every level.
 /// Using it here means the level-versus-level check below tests the promise the
 /// user is actually shown rather than a fixture invented for the test.
-const ADVERTISED_INPUT: &str = "um so me and him was gonna ship the the feature friday you know";
+const ADVERTISED_INPUT: &str =
+    "Um, I think the thing what we built don't work good on mobile, you know.";
+
+/// The spoken grammar fault in [`ADVERTISED_INPUT`]. Both levels must fix it:
+/// correctness is Light's job, and Medium is Light plus concision.
+const SPOKEN_FAULT: &str = "don't work good";
 
 const CASES: &[Case] = &[
     Case {
@@ -106,28 +111,27 @@ const CASES: &[Case] = &[
         required: &["transcript", "clean"],
         max_words: 90,
     },
-    // The pair that makes the levels mean something. Same input, same model,
-    // and the only difference is which rules block the prompt carries.
-    //
-    // If either of these fails the dial is decorative: an instruct model asked
-    // to "clean up" a transcript fixes grammar unprompted because that reads as
-    // helpful, so Light has to forbid what Medium permits or both levels emit
-    // the same sentence.
+    // The pair that makes the levels mean something: Light must come out
+    // correct, Medium must come out short. If either fails the dial is
+    // decorative.
     Case {
-        name: "light removes the filler but leaves the grammar alone",
+        name: "light removes the filler and fixes the grammar",
         level: Cleanup::Light,
-        raw: "um me and him was gonna ship it yesterday",
-        forbidden: &["um "],
-        required: &["me and him was"],
-        max_words: 12,
-    },
-    Case {
-        name: "medium fixes the grammar light left alone",
-        level: Cleanup::Medium,
         raw: "um me and him was gonna ship it yesterday",
         forbidden: &["um ", "me and him was"],
         required: &["ship"],
         max_words: 12,
+    },
+    // Light is required to keep every word that is doing work; Medium is the
+    // level allowed to decide some of them are not. A fatty sentence is the
+    // only way to see that, so this case brings its own.
+    Case {
+        name: "medium cuts what light has to keep",
+        level: Cleanup::Medium,
+        raw: "so basically um I think we should probably just like ship it on Friday you know",
+        forbidden: &["um ", "basically", "you know", "probably"],
+        required: &["ship", "Friday"],
+        max_words: 9,
     },
     // The failure the top level is most likely to have, given it is the only
     // one told to rewrite: filling the gaps with plausible detail nobody said.
@@ -143,10 +147,26 @@ const CASES: &[Case] = &[
             "unfortunately",
             "due to",
         ],
-        required: &["delay"],
+        // "thing" is the assertion that matters, and it was missing: raising
+        // Medium to a concision level bought it a licence to name what the
+        // speaker left vague, and it answered "The delivery is delayed" for a
+        // sentence about a thing. Cutting words is Medium's job; choosing a
+        // noun the speaker did not say is inventing, at any level.
+        required: &["delay", "thing"],
         max_words: 16,
     },
 ];
+
+/// Which device to refine on, from `FLOW_TEST_GPU`, or automatic when unset.
+///
+/// Worth having because greedy sampling is only deterministic on one device:
+/// the same prompt and the same model answered differently on this machine's
+/// iGPU and its discrete card, and a run that silently moved between them once
+/// turned a real prompt bug into "a flaky test". Pin it to compare two prompts,
+/// leave it unset to test what a user actually gets.
+fn test_gpu() -> Option<usize> {
+    std::env::var("FLOW_TEST_GPU").ok()?.parse().ok()
+}
 
 fn load() -> Option<flow::refine::Refiner> {
     let path = flow::refine::model_path();
@@ -155,7 +175,7 @@ fn load() -> Option<flow::refine::Refiner> {
         return None;
     }
     Some(
-        flow::refine::Refiner::load(&path, vec!["Flow".into(), "Hyprland".into()], None)
+        flow::refine::Refiner::load(&path, vec!["Flow".into(), "Hyprland".into()], test_gpu())
             .expect("load"),
     )
 }
@@ -330,26 +350,35 @@ fn refining_behaves() {
              for one level: {light:?}"
         ));
     }
-    // Capitalisation is the cheapest proof of the split: Light is told not to
-    // fix it, Medium is told to. Checked as a property, not against a literal,
-    // because the rest of the sentence is the model's business.
-    let capitalised = |text: &str| {
-        text.trim()
-            .chars()
-            .next()
-            .is_some_and(|first| first.is_uppercase())
-    };
-    if capitalised(&light) {
+    // Length is the proof of the split, because correctness is no longer one:
+    // both levels fix grammar now, and Medium earns its place by coming out
+    // shorter. Capitalisation was the discriminator once and grammar after it;
+    // each stopped working the moment the level below rose to meet it.
+    for (name, text) in [("light", &light), ("medium", &medium)] {
+        if text.to_lowercase().contains(SPOKEN_FAULT) {
+            failures.push(format!(
+                "{name} returned {text:?}, leaving the spoken {SPOKEN_FAULT:?} \
+                 alone - every level from Light up fixes grammar"
+            ));
+        }
+    }
+    let words = |text: &str| text.split_whitespace().count();
+    if words(&medium) >= words(&light) {
         failures.push(format!(
-            "light capitalised {light:?}, but its rules forbid fixing \
-             capitalisation - it is doing Medium's job"
+            "medium returned {} words against light's {} - medium is the \
+             concision level, so it has to come out shorter or the dial has two \
+             names for one level:\n  light  {light:?}\n  medium {medium:?}",
+            words(&medium),
+            words(&light)
         ));
     }
-    if !capitalised(&medium) {
-        failures.push(format!(
-            "medium left {medium:?} uncapitalised, so it is not fixing grammar \
-             and the level below it already does everything it does"
-        ));
+    // Both levels remove fillers; only the grammar above tells them apart.
+    for (name, text) in [("light", &light), ("medium", &medium)] {
+        for filler in ["um", "you know"] {
+            if text.to_lowercase().contains(filler) {
+                failures.push(format!("{name} kept the filler {filler:?} in {text:?}"));
+            }
+        }
     }
 
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
