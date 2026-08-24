@@ -12,14 +12,10 @@ impl Console {
             // Sits on the heading's left edge and at a row's own top pad, so
             // the line reads as the first entry's place rather than as loose
             // text floating outside the list.
-            container(
-                text("Nothing yet. Hold the chord and say something.")
-                    .size(13)
-                    .color(FAINT),
-            )
-            .padding([10.0, ENTRY_INSET])
-            .width(Fill)
-            .into()
+            container(text("Nothing yet.").size(13).color(FAINT))
+                .padding([10.0, ENTRY_INSET])
+                .width(Fill)
+                .into()
         } else {
             let mut rows = column![];
             for (index, entry) in self.entries.iter().enumerate() {
@@ -37,12 +33,9 @@ impl Console {
 
         scroll_inset(
             column![
-                container(heading(
-                    "History",
-                    "Everything Flow has typed for you, most recent first.",
-                ))
-                .padding([0.0, ENTRY_INSET])
-                .width(Fill),
+                container(heading("History", "Most recent first."))
+                    .padding([0.0, ENTRY_INSET])
+                    .width(Fill),
                 list,
             ],
             PAGE_TOP,

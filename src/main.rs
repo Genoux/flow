@@ -252,9 +252,8 @@ fn main() -> Result<()> {
                 }
                 Err(err) => {
                     notify::failure(
-                        "Flow: cleanup disabled",
-                        "Dictation works, but text will not be cleaned up. \
-                         See `flow logs` for why the model would not load.",
+                        "Cleanup is off",
+                        "Dictation still works. See `flow logs` for why.",
                     );
                     eprintln!("cleanup model: {err}");
                     None

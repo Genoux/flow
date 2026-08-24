@@ -8,8 +8,8 @@
 use crate::control::{copy_btn, hairline};
 use crate::format::{clip_tail, display_path};
 use crate::theme::{
-    mix, BG, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, FOOT_PAD, GROUP_GAP, GROUP_PAD, LABEL_GAP,
-    MUTED, PAGE_TOP, RAIL_ON, ROW_PAD, SCROLL_PAD,
+    mix, BG, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, GROUP_GAP, GROUP_PAD, LABEL_GAP, MUTED,
+    PAGE_TOP, RAIL_ON, ROW_PAD, SCROLL_PAD,
 };
 use crate::{history, Message, Section};
 use iced::widget::{
@@ -162,14 +162,17 @@ pub(crate) fn scroll_inset<'a>(
 /// short window can give the rows the room instead of keeping a title parked
 /// over them. The top inset is on `scroll`'s content, so every page starts
 /// on the same line and that air is still there when you scroll back up.
+/// An empty subtitle is a page whose title says the whole thing, and it takes
+/// no room at all - not a blank line under the title. Most pages here are in
+/// that shape now, so the gap has to go with the sentence rather than being
+/// held open for one that is not coming.
 pub(crate) fn heading<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
-    column![
-        text(title).size(22).color(FG),
-        Space::new().height(10),
-        text(subtitle).size(13).color(MUTED),
-        Space::new().height(SCROLL_PAD),
-    ]
-    .into()
+    let mut block = column![text(title).size(22).color(FG)];
+    if !subtitle.is_empty() {
+        block = block.push(Space::new().height(10));
+        block = block.push(text(subtitle).size(13).color(MUTED));
+    }
+    block.push(Space::new().height(SCROLL_PAD)).into()
 }
 
 /// Every settings screen is the same shape: a heading and a list that
@@ -180,9 +183,8 @@ pub(crate) fn section_shell<'a>(
     title: &'a str,
     subtitle: &'a str,
     rows: Vec<Element<'a, Message>>,
-    foot: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    page_shell(title, subtitle, hairlined(rows), foot)
+    page_shell(title, subtitle, hairlined(rows))
 }
 
 /// Rows with a rule between each pair and none at either end.
@@ -216,44 +218,19 @@ pub(crate) fn group<'a>(label: &'a str, rows: Vec<Element<'a, Message>>) -> Elem
 }
 
 /// The shape every settings screen shares: a heading and a body that scroll
-/// together, and a footer docked to the pane. The title yields its room in a
-/// short window; the path and its action do not ride under the last row.
+/// together. The title yields its room in a short window.
+///
+/// There used to be a footer docked under the pane, and the last thing left in
+/// it was "Saved. Applies to your next dictation." after every toggle - a bar
+/// that appeared to congratulate the user for a switch they had just watched
+/// move. A save that worked needs no announcement. The one thing worth saying,
+/// a save that did not, is on Overview with the other faults.
 pub(crate) fn page_shell<'a>(
     title: &'a str,
     subtitle: &'a str,
     content: Element<'a, Message>,
-    foot: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let body = column![heading(title, subtitle), content];
-
-    match foot {
-        // The footer sits below the scrollable, not inside it, so it never
-        // gets `scroll_pad`'s own right inset - it needs its own, or it would
-        // bleed to the window edge while everything above it stops short.
-        //
-        // The list keeps `ROW_PAD` under its last row, so the footer's
-        // hairline gets the same air above it as every hairline between two
-        // rows - it reads as the end of the list rather than as a second,
-        // larger padding.
-        //
-        // Below it is a bar, not another row, and it is padded like one:
-        // `FOOT_PAD` above and below its content, so the path and the button
-        // sit centred in their band instead of tucked under the rule with the
-        // page's full bottom margin left empty beneath them.
-        Some(foot) => column![
-            scroll_pad(body, ROW_PAD),
-            container(hairline()).padding(iced::Padding::default().right(CONTENT_RIGHT)),
-            container(foot).padding(
-                iced::Padding::default()
-                    .top(FOOT_PAD)
-                    .bottom(FOOT_PAD)
-                    .right(CONTENT_RIGHT),
-            ),
-        ]
-        .height(Fill)
-        .into(),
-        None => scroll(body),
-    }
+    scroll(column![heading(title, subtitle), content])
 }
 
 /// A rail item behaves like a button, because it is one: the whole row lights,
@@ -315,19 +292,25 @@ pub(crate) fn nav(
 }
 
 /// A label and its explanation on the left, the control on the right.
+///
+/// The description is optional, and passing "" means the row has none rather
+/// than an empty one: a title is the setting, and a line under it is only
+/// written where the title cannot carry the whole meaning. Held open, the gap
+/// made a row with nothing to explain taller than the rows either side of it.
 pub(crate) fn setting<'a>(
     label: &'a str,
     description: &'a str,
     control: Element<'a, Message>,
 ) -> Element<'a, Message> {
+    let mut text_block = column![text(label).size(13.5).color(FG)];
+    if !description.is_empty() {
+        text_block = text_block.push(Space::new().height(LABEL_GAP));
+        text_block = text_block.push(text(description).size(12).color(FAINT));
+    }
+
     container(
         row![
-            column![
-                text(label).size(13.5).color(FG),
-                Space::new().height(LABEL_GAP),
-                text(description).size(12).color(FAINT),
-            ]
-            .width(Length::FillPortion(3)),
+            text_block.width(Length::FillPortion(3)),
             Space::new().width(20),
             container(control)
                 .width(Length::FillPortion(2))

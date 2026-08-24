@@ -238,20 +238,6 @@ impl Console {
                     Err(err) => self.save_error = Some(err),
                 }
             }
-            Message::RerunSetup => {
-                // Stop first: the daemon holds both models open, and the point
-                // of this is to watch setup fetch them rather than to leave a
-                // process running on files that no longer exist.
-                let _ = system::service("stop");
-                match system::remove_models() {
-                    Ok(()) => {
-                        self.models = system::models();
-                        self.daemon = daemon::State::default();
-                        return Task::done(Message::BeginSetup);
-                    }
-                    Err(err) => self.service_error = Some(err),
-                }
-            }
             Message::BeginSetup => {
                 // Demo mode never spawns the installer: the point of it is to
                 // lay this screen out on a machine that has no `flow` binary

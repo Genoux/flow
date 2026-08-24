@@ -3,26 +3,33 @@
 //! Nothing here draws anything - these are the pure functions, which is also
 //! why this is where their tests live.
 
-use crate::theme::{ACCENT, ERR, MUTED};
+use crate::theme::{ACCENT, MUTED};
 use iced::Color;
 
 /// This week against last week, as the second line of a KPI tile.
 ///
-/// A percentage needs something to be a percentage of, so a first week says so
-/// instead of dividing by zero. Up takes the accent, down takes red.
+/// Counted in words, not percent. A percentage needs a base worth dividing by,
+/// and a week of dictation rarely is one: a quiet week after a busy one reads
+/// "-100% vs last week", which sounds like a fault rather than a week off, and
+/// a busy week after a quiet one reads "+900%" off eleven words. The honest
+/// answer to "how did this week go" is how many words up or down it was.
+///
+/// Only a gain takes the accent. A quieter week is not an error, so it is not
+/// coloured like one.
 pub(crate) fn trend(now: u32, before: u32) -> (String, Color) {
-    if before == 0 {
-        return if now == 0 {
-            ("nothing yet".to_string(), MUTED)
-        } else {
-            ("first week with words".to_string(), ACCENT)
-        };
-    }
-    let change = (now as i64 - before as i64) * 100 / before as i64;
-    match change {
-        0 => ("level with last week".to_string(), MUTED),
-        up if up > 0 => (format!("+{up}% vs last week"), ACCENT),
-        down => (format!("{down}% vs last week"), ERR),
+    match (now, before) {
+        (0, 0) => ("nothing yet".to_string(), MUTED),
+        (0, _) => ("nothing this week".to_string(), MUTED),
+        (_, 0) => ("first week".to_string(), ACCENT),
+        _ if now > before => (
+            format!("{} more than last week", commas(now - before)),
+            ACCENT,
+        ),
+        _ if now < before => (
+            format!("{} fewer than last week", commas(before - now)),
+            MUTED,
+        ),
+        _ => ("same as last week".to_string(), MUTED),
     }
 }
 
@@ -101,18 +108,19 @@ pub(crate) fn plural(count: u32, noun: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{clip_tail, collapse_home, commas, trend};
-    use crate::theme::{ACCENT, ERR, MUTED};
+    use crate::theme::{ACCENT, MUTED};
     use std::path::Path;
 
     #[test]
     fn a_week_is_reported_against_the_one_before_it() {
-        assert_eq!(trend(120, 100).0, "+20% vs last week");
-        assert_eq!(trend(80, 100).0, "-20% vs last week");
-        assert_eq!(trend(100, 100), ("level with last week".to_string(), MUTED));
+        assert_eq!(trend(1_320, 100).0, "1,220 more than last week");
+        assert_eq!(trend(80, 100).0, "20 fewer than last week");
+        assert_eq!(trend(100, 100), ("same as last week".to_string(), MUTED));
         assert_eq!(trend(120, 100).1, ACCENT);
-        assert_eq!(trend(80, 100).1, ERR);
         assert_eq!(trend(50, 0).1, ACCENT);
         assert_eq!(trend(0, 0), ("nothing yet".to_string(), MUTED));
+        // The week off that used to read "-100% vs last week", in red.
+        assert_eq!(trend(0, 900), ("nothing this week".to_string(), MUTED));
     }
 
     #[test]

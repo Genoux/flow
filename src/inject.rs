@@ -171,8 +171,7 @@ impl Injector {
             // field. The text is already staged, so say where it went.
             crate::notify::failure(
                 "Flow couldn't paste",
-                "A held key swallowed the paste. Your text is on the clipboard \
-                 - press Ctrl+V.",
+                "Your text is on the clipboard - press Ctrl+V.",
             );
             eprintln!(
                 "paste: firing after {MODIFIER_WAIT:?} with {} still held - the chord will \

@@ -225,24 +225,6 @@ pub fn models() -> Vec<Model> {
     ]
 }
 
-/// Throw away everything setup downloaded, so it has something to do again.
-///
-/// The whole directory, in one call, rather than the two model paths named
-/// individually: that also takes any `.part` left by an interrupted run, and a
-/// part file at the full size is one the installer would hash and rename
-/// instead of fetching - a "run setup again" that finished in two seconds
-/// without downloading anything is not the thing that was asked for.
-///
-/// Only ever the models directory, which holds nothing else.
-pub fn remove_models() -> Result<(), String> {
-    let dir = flow_paths::models_dir();
-    match std::fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!("could not clear {}: {err}", dir.display())),
-    }
-}
-
 /// The biggest `.gguf` in `root`, which is the refining model. Biggest rather
 /// than first so a leftover from an older, smaller model is not mistaken for
 /// the one in use.

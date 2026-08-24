@@ -90,9 +90,8 @@ pub fn run(
         // losing it looks exactly like Flow not running at all. Name the usual
         // cause: reading /dev/input needs membership of the input group.
         notify::failure(
-            "Flow: the chord is not being watched",
-            "Add yourself to the `input` group and log back in, or start \
-             dictation with `flow start`.",
+            "Flow can't watch your keyboard",
+            "Add yourself to the input group and log back in.",
         );
         eprintln!("chord watcher disabled: {err}");
         watching = false;
@@ -175,7 +174,7 @@ pub fn run(
                     status.problem(err.to_string());
                     notify::failure(
                         "Dictation failed",
-                        "If any text was recognised it is on your clipboard - press Ctrl+V.",
+                        "Any text recognised is on your clipboard - press Ctrl+V.",
                     );
                     eprintln!("{err}");
                 }

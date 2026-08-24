@@ -172,8 +172,8 @@ impl Section {
     ///
     /// Both models are required, so a machine missing either has no daemon at
     /// all - not a daemon doing less. That makes every screen that tunes
-    /// dictation a screen tuning nothing: Dictation, Audio, Vocabulary and
-    /// Style all describe behaviour that has no process to belong to.
+    /// dictation a screen tuning nothing: Settings, Vocabulary and Style
+    /// all describe behaviour that has no process to belong to.
     ///
     /// Overview survives because it is where the way out is, and About because
     /// a version and a path are true whether or not anything is running.
@@ -236,8 +236,6 @@ enum Message {
     Copy(usize),
     /// Start, or restart after a failure, the first-run install.
     BeginSetup,
-    /// Throw the models away and run setup again from nothing.
-    RerunSetup,
     /// Stop the download that is running and throw away what it had.
     StopDownload,
     /// One line from `flow install --porcelain`.
@@ -263,9 +261,6 @@ struct Console {
     /// The service verb currently running. Kept separate from daemon activity:
     /// the socket may still report Offline while systemd is starting it.
     service_pending: Option<&'static str>,
-    /// True once anything has been written, which is what the footer's "Saved"
-    /// note is for.
-    saved: bool,
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
     autostart: Option<bool>,
@@ -351,7 +346,6 @@ impl Console {
                 save_error: None,
                 service_error: None,
                 service_pending: None,
-                saved: false,
                 autostart: system::autostart_enabled(),
                 input: match pretend {
                     Some(_) => demo::input(),
@@ -468,7 +462,6 @@ impl Console {
         match self.settings.save() {
             Ok(()) => {
                 self.save_error = None;
-                self.saved = true;
             }
             Err(err) => self.save_error = Some(err.to_string()),
         }
@@ -571,16 +564,16 @@ fn believe_disconnect(activity: daemon::Activity) -> bool {
 /// two states where Flow is actually doing something with your voice.
 fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
     match activity {
-        daemon::Activity::Offline => ("Flow isn't running", FAINT),
+        daemon::Activity::Offline => ("Not running", FAINT),
         daemon::Activity::Starting => ("Starting…", STARTING),
         // Ready means the daemon is up and waiting for the hotkey, which is
         // the state a person calls running - and a grey dot beside it read as
         // "nothing is happening" rather than "everything is fine". Green here
         // and green while listening are the same claim at two volumes: Flow is
         // alive. The word beside it is what separates idle from live.
-        daemon::Activity::Ready => ("Flow is running", OK),
+        daemon::Activity::Ready => ("Running", OK),
         daemon::Activity::Listening => ("Listening", ACCENT),
-        daemon::Activity::Working => ("Refining your words", ACCENT),
+        daemon::Activity::Working => ("Refining", ACCENT),
     }
 }
 
@@ -602,11 +595,11 @@ fn service_action_label(running: bool) -> &'static str {
 /// for whoever looks closer.
 fn update_state(status: &update::Status) -> (Color, String) {
     match status {
-        update::Status::Unknown => (FAINT, "not checked for updates yet".into()),
-        update::Status::Checking => (MUTED, "checking for updates…".into()),
+        update::Status::Unknown => (FAINT, "not checked yet".into()),
+        update::Status::Checking => (MUTED, "checking…".into()),
         update::Status::Current => (OK, "up to date".into()),
         update::Status::Available(tag) => (ACCENT, format!("{tag} is available")),
-        update::Status::Installed(tag) => (OK, format!("{tag} installed - restart Flow to run it")),
+        update::Status::Installed(tag) => (OK, format!("{tag} installed - restart Flow")),
         update::Status::Failed(why) => (ERR, format!("could not check: {why}")),
     }
 }

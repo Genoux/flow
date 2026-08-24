@@ -17,21 +17,32 @@ impl Console {
             fact_row("Session", self.session.clone()),
             fact_path("Config", &settings::config_path()),
             fact_path("History", &crate::history::path()),
-            // The way back to a clean install. Here rather than on Overview
-            // because it belongs with the two model rows above it - it is the
-            // thing you do when one of them is wrong.
+            // Named for what it does rather than for the screen it borrows.
+            // It used to say "Run setup again", which promised a fresh 3 GB and
+            // then took a second - a model whose sha256 matches is already the
+            // right bytes, so fetching it again would produce the same file.
+            // What it can do is find the one that does not match and replace it.
+            //
+            // No question in front of it. It deletes nothing, it can be stopped
+            // while it runs, and the screen it opens ends by saying how it went
+            // - which is the beat a warning beforehand was standing in for.
+            //
+            // Here rather than on Overview because it belongs with the two
+            // model rows above it - it is the thing you do when one is wrong.
             setting(
-                "Run setup again",
-                "Deletes both models and fetches them from scratch. About 3 GB.",
-                action_msg("Run setup", false, Message::RerunSetup),
+                "Repair",
+                "Re-downloads any missing or damaged files.",
+                action_msg("Repair", false, Message::BeginSetup),
             ),
         ];
 
+        // Not "push-to-talk": tap to start and tap to stop is the other half
+        // of the Shortcut group, and naming only one of them here made the
+        // product's one-line description describe a setting.
         section_shell(
             "Flow",
-            "Push-to-talk dictation that runs entirely on your own machine.",
+            "Dictation that runs entirely on your machine.",
             rows,
-            None,
         )
     }
 

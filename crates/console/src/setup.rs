@@ -104,7 +104,7 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
             Ok(child) => child,
             Err(err) => {
                 let _ = tx.unbounded_send(Event::Failed(format!(
-                    "flow install did not start: {err}. Is `flow` on your PATH?"
+                    "Couldn't run flow install ({err}). Is it on your PATH?"
                 )));
                 return;
             }
@@ -156,7 +156,7 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
                 .trim()
                 .to_string();
             let _ = tx.unbounded_send(Event::Failed(if reason.is_empty() {
-                "The download stopped before it finished.".into()
+                "Download interrupted.".into()
             } else {
                 reason
             }));
@@ -582,7 +582,7 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
     page = page.push(if failed.is_some() {
         crate::control::action_faded(
             if state.start_error.is_some() {
-                "Try starting Flow"
+                "Start Flow"
             } else {
                 "Try again"
             },

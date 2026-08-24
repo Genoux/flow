@@ -13,6 +13,11 @@
 //! "General" and "Options" as uninformative for exactly that reason. The fix is
 //! to say what the rows have in common, not what the program is called.
 //!
+//! A row's title is the setting. The line under it is only written when the
+//! title cannot carry the whole meaning on its own - which is most often not
+//! the case, and never the place to name a systemd unit or the library doing
+//! the work.
+//!
 //! General leads, as it does on every platform with a settings window, and holds
 //! the app-level rows that belong to no topic - starting with the login item,
 //! which is where macOS files its own.
@@ -25,16 +30,13 @@ impl Console {
     pub(super) fn preferences_section(&self) -> Element<'_, Message> {
         let body = column![
             group("General", self.general_rows()),
-            group("Trigger", self.trigger_rows()),
+            group("Shortcut", self.shortcut_rows()),
             group("Microphone", self.microphone_rows()),
         ];
 
-        page_shell(
-            "Settings",
-            "How Flow starts, what starts a dictation, and what it listens to.",
-            body.into(),
-            self.save_note(),
-        )
+        // No subtitle. It was a table of contents for three group headings
+        // already on screen a line below it.
+        page_shell("Settings", "", body.into())
     }
 
     /// The app-level rows, which belong to no topic of their own. The login item
@@ -46,28 +48,28 @@ impl Console {
         // the true state of is worse than no switch.
         if let Some(enabled) = self.autostart {
             rows.push(setting(
-                "Start with session",
-                "Enables the flow.service user unit so the daemon launches when you log in.",
+                "Launch at login",
+                "",
                 toggle(enabled, self.travel("autostart"), Message::Autostart),
             ));
         }
         rows.push(setting(
-            "Dictation sound",
-            "A short chime when the island appears, and another when it goes.",
+            "Sounds",
+            "Chime when dictation starts and stops.",
             toggle(self.settings.sound, self.travel("sound"), Message::Sound),
         ));
         rows
     }
 
-    /// What starts and ends a dictation. Named for what it does rather than for
-    /// the key, so the row called "Chord" is not sitting under a heading of the
-    /// same word - a group label that repeats a row label tells you nothing
-    /// about the rows beside it.
-    fn trigger_rows(&self) -> Vec<Element<'_, Message>> {
+    /// What starts and ends a dictation. "Chord" is what the daemon calls a
+    /// key combination and it is musician's jargon out here - every product in
+    /// this category says shortcut or hotkey, so the screen says Keys under a
+    /// group called Shortcut.
+    fn shortcut_rows(&self) -> Vec<Element<'_, Message>> {
         vec![
             setting(
                 "Hold to talk",
-                "On, hold the chord while you speak. Off, tap to start and tap to stop.",
+                "Off: tap to start, tap to stop.",
                 toggle(
                     self.settings.push_to_talk,
                     self.travel("push_to_talk"),
@@ -75,16 +77,16 @@ impl Console {
                 ),
             ),
             setting(
-                "Chord",
-                // This did once need a restart, and the note saying so outlived
-                // the reason: the chord is shared with the config watcher now
-                // and `hotkey::spawn` compares it on every key, so a rebinding
-                // is live by the next press. The stale line was sending people
-                // off to restart for nothing.
-                "The keys that start a dictation.",
+                "Keys",
+                // No description: the value sitting beside this title is the
+                // keys. The line that used to be here said so a second time,
+                // and an older one before that sent people off to restart for
+                // a rebinding that has been live by the next press ever since
+                // `hotkey::spawn` started comparing the chord on every key.
+                "",
                 row![
                     text(if self.capturing {
-                        "press the chord…".to_string()
+                        "Press keys…".to_string()
                     } else {
                         self.settings.hotkey.replace('+', " ")
                     })
@@ -131,8 +133,8 @@ impl Console {
             // your desktop's own settings already works. A picker here could
             // only ever be a second answer to the same question.
             setting(
-                "Microphone",
-                "Follows your system's default input. Change it in your sound settings.",
+                "Input",
+                "Set in your system sound settings.",
                 text(
                     self.input
                         .clone()
@@ -144,8 +146,8 @@ impl Console {
                 .into(),
             ),
             setting(
-                "Turn other apps down",
-                "Keeps your speakers out of the microphone while you dictate.",
+                "Lower other apps",
+                "",
                 value_slider(
                     0..=100,
                     self.settings.duck,
@@ -155,7 +157,7 @@ impl Console {
             ),
             setting(
                 "Noise suppression",
-                "Runs RNNoise over the audio. Can blunt consonants on a weak mic.",
+                "Can muffle speech on some mics.",
                 toggle(
                     self.settings.denoise,
                     self.travel("denoise"),

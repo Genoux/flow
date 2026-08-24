@@ -42,7 +42,7 @@ impl Console {
         // severity as the missing-model notes below it, and the two saying it
         // in different colours would make one of them look optional.
         let (label, dot) = if needs_setup {
-            ("Not running, needs setup", ERR)
+            ("Setup unfinished", ERR)
         } else {
             activity_label(self.daemon.activity)
         };
@@ -104,7 +104,7 @@ impl Console {
             stat_tile(
                 "Dictations",
                 dictations.to_string(),
-                (format!("{active} of 7 days active"), MUTED),
+                (format!("{active} of 7 days"), MUTED),
             ),
             Space::new().width(GAP),
             stat_tile(
@@ -212,7 +212,7 @@ impl Console {
     fn setup_card(&self, installed: usize) -> Element<'_, Message> {
         let facts = row![
             fact(
-                "Chord",
+                "Shortcut",
                 // The verb leads. "super shift d to hold" reads as a chord
                 // named after an action; "hold super shift d" is the
                 // instruction it was meant to be.
@@ -296,9 +296,7 @@ impl Console {
                 .size(12.5)
                 .color(mix(MUTED, FG, 0.55))
                 .wrapping(text::Wrapping::None),
-            None => text("nothing yet - hold the chord and say something")
-                .size(12.5)
-                .color(FAINT),
+            None => text("Nothing yet.").size(12.5).color(FAINT),
         };
 
         column![heading, Space::new().height(5), line].into()
@@ -312,6 +310,13 @@ impl Console {
         let mut notes = Vec::new();
         if let Some(problem) = &self.service_error {
             notes.push((ERR, problem.clone()));
+        }
+        // A save that failed used to be a line in a footer on the screen it
+        // failed on. The footer is gone, and this is where the faults are - a
+        // read-only config or a full disk is exactly the class of thing this
+        // card exists to carry.
+        if let Some(problem) = &self.save_error {
+            notes.push((ERR, format!("Couldn't save: {problem}")));
         }
         if let Some(problem) = &self.daemon.problem {
             notes.push((ERR, problem.clone()));

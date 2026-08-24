@@ -1,28 +1,9 @@
-# Words the recogniser gets wrong, spelled the way you want them written.
-# One per line. Lines starting with # are ignored.
+# Words Flow mishears, spelled the way you want them written. One per line.
+# The Vocabulary screen in the Flow window edits this same file.
 #
-# You do not need to edit this by hand: the Vocabulary screen in the Flow
-# window adds and removes terms for you, and writes this same file.
-#
-# WHAT TO PUT HERE
-#   Product and tool names   Hyprland, PipeWire, Neovim, Postgres, Kubernetes
-#   People you talk about    Aurélie, Nguyen, Siobhan
-#   Project codenames        Halcyon, Bluebird
-#   Domain jargon            idempotent, kanban, OAuth
-#
-# HOW IT WORKS
-# The terms are given to the refining model as context - they are not searched
-# and replaced. That matters: "flow" and "Flow" are both real words, and only
-# the sentence around them says which one you meant, so the model decides.
-#
-# It reliably fixes a term that SOUNDS CLOSE to what you said:
+# Works when the word sounds close:
 #   "hyper land"  -> Hyprland
-#   "pipe wire"   -> PipeWire
 #   "post grass"  -> Postgres
 #
-# It cannot fix one that sounds nothing like the target. If a name comes out
-# as an unrelated everyday word, adding it here will not rescue it - the sound
-# the recogniser heard has no path back to the spelling you want.
-#
-# Add terms as you notice them getting mangled. A short list of things you
-# actually say beats a long list copied from somewhere else.
+# The terms are context for the model, not a search and replace - so a name it
+# heard as something unrelated cannot be rescued here.

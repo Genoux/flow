@@ -293,8 +293,7 @@ impl Capture {
                 // stopped responding rather than like the mic went away.
                 crate::notify::failure(
                     "Flow lost the microphone",
-                    "The input device went away and could not be reopened. \
-                     Check your sound settings, then restart flow.service.",
+                    "Check your sound settings, then restart Flow.",
                 );
                 eprintln!("reopen failed: {err}");
                 false

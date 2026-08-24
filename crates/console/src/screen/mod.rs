@@ -17,27 +17,6 @@ mod style;
 mod vocabulary;
 
 impl Console {
-    /// The line under a settings screen, when there is one.
-    ///
-    /// `None` most of the time, and the footer goes with it. This used to fall
-    /// back to the path of the config file, which meant a permanent bar at the
-    /// bottom of the page stating something you read once and never again -
-    /// About names the same path, in the company of the other paths. A footer
-    /// that is always there stops being read; one that appears when a save
-    /// lands, or fails, is the only time it has anything to say.
-    fn save_note(&self) -> Option<Element<'_, Message>> {
-        match (&self.save_error, self.saved) {
-            (Some(err), _) => Some(text(format!("Couldn't save: {err}")).size(12).color(ERR)),
-            (None, true) => Some(
-                text("Saved. Applies to your next dictation.")
-                    .size(12)
-                    .color(FAINT),
-            ),
-            (None, false) => None,
-        }
-        .map(Element::from)
-    }
-
     pub(crate) fn view(&self) -> Element<'_, Message> {
         // Setup takes the whole window, rail included. The rail is a way to
         // move between seven screens that have nothing on them yet, and

@@ -179,12 +179,6 @@ pub(crate) const GROUP_PAD: f32 = 26.0;
 
 /// Between a group's label and the first row under it.
 pub(crate) const GROUP_GAP: f32 = 6.0;
-/// The docked footer's band, above and below its content. Equal on both
-/// sides, because a bar reads as a bar only when its content sits in the
-/// middle of it - the old pairing borrowed `ROW_PAD` above and the page's
-/// whole bottom margin below, which left the button hung near the hairline
-/// with a stretch of dead floor under it.
-pub(crate) const FOOT_PAD: f32 = 18.0;
 
 /// How long each motion takes. Only two things move - a toggle's knob and a
 /// rail item warming under the pointer - because those are the two that

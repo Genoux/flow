@@ -13,12 +13,7 @@ impl Console {
             list = list.push(
                 // Sits where the first term would, so the line reads as the
                 // list's own state rather than as a third paragraph of help.
-                container(
-                    text("No terms yet. Add the words Flow keeps mishearing.")
-                        .size(13)
-                        .color(FAINT),
-                )
-                .padding([ROW_PAD, 0.0]),
+                container(text("No words yet.").size(13).color(FAINT)).padding([ROW_PAD, 0.0]),
             );
         } else {
             for (index, term) in self.terms.iter().enumerate() {
@@ -68,20 +63,18 @@ impl Console {
 
         let note: Element<Message> = match &self.term_error {
             Some(why) => text(why.clone()).size(12).color(ERR).into(),
-            None => text(
-                "Flow only fixes words that sound close to what you said: \
-                 \"hyper land\" becomes Hyprland. It cannot rescue a name it \
-                 heard as something unrelated.",
-            )
-            .size(12)
-            .color(FAINT)
-            .into(),
+            None => text("Works when the word sounds close: \"hyper land\" becomes Hyprland.")
+                .size(12)
+                .color(FAINT)
+                .into(),
         };
 
         scroll(column![
+            // Not "one per line": that is the rule for the file behind this
+            // screen, and this screen has an add field.
             heading(
                 "Vocabulary",
-                "Names and jargon the recogniser gets wrong. One per line, spelled the way you want it written.",
+                "Words Flow mishears, spelled the way you want them.",
             ),
             entry,
             // Tight to the field it explains, then a real gap before the
