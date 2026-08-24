@@ -16,7 +16,6 @@ pub struct Config {
     /// default: every speaker wants their fillers gone, not every speaker wants
     /// their sentences rewritten.
     pub cleanup: super::refine::Cleanup,
-    pub terminal: bool,
     /// Key combination that starts a dictation, held or tapped depending on
     /// `push_to_talk`.
     pub chord: super::hotkey::Chord,
@@ -49,7 +48,6 @@ impl Default for Config {
             push_to_talk: true,
             duck: 50,
             cleanup: super::refine::Cleanup::default(),
-            terminal: false,
             chord: super::hotkey::Chord::default(),
             gpu: None,
             denoise: false,
@@ -111,7 +109,6 @@ impl Config {
                         super::refine::Cleanup::None
                     }
                 }
-                "terminal" => config.terminal = boolean(&at, key, value)?,
                 "denoise" => config.denoise = boolean(&at, key, value)?,
                 "sound" => config.sound = boolean(&at, key, value)?,
                 "record_debug" => config.record_debug = boolean(&at, key, value)?,
@@ -150,7 +147,6 @@ impl Config {
         if let Some(level) = flag_str(args, "--cleanup").and_then(super::refine::Cleanup::parse) {
             self.cleanup = level;
         }
-        self.terminal |= present("--terminal");
         self.denoise |= present("--denoise");
         self.denoise &= !present("--no-denoise");
         self.record_debug |= present("--record-debug");

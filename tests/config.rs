@@ -10,7 +10,6 @@ fn defaults_need_no_file() {
     assert!(defaults.push_to_talk);
     assert_eq!(defaults.cleanup, Cleanup::Light);
     assert_eq!(defaults.duck, 50);
-    assert!(!defaults.terminal);
 }
 
 #[test]
@@ -25,7 +24,7 @@ fn missing_file_is_the_normal_state() {
 #[test]
 fn file_overrides_every_key() {
     let parsed =
-        Config::parse("push_to_talk = false\nduck = 20\ncleanup = medium\nterminal = true\n")
+        Config::parse("push_to_talk = false\nduck = 20\ncleanup = medium\ndenoise = true\n")
             .expect("parse");
     assert_eq!(
         parsed,
@@ -33,10 +32,9 @@ fn file_overrides_every_key() {
             push_to_talk: false,
             duck: 20,
             cleanup: Cleanup::Medium,
-            terminal: true,
             chord: Default::default(),
             gpu: None,
-            denoise: false,
+            denoise: true,
             sound: true,
             record_debug: false,
         }
@@ -176,21 +174,20 @@ fn flags_win_over_the_file() {
         push_to_talk: true,
         duck: 50,
         cleanup: Cleanup::Light,
-        terminal: false,
         chord: Default::default(),
         gpu: None,
         denoise: false,
         sound: true,
         record_debug: false,
     };
-    let flags = ["daemon", "--raw", "--duck", "20", "--terminal"]
+    let flags = ["daemon", "--raw", "--duck", "20", "--denoise"]
         .map(String::from)
         .to_vec();
 
     let effective = from_file.clone().overridden_by(&flags);
     assert_eq!(effective.push_to_talk, from_file.push_to_talk);
     assert_eq!(effective.cleanup, Cleanup::None);
-    assert!(effective.terminal);
+    assert!(effective.denoise);
     assert_eq!(effective.duck, 20);
 
     // `--no-ptt` skips the key watcher; it is not the tap-to-talk switch.
@@ -214,7 +211,6 @@ fn absent_flags_leave_the_file_alone() {
         push_to_talk: false,
         duck: 20,
         cleanup: Cleanup::None,
-        terminal: true,
         chord: Default::default(),
         gpu: None,
         denoise: false,

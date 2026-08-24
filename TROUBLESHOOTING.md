@@ -44,7 +44,7 @@ after that point is recoverable.
 | Cause | Check | Fix |
 |---|---|---|
 | A modifier was still held | *A held key swallowed the paste* | Let go of the chord fully before the text is ready, or just press Ctrl+V |
-| Terminal ignores the clipboard | Paste works elsewhere but not here | `terminal = true` in `config.toml` — types key by key instead |
+| Flow does not recognise your terminal | Paste works elsewhere but not here | Flow asks the compositor what has focus and sends Ctrl+Shift+V to a terminal. Add your terminal's window class to `TERMINALS` in `src/inject.rs`; `hyprctl activewindow -j` prints it |
 | `/dev/uinput` not writable | `flow logs` shows an inject error | Re-run the udev step printed by `packaging/install.sh` |
 
 ## It heard nothing, or the wrong thing

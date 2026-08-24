@@ -39,7 +39,6 @@ FLAGS
     --porcelain      install: report progress as lines, for the setup screen
     --plan           install: print what would be fetched, and fetch nothing
     --raw            Skip the refining model for this run
-    --terminal       Type the text out instead of pasting it
     --no-ptt         Do not watch the hotkey
     --denoise | --no-denoise
     --record-debug   Keep this run's audio for `flow retry`
@@ -99,7 +98,6 @@ fn main() -> Result<()> {
     }
 
     let settings = config::Config::load()?.overridden_by(&args);
-    let terminal = settings.terminal;
 
     // Isolates injection from the mic and the model, so a silent uinput failure
     // is distinguishable from a transcription problem.
@@ -107,7 +105,7 @@ fn main() -> Result<()> {
         let text = args.get(1).cloned().unwrap_or_else(|| "flow test".into());
         eprintln!("focus a text field - injecting in 3s");
         std::thread::sleep(Duration::from_secs(3));
-        return inject::Injector::new()?.inject(&text, terminal);
+        return inject::Injector::new()?.inject(&text);
     }
 
     // Isolates the island from the model and the hotkeys, the way `inject`
@@ -285,7 +283,7 @@ fn main() -> Result<()> {
 
 /// The first argument that is not a flag.
 ///
-/// So `flow --terminal 5` and `flow 5 --terminal` mean the same thing. Flags
+/// So `flow --denoise 5` and `flow 5 --denoise` mean the same thing. Flags
 /// are read separately by `Config::overridden_by`, which scans the whole list
 /// and does not care where they sit.
 fn command(args: &[String]) -> Option<&str> {
@@ -515,8 +513,8 @@ mod tests {
     #[test]
     fn flags_do_not_hide_the_command() {
         assert_eq!(command(&args("daemon")), Some("daemon"));
-        assert_eq!(command(&args("--terminal 5")), Some("5"));
-        assert_eq!(command(&args("5 --terminal")), Some("5"));
+        assert_eq!(command(&args("--denoise 5")), Some("5"));
+        assert_eq!(command(&args("5 --denoise")), Some("5"));
         assert_eq!(command(&args("--raw daemon")), Some("daemon"));
         assert_eq!(command(&args("")), None);
         assert_eq!(command(&args("--raw")), None);

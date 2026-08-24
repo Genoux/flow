@@ -72,7 +72,7 @@ fn the_chord_pastes_into_the_focused_window() {
         "fell back to uinput, so the virtual-keyboard path was never exercised"
     );
 
-    injector.inject(SENTINEL, false).expect("injecting");
+    injector.inject(SENTINEL).expect("injecting");
 
     let landed = wait_until(Duration::from_secs(5), || {
         std::fs::read(&target).is_ok_and(|bytes| bytes.len() >= SENTINEL.len())

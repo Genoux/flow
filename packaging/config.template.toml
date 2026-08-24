@@ -30,10 +30,6 @@
 # the tool, so off is only for comparing against what the recogniser heard.
 # refine = true
 
-# Type the text out key by key instead of pasting it. Slower, but terminals that
-# ignore the clipboard need it.
-# terminal = false
-
 # Which GPU runs the refining model. Left unset, Flow picks the discrete card with
 # the most free memory, and falls back to the CPU if none can hold the model.
 # Set an index only to override that; `flow daemon` logs the one it chose.

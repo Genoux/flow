@@ -74,7 +74,6 @@ of them. The ones people actually change:
 hotkey = "super+shift+d"   # the combination to hold
 duck = 50                  # volume of other apps while recording, in percent
 refine = true              # run the transcript through the local refining model
-terminal = false           # type key by key instead of pasting
 ```
 
 Word fixes go next door in `~/.config/flow/vocabulary.txt` — one term per line,

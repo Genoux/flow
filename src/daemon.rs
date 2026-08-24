@@ -601,14 +601,9 @@ fn handle(
 ) -> Result<()> {
     // One read for the whole of this dictation, so a file change part-way
     // through cannot refine the text but paste it with the other chord.
-    let (terminal, denoise_audio, record_debug, cleanup) = {
+    let (denoise_audio, record_debug, cleanup) = {
         let config = live.lock().expect("config");
-        (
-            config.terminal,
-            config.denoise,
-            config.record_debug,
-            config.cleanup,
-        )
+        (config.denoise, config.record_debug, config.cleanup)
     };
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
     let peak = audio::peak(&samples);
@@ -721,7 +716,7 @@ fn handle(
     };
     let refined_at = started.elapsed();
 
-    injector.inject(&final_text, terminal)?;
+    injector.inject(&final_text)?;
     // Injection is timed because it was once the largest term of the three and
     // nothing pointed at it: a device probe on every paste, invisible in a total.
     let injected = started.elapsed() - refined_at;

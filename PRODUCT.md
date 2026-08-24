@@ -45,7 +45,7 @@ The console can be laid out on a machine that cannot run the daemon (`FLOW_CONSO
 
 **Does:**
 
-- Transcribe on hold and inject at the cursor (paste, or type key-by-key when `terminal` is on).
+- Transcribe on hold and inject at the cursor, with the paste chord chosen per injection from whatever window has focus.
 - Refine punctuation and filler locally; skip the model for short, already-punctuated, filler-free text.
 - Preserve language: the detected language is named in the refining prompt, and a translated refining is discarded so the raw transcript survives.
 - Transcribe long takes in pieces during the hold, cutting only inside genuine silence.

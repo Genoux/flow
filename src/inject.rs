@@ -149,7 +149,7 @@ impl Injector {
     ///
     /// Both backends wait for the user's own modifiers to come up first - see
     /// [`MODIFIER_WAIT`] for why the Wayland path is no exception.
-    pub fn inject(&mut self, text: &str, terminal_hint: bool) -> Result<()> {
+    pub fn inject(&mut self, text: &str) -> Result<()> {
         let generation = CLIPBOARD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         let saved = snapshot_clipboard();
 
@@ -185,7 +185,7 @@ impl Injector {
             );
         }
 
-        let terminal = detect_terminal_focus().unwrap_or(terminal_hint);
+        let terminal = detect_terminal_focus().unwrap_or(UNKNOWN_IS_NOT_A_TERMINAL);
         self.paste(terminal)?;
 
         // On its own thread, so the dictation is finished the moment the chord
@@ -229,14 +229,26 @@ impl Injector {
     }
 }
 
-/// Ask Hyprland what has focus and decide whether it needs the terminal chord.
-/// Config's `terminal` flag is static per-daemon; the user's real machine has
-/// both a browser and a terminal open, so a static flag is always wrong for
-/// one of them. This is the per-injection answer.
+/// What to send when no compositor answers and the focused window is a mystery.
 ///
-/// Returns `None` when hyprctl is missing or the window has no readable class
-/// (e.g. a Wayland client that never set `app_id`); the caller falls back to
-/// the configured hint in that case.
+/// Plain Ctrl+V, because the two guesses fail differently. Ctrl+V in a terminal
+/// does nothing and the text is still on the clipboard. Ctrl+Shift+V outside one
+/// is paste-as-plain-text in a browser but Markdown preview in VS Code and Paste
+/// Special in LibreOffice - it does not fail quietly, it does something else.
+///
+/// This used to be a setting. It asked the user a question nobody can answer:
+/// the right value depends on which window has focus at the instant of pasting,
+/// which changes many times a minute, so a value fixed in a config file was
+/// always wrong for something. Detection is the answer; this is only what to do
+/// when every detector is silent.
+const UNKNOWN_IS_NOT_A_TERMINAL: bool = false;
+
+/// Ask the compositor what has focus and decide whether it needs the terminal
+/// chord. Answered per injection, because the machine has a browser and a
+/// terminal open at the same time.
+///
+/// Returns `None` when no compositor tool is installed or the window has no
+/// readable class (e.g. a Wayland client that never set `app_id`).
 pub fn detect_terminal_focus() -> Option<bool> {
     // Bounded: `.output()` waits for the child forever, and a compositor busy
     // enough not to answer would otherwise take the dictation down with it.
