@@ -111,6 +111,11 @@ pub(crate) const ERR: Color = Color {
 /// to the accent it just read as a second, dirtier green. One green in the
 /// product, one meaning per colour: green is fine, red is not.
 pub(crate) const OK: Color = ACCENT;
+/// "Something needs you" - and the same amber as STARTING, on the same
+/// principle as OK above. One meaning per colour: green invites, amber warns,
+/// red is a failure. A broken install is not a failure of Flow's, it is a job
+/// waiting to be done, so it takes the middle one.
+pub(crate) const WARN: Color = STARTING;
 pub(crate) const ON_ACCENT: Color = Color {
     r: 0.078,
     g: 0.082,

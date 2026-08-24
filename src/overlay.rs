@@ -43,7 +43,12 @@ static FONT: std::sync::LazyLock<fontdue::Font> = std::sync::LazyLock::new(|| {
 const WIDTH: u32 = 92;
 const PILL_HEIGHT: u32 = 30;
 const HEIGHT: u32 = PILL_HEIGHT;
-pub const SURFACE_WIDTH: u32 = 300;
+/// Room for the widest message, since the buffer is sized once and the toast
+/// widens inside it. Sized for a sentence rather than for the two fixed strings
+/// the island reaches on its own: anything can be sent through [`Overlay::say`],
+/// and a message that has to be cut to a few words is not worth showing. What
+/// still does not fit is elided by [`fit`] rather than clipped.
+pub const SURFACE_WIDTH: u32 = 420;
 /// Anchored to the bottom edge, clear of it by just enough that the pill does
 /// not read as cut off by the screen.
 const MARGIN_BOTTOM: i32 = 8;
@@ -128,33 +133,6 @@ const RIM_WIDTH: f32 = 0.9;
 /// than as another voice.
 const BAR_WORKING_ALPHA: f32 = 0.45;
 
-/// Brightness at the head of the spinning arc.
-const ARM_FILL_ALPHA: f32 = 0.85;
-
-/// Brightness of the rest of the ring, so the full circle is always faintly
-/// visible and only the moving arc stands out against it.
-const ARM_TRACK_ALPHA: f32 = 0.10;
-
-/// Radius of the ring, as a fraction of the circle's own radius.
-const ARM_RING: f32 = 0.52;
-
-/// Thickness of the ring stroke, in unscaled pixels.
-const ARM_STROKE: f32 = 1.8;
-
-/// Seconds for the arc to travel one full turn. Quick: this is a wait, not a
-/// feature, and it should read as "any moment now" rather than draw the eye.
-const ARM_PERIOD: f32 = 0.6;
-
-/// How much of the circle the lit arc covers, as a fraction of a full turn.
-/// Short, so it reads as a moving highlight rather than a second track.
-const ARM_ARC: f32 = 0.32;
-
-// ponytail: shelved, not deleted. The arm window is now the settle wait
-// (src/duck.rs FADE_OUT) plus change, short enough that the spinner reads as
-// a flicker rather than a loading state. Flip back on if arming ever gets
-// slow again.
-const SHOW_ARM_SPINNER: bool = false;
-
 /// How far the voice glow reaches, as a fraction of the island. Large and
 /// faint - it should be felt rather than looked at.
 const GLOW_REACH: f32 = 1.45;
@@ -171,90 +149,6 @@ const GLOW_ALPHA: f32 = 0.16;
 /// Soft layers the glow is built from. More is smoother and costs more; five
 /// is past the point where another one is visible.
 const GLOW_LAYERS: usize = 5;
-
-/// The shade the island casts, so it sits above the desktop rather than on it.
-/// Built from concentric copies rather than a blur, because the rasteriser has
-/// none: each layer is larger, lower and fainter than the last, and the overlaps
-/// are the falloff.
-const SHADOW: (f32, f32, f32) = (0.0, 0.0, 0.0);
-const SHADOW_ALPHA: f32 = 0.45;
-const SHADOW_DROP: f32 = 3.0;
-const SHADOW_SPREAD: f32 = 6.0;
-const SHADOW_LAYERS: usize = 3;
-
-/// Light spilling past the island's edge while you speak - the outward half of
-/// the glow, which otherwise only exists inside the pill.
-const HALO_ALPHA: f32 = 0.11;
-const HALO_SPREAD: f32 = 10.0;
-const HALO_LAYERS: usize = 3;
-
-/// Light catching the top of the capsule. Each layer is the pill itself lifted
-/// and clipped back to the real one, so the light hugs the top curve instead of
-/// lying across it as a straight band.
-const SHEEN_ALPHA: f32 = 0.05;
-const SHEEN_LAYERS: usize = 3;
-
-/// A brighter cap on each bar, with the body dimmed to make room for it, so the
-/// wave reads as lit rods rather than flat strokes.
-const BAR_SHEEN: f32 = 0.42;
-const BAR_SHEEN_CAP: f32 = 0.34;
-const BAR_DIMMED: f32 = 0.78;
-
-/// Room above and below the pill for anything it casts. The live surface is
-/// exactly as tall as the island, so a shadow or a halo drawn there would be cut
-/// off at the buffer edge - only the strip has somewhere to put them.
-const HALO_ROOM: u32 = 14;
-
-/// What `flow overlay styles` puts on screen. Each entry is today's island plus
-/// exactly one change, so what a layer costs and what it buys are both visible.
-const VARIATIONS: [(&str, Style); 6] = [
-    ("now", Style::LIVE),
-    (
-        "shade",
-        Style {
-            shade: true,
-            ..Style::LIVE
-        },
-    ),
-    (
-        "sheen",
-        Style {
-            sheen: true,
-            ..Style::LIVE
-        },
-    ),
-    (
-        "caps",
-        Style {
-            caps: true,
-            bar: BAR_DIMMED,
-            ..Style::LIVE
-        },
-    ),
-    (
-        "halo",
-        Style {
-            halo: true,
-            ..Style::LIVE
-        },
-    ),
-    (
-        "all",
-        Style {
-            shade: true,
-            halo: true,
-            sheen: true,
-            caps: true,
-            bar: BAR_DIMMED,
-            ..Style::LIVE
-        },
-    ),
-];
-/// Wide enough that neighbours do not bleed their shade into each other - the
-/// whole point is one variation at a time.
-const STRIP_PITCH: u32 = 124;
-const STRIP_LABEL: f32 = 20.0;
-const STRIP_TEXT: f32 = 10.0;
 
 /// How long the island takes to widen into the full pill, with the bars rising
 /// as it goes. This is the cue that says speaking will now be heard, so it
@@ -309,23 +203,55 @@ pub fn bloom(shown: f32, leaving: Option<f32>) -> f32 {
     (grown - since / BLOOM).max(0.0)
 }
 
-/// The message shown when the microphone gives back a flat line.
+/// When the island says anything at all.
 ///
-/// The island says nothing about an ordinary fumbled chord - arriving and
-/// leaving is the whole answer to that, and a sentence every time a tap comes
-/// up short is nagging. A message is for the case the user cannot fix by
-/// trying again: they did everything right, holding longer would not have
-/// helped, and the cause is almost always a muted source or the wrong default
-/// input.
-pub const SILENT: &str = "Microphone is silent - check it isn't muted";
+/// It says nothing about an ordinary fumbled chord - arriving and leaving is
+/// the whole answer to that, and a sentence every time a tap comes up short is
+/// nagging. A message is for the case the user cannot fix by trying again:
+/// they did everything right, holding longer would not have helped, and
+/// something outside the gesture has to change before the next one works.
+///
+/// Two of them the island reaches on its own, from the live monitor it draws
+/// the bars from - see [`Silence`]. Anything else is sent by whoever found it,
+/// through [`Overlay::say`].
+pub const MUTED: &str = "No sound - is your mic muted?";
 
-/// How long the microphone must give nothing before [`SILENT`] is said.
+/// The other silence, and deliberately not about muting. A stream that stopped
+/// delivering is a device that went away or a server that dropped the client,
+/// and sending someone to their mute button for that is a wrong turn they take
+/// before they find the real cause.
+pub const NO_INPUT: &str = "Lost the mic - is it still plugged in?";
+
+/// Which way the microphone is giving nothing back. The two need different
+/// advice, which is the whole reason they are told apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Silence {
+    /// Buffers still arriving, every sample flat: a muted source, or one whose
+    /// input is some device nobody is speaking into.
+    Muted,
+    /// Nothing arriving at all since the hold opened. The stream is gone, and
+    /// no level can be measured because the samples it would need never came.
+    Gone,
+}
+
+impl Silence {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Muted => MUTED,
+            Self::Gone => NO_INPUT,
+        }
+    }
+}
+
+/// How long the microphone must give nothing before [`Silence`] is said.
 ///
-/// Said mid-hold, not after the release. The daemon can only reach this verdict
-/// once it has the finished recording, by which point the sentence is already
-/// spoken and lost and the message is a post-mortem. The island has the live
-/// monitor it draws the bars from, so it can reach the same verdict while the
-/// chord is still down and there is still something to save.
+/// Spotted mid-hold, said at the release. Only the island can reach this
+/// verdict early - it has the live monitor it draws the bars from, where the
+/// daemon has nothing until the recording is finished. But early is when the
+/// user is still holding the key, and a message that widens out of the island
+/// mid-gesture interrupts a hold they have not finished making. So the verdict
+/// waits for the release, which is the same moment the island would have gone
+/// quietly - and it goes with an explanation instead.
 ///
 /// Not "you were quiet": [`crate::audio::SILENCE_RMS`] sits an order of
 /// magnitude below what a real room reads, so someone gathering their thought
@@ -339,9 +265,9 @@ const DEAD_MIC: Duration = Duration::from_millis(1500);
 ///
 /// Only a hold. A tap session is bounded by the toggle that started it - the
 /// user may sit quiet for as long as they like before they start speaking, and
-/// taking the island away mid-pause says the app stopped listening when it had
-/// not. A hold is different: the key is down, the user is talking into it, and
-/// the sooner they are told the line is dead the less breath they waste.
+/// calling that a dead microphone says the app stopped listening when it had
+/// not. A hold is different: the key is down, so the user is talking into it,
+/// and a line that has delivered nothing since it opened is not stage fright.
 pub fn dead_line(holding: bool, flat_for: Option<Duration>) -> bool {
     holding && flat_for.is_some_and(|flat| flat >= DEAD_MIC)
 }
@@ -378,6 +304,36 @@ pub fn toast_width(text: &str, scale: f32) -> f32 {
         .map(|glyph| FONT.metrics(glyph, TOAST_TEXT * scale).advance_width)
         .sum();
     span + TOAST_PAD * 2.0 * scale
+}
+
+/// The message trimmed to what the surface can show, with an ellipsis where it
+/// was cut.
+///
+/// The two fixed strings are checked against the surface by test. This is for
+/// everything else: an error carries whatever the failure had to say, and the
+/// old surface clipped anything too long without a mark, so a sentence could
+/// lose its last word and read as complete.
+///
+/// Measured at scale 1 and applied at every scale. Advance widths are
+/// proportional to the type size and the surface is scaled by the same factor,
+/// so the ratio of text to room does not move between them.
+pub fn fit(text: &str) -> String {
+    let room = SURFACE_WIDTH as f32;
+    if toast_width(text, 1.0) <= room {
+        return text.to_string();
+    }
+    let mut width = toast_width("\u{2026}", 1.0);
+    let mut kept = String::new();
+    for glyph in text.chars() {
+        width += FONT.metrics(glyph, TOAST_TEXT).advance_width;
+        if width > room {
+            break;
+        }
+        kept.push(glyph);
+    }
+    // The space before the cut would otherwise sit between the last word and
+    // the ellipsis, which reads as a gap rather than as a trim.
+    format!("{}\u{2026}", kept.trim_end())
 }
 
 /// The whole life of a message, out of the pill and back into it.
@@ -456,8 +412,8 @@ pub fn fresh_window(heard: u64, since: u64) -> bool {
     heard.saturating_sub(since) >= WINDOW as u64
 }
 
-/// Whether the microphone gave nothing back this frame, from the same live
-/// monitor the bars are drawn from.
+/// How the microphone gave nothing back this frame, from the same live monitor
+/// the bars are drawn from, or `None` if it gave something.
 ///
 /// Two ways for a microphone to give nothing and both have to be caught. A
 /// muted source keeps delivering buffers that are all zero, which is `level`
@@ -466,10 +422,19 @@ pub fn fresh_window(heard: u64, since: u64) -> bool {
 /// and that one never reaches `level`, because the window waits on the very
 /// samples that stopped coming.
 ///
+/// The distinction used to be collapsed into a bool, and the one message behind
+/// it told people to check their mute button for a microphone that had been
+/// unplugged.
+///
 /// `level` is None until a window of fresh samples has arrived: before that the
 /// ring still holds the room from before the keypress.
-pub fn giving_nothing(heard: u64, opened: u64, level: Option<f32>) -> bool {
-    !fresh_window(heard, opened) || level.is_some_and(|rms| rms < crate::audio::SILENCE_RMS)
+pub fn silence(heard: u64, opened: u64, level: Option<f32>) -> Option<Silence> {
+    if !fresh_window(heard, opened) {
+        return Some(Silence::Gone);
+    }
+    level
+        .is_some_and(|rms| rms < crate::audio::SILENCE_RMS)
+        .then_some(Silence::Muted)
 }
 
 /// How many frequency bands the voice is split into. Fewer than there are
@@ -754,7 +719,7 @@ pub fn rounded_rect_distance(
 }
 
 /// What the island is showing. Also the message the daemon sends to change it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Command {
     /// Shown, but the microphone is not open yet - other apps are still being
     /// turned down. See [`Overlay::arm`].
@@ -774,8 +739,9 @@ enum Command {
     /// into a shortcut. The user meant it, so nothing is said about it.
     Cancel,
     /// Something failed in a way the user has to act on. The island widens into
-    /// the sentence rather than leaving - see [`SILENT`], the only one so far.
-    Say(&'static str),
+    /// the sentence rather than leaving. Owned, not borrowed: most of what is
+    /// worth saying is built from the failure that happened.
+    Say(String),
     /// The transcript landed. Ignored once a new dictation has started, so a
     /// slow transcription cannot pull the island out from under the next one.
     Finish,
@@ -812,12 +778,12 @@ fn take_down(
 /// shape blinking out, which reads as a glitch rather than as a chord that came
 /// to nothing - and a message that starts widening out of a pill still growing
 /// reads as one twitch rather than two movements.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Ending {
     /// Go. The island having appeared at all is the answer.
     Close,
     /// Widen into this first, and go when it has had its time.
-    Say(&'static str),
+    Say(String),
 }
 
 /// Handle to the drawing thread. Every method is best-effort: on a compositor
@@ -870,10 +836,20 @@ impl Overlay {
         let _ = self.commands.send(Command::Cancel);
     }
 
-    /// The hold was long enough but the microphone delivered a flat line. Says
-    /// so, because trying again will not fix a mute.
-    pub fn silent(&self) {
-        let _ = self.commands.send(Command::Say(SILENT));
+    /// Tell the user something. The island widens out of its pill into the
+    /// sentence, holds it long enough to read twice, and narrows back.
+    ///
+    /// For what the user has to act on and cannot fix by dictating again: a
+    /// failure that will happen the same way next time, a setting that has to
+    /// change. Ordinary disappointments - a tap too short, a cough, nothing
+    /// recognised - are not for this. The island arriving and leaving is
+    /// already the whole answer to those, and a sentence about each one turns
+    /// the island from an indicator into something that talks back.
+    ///
+    /// Anything too long for the surface is elided by [`fit`] rather than
+    /// clipped, so a message built from an error is safe to pass straight in.
+    pub fn say(&self, message: impl AsRef<str>) {
+        let _ = self.commands.send(Command::Say(fit(message.as_ref())));
     }
 
     pub fn finish(&self) {
@@ -988,56 +964,6 @@ impl Canvas {
         alpha: f32,
     ) {
         self.fill(centre, half, radius, None, Some(clip), colour, alpha);
-    }
-
-    /// A ring whose brightness varies around its own circumference, from a
-    /// faint track up to a bright head and back down. This is the arming
-    /// spinner: one continuous stroke, rather than a string of dots pretending
-    /// to be one - forty tiny circles at this size reads as a string of beads,
-    /// not a ring, because there is no shared edge for the eye to follow
-    /// between them.
-    #[allow(clippy::too_many_arguments)]
-    fn spinner_ring(
-        &mut self,
-        centre: (f32, f32),
-        radius: f32,
-        thickness: f32,
-        head: f32,
-        arc: f32,
-        colour: (f32, f32, f32),
-        track_alpha: f32,
-        lit_alpha: f32,
-    ) {
-        let outer = radius + thickness / 2.0 + 1.0;
-        let left = (centre.0 - outer).floor().max(0.0) as usize;
-        let right = ((centre.0 + outer).ceil() as usize).min(self.width);
-        let first_row = (centre.1 - outer).floor().max(0.0) as usize;
-        let last_row = ((centre.1 + outer).ceil() as usize).min(self.height);
-
-        for y in first_row..last_row {
-            for x in left..right {
-                let point = (x as f32 + 0.5, y as f32 + 0.5);
-                let dx = point.0 - centre.0;
-                let dy = point.1 - centre.1;
-                let r = (dx * dx + dy * dy).sqrt();
-                // Coverage across the ring's thickness, same one-pixel feather
-                // as the rest of the canvas.
-                let band = (0.5 - ((r - radius).abs() - thickness / 2.0)).clamp(0.0, 1.0);
-                if band <= 0.0 {
-                    continue;
-                }
-                // Clockwise from twelve o'clock, matching every other angle in
-                // this file.
-                let along = (dy.atan2(dx) / std::f32::consts::TAU + 0.25).rem_euclid(1.0);
-                let behind = (head - along).rem_euclid(1.0);
-                let alpha = if behind < arc {
-                    track_alpha + (lit_alpha - track_alpha) * (1.0 - behind / arc)
-                } else {
-                    track_alpha
-                };
-                self.blend(x, y, colour, band * alpha);
-            }
-        }
     }
 
     /// Shared rasteriser. `hollow` leaves everything further inside than that many
@@ -1176,83 +1102,16 @@ fn render_toast(canvas: &mut Canvas, text: &str, grown: f32, scale: f32) {
     );
 }
 
-/// Which polish layers an island wears.
-///
-/// Named one at a time because they are judged one at a time: `flow overlay
-/// styles` draws an island per variation so each can be seen on its own rather
-/// than as part of a pile. [`Style::LIVE`] is what dictation draws today.
-#[derive(Clone, Copy)]
-struct Style {
-    shade: bool,
-    halo: bool,
-    sheen: bool,
-    caps: bool,
-    fill: f32,
-    edge: f32,
-    bar: f32,
-}
-
-impl Style {
-    const LIVE: Self = Self {
-        shade: false,
-        halo: false,
-        sheen: false,
-        caps: false,
-        fill: ISLAND_ALPHA,
-        edge: EDGE_ALPHA,
-        bar: BAR_ALPHA,
-    };
-}
-
-/// The shade under the shape, and the light along its top edge. Shared because
-/// the island and the message are the same object at two widths, and drawn
-/// apart they drift: the message widened out of a lifted pill into a box lying
-/// flat on the desktop.
-fn cast_shade(canvas: &mut Canvas, shape: ((f32, f32), (f32, f32), f32), scale: f32, alpha: f32) {
-    let (centre, half, corner) = shape;
-    for layer in 0..SHADOW_LAYERS {
-        let out = (layer + 1) as f32 / SHADOW_LAYERS as f32;
-        let spread = SHADOW_SPREAD * scale * out;
-        canvas.rounded_rect(
-            (centre.0, centre.1 + SHADOW_DROP * scale * out),
-            (half.0 + spread, half.1 + spread),
-            corner + spread,
-            SHADOW,
-            SHADOW_ALPHA * (1.0 - out) / SHADOW_LAYERS as f32 * alpha,
-        );
-    }
-}
-
-fn top_sheen(canvas: &mut Canvas, shape: ((f32, f32), (f32, f32), f32), alpha: f32) {
-    let (centre, half, corner) = shape;
-    for layer in 0..SHEEN_LAYERS {
-        let lift = half.1 * (layer + 1) as f32 / SHEEN_LAYERS as f32;
-        canvas.clipped_rect(
-            (centre.0, centre.1 - lift),
-            half,
-            corner,
-            shape,
-            EDGE,
-            SHEEN_ALPHA * alpha,
-        );
-    }
-}
-
 /// What the surface is painting this frame.
 ///
 /// The island and the message are never both up - one replaces the other - and
 /// an enum is what says so. Passed as parameters instead, a toast would sit
-/// beside five island fields it silently makes dead.
+/// beside the island's own fields it silently makes dead.
 enum Face<'a> {
-    /// Every variation at once, over the wallpaper. A translucent layer is
-    /// judged against what is behind it, so a picture on a page would lie about
-    /// all of them.
-    Strip,
     Island {
         heights: &'a [f32; BAR_COUNT],
         seconds: f32,
         transcribing: bool,
-        arming: bool,
         /// 0 at the instant the microphone opened, 1 once the bars have risen.
         wake: f32,
     },
@@ -1263,76 +1122,29 @@ enum Face<'a> {
     },
 }
 
-/// One island per variation, labelled, at the size dictation draws them.
-fn render_strip(canvas: &mut Canvas, scale: f32) {
-    // Loud enough for the halo to have something to answer, uneven enough that
-    // the bar caps are not seven copies of one rectangle.
-    let heights = [0.35, 0.62, 0.94, 1.0, 0.8, 0.5, 0.28];
-    let pitch = canvas.width as f32 / VARIATIONS.len() as f32;
-    let middle = (canvas.height as f32 - STRIP_LABEL * scale) / 2.0;
-
-    for (index, (label, style)) in VARIATIONS.iter().enumerate() {
-        let at = pitch * (index as f32 + 0.5);
-        render_island(
-            canvas,
-            &heights,
-            0.0,
-            false,
-            false,
-            1.0,
-            scale,
-            (at, middle),
-            *style,
-        );
-        canvas.text(
-            label,
-            STRIP_TEXT * scale,
-            (at, canvas.height as f32 - STRIP_LABEL * scale / 2.0),
-            BAR,
-            TOAST_TEXT_ALPHA,
-        );
-    }
-}
-
 fn render(canvas: &mut Canvas, face: Face, scale: f32) {
     canvas.clear();
     match face {
-        Face::Strip => render_strip(canvas, scale),
         Face::Island {
             heights,
             seconds,
             transcribing,
-            arming,
             wake,
-        } => render_island(
-            canvas,
-            heights,
-            seconds,
-            transcribing,
-            arming,
-            wake,
-            scale,
-            (canvas.width as f32 / 2.0, canvas.height as f32 / 2.0),
-            Style::LIVE,
-        ),
+        } => render_island(canvas, heights, seconds, transcribing, wake, scale),
         Face::Toast { text, grown } => render_toast(canvas, text, grown, scale),
     }
 }
 
-/// `centre` is where the pill sits rather than something derived from the
-/// surface, because the style strip draws several across one canvas.
 #[allow(clippy::too_many_arguments)]
 fn render_island(
     canvas: &mut Canvas,
     heights: &[f32; BAR_COUNT],
     seconds: f32,
     transcribing: bool,
-    arming: bool,
     wake: f32,
     scale: f32,
-    centre: (f32, f32),
-    style: Style,
 ) {
+    let centre = (canvas.width as f32 / 2.0, canvas.height as f32 / 2.0);
     let height = PILL_HEIGHT as f32 * scale;
     let corner = height / 2.0;
 
@@ -1346,14 +1158,8 @@ fn render_island(
     // the same movement rather than two that have to be kept in step. `woke`
     // is set on the keypress now (Arm), not held back for the mic actually
     // opening (Record), so press, open and extend read as one motion instead
-    // of a paused circle followed by a second growth. Forced back to a circle
-    // only if the spinner is ever turned back on - that shape is what a
-    // spinner needs, this one doesn't.
-    let grown = if arming && SHOW_ARM_SPINNER {
-        0.0
-    } else {
-        wake
-    };
+    // of a paused circle followed by a second growth.
+    let grown = wake;
     // Never narrower than [`NARROWEST`], and already fading by the time it is
     // that narrow: the island is a pill widening and narrowing, and it is never
     // caught being a circle with a dot in it at either end.
@@ -1374,52 +1180,12 @@ fn render_island(
     } else {
         (heights.iter().sum::<f32>() / BAR_COUNT as f32).clamp(0.0, 1.0)
     };
-    let shape = (centre, pill, corner);
-
-    if style.shade {
-        cast_shade(canvas, shape, scale, visible);
-    }
-    if style.halo && level > 0.01 {
-        for layer in 0..HALO_LAYERS {
-            let out = (layer + 1) as f32 / HALO_LAYERS as f32;
-            let spread = HALO_SPREAD * scale * out;
-            canvas.rounded_rect(
-                (centre.0, centre.1 - pill.1 * GLOW_RISE * out * 0.4),
-                (pill.0 + spread, pill.1 + spread),
-                corner + spread,
-                BAR,
-                level * HALO_ALPHA * (1.0 - out) / HALO_LAYERS as f32 * visible,
-            );
-        }
-    }
-
-    canvas.rounded_rect(centre, pill, corner, ISLAND, style.fill * visible);
-    if style.sheen {
-        top_sheen(canvas, shape, visible);
-    }
-    canvas.rounded_ring(centre, pill, corner, scale, EDGE, style.edge * visible);
+    canvas.rounded_rect(centre, pill, corner, ISLAND, ISLAND_ALPHA * visible);
+    canvas.rounded_ring(centre, pill, corner, scale, EDGE, EDGE_ALPHA * visible);
 
     let pitch = (BAR_WIDTH + BAR_GAP) * scale;
     let span = pitch * BAR_COUNT as f32 - BAR_GAP * scale;
     let first = centre.0 - span / 2.0 + BAR_WIDTH * scale / 2.0;
-
-    // ponytail: shelved, not deleted (SHOW_ARM_SPINNER). A spinner needs
-    // something to be indeterminate about; there no longer is one - the pill
-    // is already mid-bloom by the time this would draw. Flip the flag back on
-    // if arming ever gets slow enough to need one again.
-    if arming && SHOW_ARM_SPINNER {
-        canvas.spinner_ring(
-            centre,
-            corner * ARM_RING,
-            ARM_STROKE * scale,
-            (seconds / ARM_PERIOD).fract(),
-            ARM_ARC,
-            BAR,
-            ARM_TRACK_ALPHA,
-            ARM_FILL_ALPHA,
-        );
-        return;
-    }
 
     // A soft light behind the bars that rises with the voice. Built from a few
     // nested rounded rects rather than a real gradient - the canvas has no
@@ -1463,7 +1229,7 @@ fn render_island(
         * if transcribing {
             BAR_WORKING_ALPHA
         } else {
-            style.bar
+            BAR_ALPHA
         };
     // The wave never moves and never collapses. Every bar keeps its own place
     // and its own height from the first frame to the last, and only its opacity
@@ -1491,38 +1257,7 @@ fn render_island(
             RIM_ALPHA * alpha,
         );
         canvas.rounded_rect(at, half, half.0, BAR, alpha);
-        if style.caps {
-            // Never shorter than the bar is wide, so silence is a brighter dot
-            // rather than a sliver balanced on top of one.
-            let cap = (half.1 * BAR_SHEEN_CAP).max(half.0);
-            canvas.rounded_rect(
-                (at.0, at.1 - half.1 + cap),
-                (half.0, cap),
-                half.0,
-                BAR,
-                alpha * BAR_SHEEN,
-            );
-        }
     }
-}
-
-/// How big the surface is. Dictation uses [`Size::LIVE`]; the strip needs room
-/// for every variation, their labels, and the light they cast.
-#[derive(Clone, Copy)]
-struct Size {
-    width: u32,
-    height: u32,
-}
-
-impl Size {
-    const LIVE: Self = Self {
-        width: SURFACE_WIDTH,
-        height: HEIGHT,
-    };
-    const STRIP: Self = Self {
-        width: STRIP_PITCH * VARIATIONS.len() as u32,
-        height: PILL_HEIGHT + HALO_ROOM * 2 + STRIP_LABEL as u32,
-    };
 }
 
 #[derive(Default)]
@@ -1551,7 +1286,6 @@ impl Island {
         compositor: &wl_compositor::WlCompositor,
         shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
         queue: &QueueHandle<Wayland>,
-        size: Size,
     ) -> Self {
         crate::chime::show();
 
@@ -1564,7 +1298,7 @@ impl Island {
             queue,
             (),
         );
-        layer.set_size(size.width, size.height);
+        layer.set_size(SURFACE_WIDTH, HEIGHT);
         layer.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
         layer.set_margin(0, 0, MARGIN_BOTTOM, 0);
         layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
@@ -1598,14 +1332,9 @@ struct Buffers {
 }
 
 impl Buffers {
-    fn create(
-        shm: &wl_shm::WlShm,
-        queue: &QueueHandle<Wayland>,
-        scale: i32,
-        size: Size,
-    ) -> Result<Self> {
-        let width = size.width as i32 * scale;
-        let height = size.height as i32 * scale;
+    fn create(shm: &wl_shm::WlShm, queue: &QueueHandle<Wayland>, scale: i32) -> Result<Self> {
+        let width = SURFACE_WIDTH as i32 * scale;
+        let height = HEIGHT as i32 * scale;
         let stride = width * 4;
         let frame = stride * height;
 
@@ -1722,38 +1451,6 @@ fn connect() -> Result<Display> {
     })
 }
 
-/// Hold the variations on screen so they can be compared where they are drawn -
-/// over the wallpaper, through whatever blur the compositor applies to us.
-pub fn styles(seconds: f32) -> Result<()> {
-    let Display {
-        connection,
-        mut queue,
-        mut state,
-        compositor,
-        shm,
-        shell,
-    } = connect()?;
-    let handle = queue.handle();
-
-    let island = Island::map(&compositor, &shell, &handle, Size::STRIP);
-    while !state.configured {
-        queue.blocking_dispatch(&mut state)?;
-    }
-
-    let mut buffers = Buffers::create(&shm, &handle, state.scale, Size::STRIP)?;
-    let until = std::time::Instant::now() + Duration::from_secs_f32(seconds);
-    while std::time::Instant::now() < until && !state.closed {
-        buffers.present(&island.surface, Face::Strip)?;
-        connection.flush()?;
-        queue.blocking_dispatch(&mut state)?;
-    }
-
-    drop(buffers);
-    drop(island);
-    queue.roundtrip(&mut state)?;
-    Ok(())
-}
-
 fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let Display {
         connection,
@@ -1780,8 +1477,9 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // is one whose count never moves, and that has to stay checkable for the
     // whole hold rather than only until the bars wake up.
     let mut opened = 0u64;
-    // When the microphone last gave anything. None while it is delivering.
-    let mut flat_since: Option<std::time::Instant> = None;
+    // When the microphone last gave anything, and which way it is giving
+    // nothing. None while it is delivering.
+    let mut flat_since: Option<(std::time::Instant, Silence)> = None;
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
     let mut arming = false;
@@ -1793,6 +1491,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // Hold to talk, carried from the command that opened the microphone. A tap
     // session is the user's to end - see [`dead_line`].
     let mut holding = true;
+    // Set while the microphone has been giving nothing for long enough to be
+    // worth saying so, and holding which silence it is. Said when the dictation
+    // ends, never into a live hold.
+    let mut dead: Option<Silence> = None;
     let mut woke = std::time::Instant::now();
     // Last drawn size. The message waits on it to reach full before widening,
     // and a chord re-triggered on the way out picks the growth back up from it.
@@ -1802,7 +1504,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut leaving: Option<std::time::Instant> = None;
     // How this dictation ends, once the island has finished arriving.
     let mut ending: Option<Ending> = None;
-    let mut toast: Option<(std::time::Instant, &'static str)> = None;
+    let mut toast: Option<(std::time::Instant, String)> = None;
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
     let mut lifecycle = Lifecycle::default();
@@ -1836,7 +1538,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                     started = std::time::Instant::now();
                     state.configured = false;
                     state.closed = false;
-                    island = Some(Island::map(&compositor, &shell, &handle, Size::LIVE));
+                    island = Some(Island::map(&compositor, &shell, &handle));
                 }
                 // The bloom starts on the keypress rather than waiting for the
                 // mic to actually open - press, open, and extend are meant to
@@ -1885,7 +1587,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                     // any delay here reads as the island lagging the response.
                     state.configured = false;
                     state.closed = false;
-                    island = Some(Island::map(&compositor, &shell, &handle, Size::LIVE));
+                    island = Some(Island::map(&compositor, &shell, &handle));
                 }
             }
             // The island stays mapped through the handover, so the bars turn
@@ -1966,7 +1668,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             .as_ref()
             .is_none_or(|held| held.scale != state.scale)
         {
-            buffers = Some(Buffers::create(&shm, &handle, state.scale, Size::LIVE)?);
+            buffers = Some(Buffers::create(&shm, &handle, state.scale)?);
         }
         let Some(buffers) = buffers.as_mut() else {
             continue;
@@ -2003,27 +1705,37 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             }
 
             let level = born.is_none().then(|| crate::audio::rms(&window));
-            if giving_nothing(monitor.heard(), opened, level) {
-                flat_since.get_or_insert_with(std::time::Instant::now);
-            } else {
-                flat_since = None;
+            match silence(monitor.heard(), opened, level) {
+                // The clock keeps running across a change of kind - a stream
+                // that goes away while muted is one unbroken silence - but the
+                // reason follows the latest read, which is the one the message
+                // has to be right about.
+                Some(reason) => {
+                    flat_since
+                        .get_or_insert((std::time::Instant::now(), reason))
+                        .1 = reason;
+                }
+                None => flat_since = None,
             }
         }
 
-        // Nothing is reaching the microphone, so nothing the user says next can
-        // be heard either. Ends the dictation here rather than letting them
-        // finish a sentence into a dead line - see [`DEAD_MIC`].
-        if listening && dead_line(holding, flat_since.map(|since| since.elapsed())) {
-            flat_since = None;
-            listening = false;
-            lifecycle.cancel();
-            ending = Some(Ending::Say(SILENT));
+        // Nothing is reaching the microphone. Noted, not said: while the key is
+        // down the user is still making the gesture, and a box of text widening
+        // out of the island mid-hold answers a question they have not finished
+        // asking. It is delivered when the dictation ends - see [`DEAD_MIC`].
+        //
+        // Recomputed every frame rather than latched, so a line that comes back
+        // clears it: `flat_since` is reset the moment a real sample arrives.
+        if listening {
+            dead = flat_since
+                .filter(|(since, _)| dead_line(holding, Some(since.elapsed())))
+                .map(|(_, reason)| reason);
         }
         grown = bloom(
             woke.elapsed().as_secs_f32(),
             leaving.map(|at| at.elapsed().as_secs_f32()),
         );
-        let face = match toast {
+        let face = match &toast {
             Some((at, text)) => Face::Toast {
                 text,
                 grown: toast_grown(at.elapsed().as_secs_f32()),
@@ -2032,7 +1744,6 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 heights: &heights,
                 seconds: started.elapsed().as_secs_f32(),
                 transcribing: transcribing && !settling,
-                arming,
                 wake: grown,
             },
         };
@@ -2051,6 +1762,13 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             settling = false;
             match end {
                 Ending::Say(message) => toast = Some((std::time::Instant::now(), message)),
+                // The dead line spotted mid-hold, delivered now that the key is
+                // up. Whatever ended the dictation, this is the reason it had
+                // nothing to show for itself.
+                Ending::Close if dead.is_some() => {
+                    let reason = dead.take().expect("checked above");
+                    toast = Some((std::time::Instant::now(), reason.message().to_string()));
+                }
                 Ending::Close => {
                     crate::chime::hide();
                     leaving = Some(std::time::Instant::now());
@@ -2062,7 +1780,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         // came out of. Nothing dismisses it but this - the surface is
         // click-through, so there is nothing to dismiss it with. What is left is
         // the island, which now leaves the way it arrived.
-        if toast.is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= TOAST_LIFE) {
+        if toast
+            .as_ref()
+            .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= TOAST_LIFE)
+        {
             toast = None;
             ending = None;
             crate::chime::hide();
@@ -2183,7 +1904,7 @@ mod tests {
         render(
             &mut canvas,
             Face::Toast {
-                text: SILENT,
+                text: MUTED,
                 grown: 1.0,
             },
             scale,
@@ -2207,7 +1928,7 @@ mod tests {
         );
 
         let inside =
-            (SURFACE_WIDTH as f32 * scale - toast_width(SILENT, scale)) / 2.0 + TOAST_PAD * scale;
+            (SURFACE_WIDTH as f32 * scale - toast_width(MUTED, scale)) / 2.0 + TOAST_PAD * scale;
         assert!(
             left as f32 >= inside - slack && (right as f32) <= canvas.width as f32 - inside + slack,
             "the text overruns the padding: {left}..{right}, box starts at {inside}"
@@ -2231,7 +1952,6 @@ mod tests {
                     heights: &heights,
                     seconds: 0.0,
                     transcribing: false,
-                    arming: false,
                     wake,
                 },
                 1.0,
@@ -2268,20 +1988,7 @@ mod tests {
         for step in 0..=40 {
             let wake = step as f32 / 40.0;
             let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
-            render_island(
-                &mut canvas,
-                &[1.0; BAR_COUNT],
-                0.0,
-                false,
-                false,
-                wake,
-                scale,
-                (
-                    SURFACE_WIDTH as f32 * scale / 2.0,
-                    HEIGHT as f32 * scale / 2.0,
-                ),
-                Style::LIVE,
-            );
+            render_island(&mut canvas, &[1.0; BAR_COUNT], 0.0, false, wake, scale);
 
             // The same pill render_island draws, so a disagreement here is the
             // two of them having drifted apart.
@@ -2328,7 +2035,6 @@ mod tests {
                     heights: &[0.0; BAR_COUNT],
                     seconds: 0.0,
                     transcribing: false,
-                    arming: false,
                     wake,
                 },
                 1.0,
@@ -2348,70 +2054,6 @@ mod tests {
         }
     }
 
-    /// Six variations, six islands, none of them touching. The strip is only
-    /// useful if each can be looked at on its own, and neighbours whose shade or
-    /// halo run together are one smear rather than a comparison.
-    #[test]
-    fn every_variation_gets_its_own_island() {
-        let size = Size::STRIP;
-        let mut canvas = Canvas::new(size.width as usize, size.height as usize);
-        render(&mut canvas, Face::Strip, 1.0);
-
-        // Pill rows only - the labels underneath would bridge the gaps.
-        let rows = 0..(size.height - STRIP_LABEL as u32) as usize;
-        let lit = |x: usize| {
-            rows.clone()
-                .any(|y| canvas.pixels[(y * canvas.width + x) * 4 + 3] > 0)
-        };
-        let islands = (0..canvas.width)
-            .filter(|x| lit(*x) && (*x == 0 || !lit(x - 1)))
-            .count();
-        assert_eq!(
-            islands,
-            VARIATIONS.len(),
-            "the strip drew {islands} separated islands, not one per variation"
-        );
-    }
-
-    /// What the polish costs, against the island without any of it.
-    ///
-    /// A ratio rather than a wall clock, because the number that matters is how
-    /// much decoration multiplies a frame, and a ratio survives a slow machine
-    /// or a debug build - which is what `flow-dev` runs. It is here because the
-    /// first version of these layers was 5x, built from eleven fills each
-    /// covering more area than the island itself.
-    #[test]
-    fn the_polish_costs_what_it_is_worth() {
-        let cost = |style: Style| {
-            let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
-            let middle = (canvas.width as f32 / 2.0, canvas.height as f32 / 2.0);
-            let rounds = 40;
-            let started = std::time::Instant::now();
-            for _ in 0..rounds {
-                canvas.clear();
-                render_island(
-                    &mut canvas,
-                    &[0.6; BAR_COUNT],
-                    0.0,
-                    false,
-                    false,
-                    1.0,
-                    1.0,
-                    middle,
-                    style,
-                );
-            }
-            started.elapsed().as_secs_f64() / rounds as f64
-        };
-
-        let (_, everything) = VARIATIONS[VARIATIONS.len() - 1];
-        let over = cost(everything) / cost(Style::LIVE);
-        assert!(
-            over < 3.5,
-            "every layer at once costs {over:.1}x today's island - too many large fills"
-        );
-    }
-
     /// A finished message is the island again, not a blank surface: it narrows
     /// all the way back into the pill it came out of, and the pill is what then
     /// leaves. The text has to be gone by then, or glyphs would be left hanging
@@ -2422,7 +2064,7 @@ mod tests {
         render(
             &mut ended,
             Face::Toast {
-                text: SILENT,
+                text: MUTED,
                 grown: toast_grown(TOAST_LIFE),
             },
             1.0,
@@ -2442,7 +2084,6 @@ mod tests {
                 heights: &[0.0; BAR_COUNT],
                 seconds: 0.0,
                 transcribing: false,
-                arming: false,
                 wake: 1.0,
             },
             1.0,

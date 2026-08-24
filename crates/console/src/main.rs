@@ -29,7 +29,6 @@ mod calendar;
 mod card;
 mod control;
 mod daemon;
-mod demo;
 mod dispatch;
 mod format;
 mod history;
@@ -55,7 +54,7 @@ use crate::layout::{
 use crate::theme::{
     mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE, FAINT,
     FG, GAP, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD,
-    SCROLL_PAD, STARTING,
+    SCROLL_PAD, STARTING, WARN,
 };
 use iced::{Color, Subscription, Task, Theme};
 
@@ -279,6 +278,10 @@ struct Console {
     /// True while the release tarball is downloading and installing.
     updating: bool,
     models: Vec<system::Model>,
+    /// How many installed files are missing or the wrong length, asked of the
+    /// daemon binary at launch and again whenever setup ends. `None` when
+    /// nothing could answer.
+    damage: Option<usize>,
     /// The one model download that can be in flight, whether it is first
     /// run's or one started from a row on the Models screen.
     download: Option<setup::State>,
@@ -292,11 +295,6 @@ struct Console {
     terms: Vec<String>,
     typing: String,
     term_error: Option<String>,
-    /// Set only by `FLOW_CONSOLE_DEMO`, and then the window shows a daemon that
-    /// is not there so the live states can be looked at. Also the reason the
-    /// real socket's events are ignored: it would report Offline within
-    /// seconds and undo the whole point.
-    demo: bool,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
     /// False when /dev/input cannot be read, so the chord cannot be captured.
@@ -325,32 +323,23 @@ struct Console {
 impl Console {
     fn new() -> (Self, Task<Message>) {
         let entries = history::recent();
-        let pretend = demo::requested();
 
         // A machine with no speech model cannot dictate, so the window has
-        // nothing to report and one thing to do. Demo mode decides for itself,
-        // so the screen can be laid out on a machine where the models are
-        // present - or absent - either way.
-        let first_run = match demo::setup() {
-            Some(wanted) => wanted,
-            None => setup::needed(),
-        };
+        // nothing to report and one thing to do.
+        let first_run = setup::needed();
 
         let settings = settings::Settings::load();
 
         (
             Self {
                 section: Section::initial(),
-                daemon: pretend.map_or_else(daemon::State::default, demo::daemon_state),
+                daemon: daemon::State::default(),
                 settings,
                 save_error: None,
                 service_error: None,
                 service_pending: None,
                 autostart: system::autostart_enabled(),
-                input: match pretend {
-                    Some(_) => demo::input(),
-                    None => system::default_input(),
-                },
+                input: system::default_input(),
                 entries,
                 copied: None,
                 days: history::daily(CALENDAR_DAYS),
@@ -358,15 +347,10 @@ impl Console {
                 // this window. Left at Unknown, About would read "not checked
                 // yet" while a check was in flight and its button would fire a
                 // second one.
-                update: match pretend {
-                    Some(_) => update::Status::Unknown,
-                    None => update::Status::Checking,
-                },
+                update: update::Status::Checking,
                 updating: false,
-                models: match pretend {
-                    Some(_) => demo::models(),
-                    None => system::models(),
-                },
+                models: system::models(),
+                damage: system::damage(),
                 download: None,
                 showing_setup: first_run,
                 fading: None,
@@ -374,7 +358,6 @@ impl Console {
                 terms: vocabulary::load(),
                 typing: String::new(),
                 term_error: None,
-                demo: pretend.is_some(),
                 capturing: false,
                 can_capture: chord::available(),
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -404,11 +387,7 @@ impl Console {
                 // Quiet when it goes wrong: a check that fails says so on the
                 // About screen and nowhere else, so a laptop with no network
                 // opens on exactly the window it opened on before.
-                if pretend.is_some() {
-                    Task::none()
-                } else {
-                    Task::perform(async { update::latest() }, Message::UpdateChecked)
-                },
+                Task::perform(async { update::latest() }, Message::UpdateChecked),
             ]),
         )
     }
@@ -497,7 +476,7 @@ impl Console {
         let Some(state) = self.download.as_mut() else {
             return Task::none();
         };
-        if self.demo || state.spawned || state.stopped || !state.intro_over() {
+        if state.spawned || state.stopped || !state.intro_over() {
             return Task::none();
         }
         state.spawned = true;
@@ -512,8 +491,7 @@ impl Console {
     /// everything that can move setup forward, because what it is waiting on
     /// last is sometimes only `FLOOR`.
     fn setup_usable(&mut self) -> Task<Message> {
-        let ready = !self.demo
-            && self.showing_setup
+        let ready = self.showing_setup
             && self.download.as_ref().is_some_and(|state| {
                 state.finished()
                     && !state.daemon_started
@@ -521,11 +499,27 @@ impl Console {
                     && state.start_error.is_none()
             });
 
-        if ready {
-            self.start_setup_daemon()
-        } else {
-            Task::none()
+        if !ready {
+            return Task::none();
         }
+
+        // Nothing came down the wire, so nothing on disk changed and the daemon
+        // is already running the files a restart would hand it. Restarting it
+        // to prove a repair found nothing wrong is a dropped socket and a model
+        // reloaded for no one. It only has to start if it is not running.
+        let repaired_nothing = self.download.as_ref().is_some_and(|state| !state.fetching)
+            && self.daemon.activity != daemon::Activity::Offline;
+
+        if repaired_nothing {
+            if let Some(state) = self.download.as_mut() {
+                state.daemon_started = true;
+            }
+            self.models = system::models();
+            self.fading = Some(-setup::HOLD);
+            return Task::none();
+        }
+
+        self.start_setup_daemon()
     }
 
     /// Whether an install is missing a model it needs.
@@ -536,7 +530,30 @@ impl Console {
     /// what is missing and offers to finish, and nothing starts in the
     /// meantime.
     fn incomplete(&self) -> bool {
-        !self.models.iter().all(|model| model.installed)
+        match self.damage {
+            Some(count) => count > 0,
+            // No verdict. What the window can see for itself is whether the
+            // models are there at all, which is what it used to go on.
+            None => !self.models.iter().all(|model| model.installed),
+        }
+    }
+
+    /// Why the Overview banner is up, if it is.
+    ///
+    /// One banner, two situations, and they are not the same news. A machine
+    /// with nothing on it has not finished setting up - green, an invitation.
+    /// A machine that had both models and lost a file out of one is broken -
+    /// amber, and saying "setup isn't finished" to someone who finished it a
+    /// month ago is how a real fault gets read as a glitch.
+    fn install_problem(&self) -> Option<InstallProblem> {
+        if !self.incomplete() {
+            return None;
+        }
+        Some(if self.models.iter().any(|model| model.installed) {
+            InstallProblem::Damaged
+        } else {
+            InstallProblem::Unfinished
+        })
     }
 
     /// Setup is over: the window becomes the console it was standing in for.
@@ -545,6 +562,7 @@ impl Console {
         self.fading = None;
         self.download = None;
         self.models = system::models();
+        self.damage = system::damage();
         self.input = system::default_input();
         self.entries = history::recent();
         self.autostart = system::autostart_enabled();
@@ -601,6 +619,25 @@ fn update_state(status: &update::Status) -> (Color, String) {
         update::Status::Available(tag) => (ACCENT, format!("{tag} is available")),
         update::Status::Installed(tag) => (OK, format!("{tag} installed - restart Flow")),
         update::Status::Failed(why) => (ERR, format!("could not check: {why}")),
+    }
+}
+
+/// Why the Overview is showing a banner. See `Console::install_problem`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallProblem {
+    /// Nothing installed: setup was never finished, or was stopped.
+    Unfinished,
+    /// Installed, then a file went missing or came back the wrong length.
+    Damaged,
+}
+
+impl InstallProblem {
+    /// The line, the button, and the colour the banner is drawn in.
+    fn banner(self) -> (&'static str, &'static str, Color) {
+        match self {
+            Self::Unfinished => ("Setup isn't finished.", "Finish setup", ACCENT),
+            Self::Damaged => ("A file is missing or damaged.", "Repair", WARN),
+        }
     }
 }
 
@@ -711,5 +748,27 @@ mod tests {
         assert!(believe_disconnect(daemon::Activity::Ready));
         assert!(believe_disconnect(daemon::Activity::Offline));
         assert!(believe_disconnect(daemon::Activity::Listening));
+    }
+}
+
+#[cfg(test)]
+mod install_banner {
+    use super::*;
+
+    #[test]
+    fn a_lost_file_warns_in_amber_rather_than_inviting_in_green() {
+        let (line, offer, tone) = InstallProblem::Damaged.banner();
+        assert_eq!(tone, WARN, "a fault must not wear the invitation's colour");
+        assert_ne!(tone, ACCENT);
+        assert!(line.contains("damaged"), "{line}");
+        assert_eq!(offer, "Repair");
+    }
+
+    #[test]
+    fn an_unfinished_setup_stays_an_invitation() {
+        let (line, offer, tone) = InstallProblem::Unfinished.banner();
+        assert_eq!(tone, ACCENT);
+        assert!(line.contains("Setup isn't finished"), "{line}");
+        assert_eq!(offer, "Finish setup");
     }
 }

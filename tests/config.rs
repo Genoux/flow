@@ -265,3 +265,37 @@ fn the_dictation_sound_is_on_until_turned_off() {
     assert!(!flow::config::Config::parse("sound = false").unwrap().sound);
     assert!(flow::config::Config::parse("sound = maybe").is_err());
 }
+
+#[test]
+fn a_line_from_another_version_costs_only_that_line() {
+    // The trap this closes: `~/.local/bin/flow` predating a key the console had
+    // already written meant systemd started it, it read `sound = false`, and it
+    // exited 1 - on a loop, with no dictation and no way back from the window.
+    // A line it cannot understand now costs that line and nothing else.
+    let (config, complaints) = Config::parse_forgiving(
+        "push_to_talk = false\nfrom_a_newer_flow = 3\nduck = 20\ncleanup = walloped\n",
+    );
+
+    assert!(!config.push_to_talk, "a good line before the bad one");
+    assert_eq!(config.duck, 20, "a good line after it");
+    assert_eq!(
+        config.cleanup,
+        Cleanup::default(),
+        "a value this version cannot read leaves the default"
+    );
+
+    assert_eq!(complaints.len(), 2, "{complaints:?}");
+    assert!(
+        complaints[0].contains("from_a_newer_flow"),
+        "{complaints:?}"
+    );
+    assert!(complaints[0].contains("line 2"), "{complaints:?}");
+    assert!(complaints[1].contains("line 4"), "{complaints:?}");
+}
+
+#[test]
+fn a_whole_file_is_still_read_strictly() {
+    // `parse` is what the live reload and the tests above lean on: it says no
+    // rather than guessing, which is what keeps a typo loud.
+    assert!(Config::parse("from_a_newer_flow = 3\n").is_err());
+}

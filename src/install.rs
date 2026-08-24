@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Asset {
     pub repo: &'static str,
     pub revision: &'static str,
@@ -468,6 +468,46 @@ pub fn seed(path: &Path, contents: &str) -> Result<bool> {
 
 pub fn models_root() -> PathBuf {
     flow_paths::models_dir()
+}
+
+/// Every asset that is not on disk at its pinned length.
+///
+/// Length only, and deliberately. This is what the window runs at launch, and
+/// a sha256 pass over 3 GB is a second on a machine with hardware SHA and half
+/// a minute on one without - not something to spend on every open. Length is
+/// what catches how installs actually break: a file deleted, a download cut
+/// short, a disk that filled. Bytes that are wrong at the right length are
+/// what `flow install` hashes for, once someone asks it to.
+pub fn damaged() -> Vec<&'static Asset> {
+    damaged_in(&models_root())
+}
+
+/// The same check against an explicit root, which is what makes it testable
+/// without 3 GB of real model.
+pub fn damaged_in(root: &Path) -> Vec<&'static Asset> {
+    SPEECH
+        .iter()
+        .chain(REFINE)
+        .filter(|asset| {
+            !std::fs::metadata(root.join(asset.dest)).is_ok_and(|meta| meta.len() == asset.bytes)
+        })
+        .collect()
+}
+
+/// What the window reads at launch: one line per file that is not right, then
+/// a verdict it can act on without counting.
+pub fn report_damage(damaged: &[&Asset]) {
+    for asset in damaged {
+        println!("damaged {}", asset.dest);
+    }
+    println!(
+        "{}",
+        if damaged.is_empty() {
+            "whole"
+        } else {
+            "broken"
+        }
+    );
 }
 
 /// Which models a run should fetch.

@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, bail};
-use flow::{
-    audio, config, daemon, inject, install, ipc, notify, overlay, refine, status, stt, wav,
-};
+use flow::{audio, config, daemon, inject, install, ipc, notify, refine, status, stt, wav};
 use std::time::{Duration, Instant};
 
 /// Audio that must be spoken before any of it is transcribed early. Long enough
@@ -25,10 +23,6 @@ COMMANDS
     retry [N]        Replay a saved dictation, counting back from the newest.
                      Needs record_debug in the config.
     inject [TEXT]    Type text after 3s, to test injection on its own
-    overlay [SECS]   Show the island on its own
-    overlay missed   Show a chord that recorded nothing - opens and closes
-    overlay silent   Show a hold the microphone gave nothing back for
-    overlay styles   Show every island variation side by side, to compare them
     SECONDS          Record, transcribe and print. Default 5.
     FILE.wav         Transcribe a file and time the recogniser
     help             This text
@@ -93,12 +87,28 @@ fn main() -> Result<()> {
             }
             return install::run(want);
         }
+        // Cheap enough to run every time the window opens, which is the point:
+        // an install that lost a file should say so on Overview rather than
+        // wait for someone to go looking in About.
+        Some("check") => {
+            let damaged = install::damaged();
+            if args.iter().any(|a| a == "--porcelain") {
+                install::report_damage(&damaged);
+            } else if damaged.is_empty() {
+                println!("install is whole");
+            } else {
+                for asset in &damaged {
+                    println!("missing or damaged: {}", asset.dest);
+                }
+            }
+            return Ok(());
+        }
         Some("probe") => return probe(),
         Some("logs") => return logs(&args[1..]),
         _ => {}
     }
 
-    let settings = config::Config::load()?.overridden_by(&args);
+    let settings = config::Config::load().overridden_by(&args);
 
     // Isolates injection from the mic and the model, so a silent uinput failure
     // is distinguishable from a transcription problem.
@@ -107,61 +117,6 @@ fn main() -> Result<()> {
         eprintln!("focus a text field - injecting in 3s");
         std::thread::sleep(Duration::from_secs(3));
         return inject::Injector::new()?.inject(&text);
-    }
-
-    // Isolates the island from the model and the hotkeys, the way `inject`
-    // isolates uinput: a compositor blur rule or a bar colour can be looked at
-    // without dictating anything into whatever window happens to have focus.
-    if args.first().map(String::as_str) == Some("overlay") {
-        // The tap too short to be a hold. Worth its own preview because it is
-        // the one sequence with no way to rehearse it deliberately: getting a
-        // real chord back up inside 200ms is mostly luck.
-        let ending = args.get(1).map(String::as_str);
-        if ending == Some("styles") {
-            let seconds = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(30.0);
-            eprintln!("every island variation, side by side, for {seconds}s");
-            return overlay::styles(seconds);
-        }
-        if matches!(ending, Some("missed" | "silent")) {
-            // Opened and never begun, which is the real arming path - this
-            // release lands before the microphone ever opens.
-            let capture = audio::Capture::open(&audio::open_device()?)?;
-            let overlay = overlay::Overlay::spawn(capture.monitor());
-            overlay.arm();
-            std::thread::sleep(Duration::from_millis(100));
-            match ending {
-                Some("silent") => {
-                    overlay.silent();
-                    eprintln!("the island opens, then widens into: {}", overlay::SILENT);
-                }
-                _ => {
-                    overlay.cancel();
-                    eprintln!("let go after 100ms - the island opens fully, then closes");
-                }
-            }
-            std::thread::sleep(Duration::from_secs(4));
-            return Ok(());
-        }
-
-        let seconds = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
-        let capture = audio::Capture::open(&audio::open_device()?)?;
-        let overlay = overlay::Overlay::spawn(capture.monitor());
-        // Same order the daemon uses, so this shows the real arming phase
-        // rather than a version of the island that only exists in this branch.
-        overlay.arm();
-        eprintln!("arming for 2s - the spinner turns while the mic is still shut");
-        std::thread::sleep(Duration::from_secs(2));
-        capture.begin();
-        overlay.record(true);
-        eprintln!("island shown for {seconds}s - speak to move the bars");
-        std::thread::sleep(Duration::from_secs(seconds));
-        overlay.queued();
-        overlay.working();
-        eprintln!("transcribing sweep for 4s");
-        std::thread::sleep(Duration::from_secs(4));
-        overlay.cancel();
-        std::thread::sleep(Duration::from_millis(200));
-        return Ok(());
     }
 
     let dir = stt::model_dir();
@@ -424,14 +379,11 @@ fn logs(args: &[String]) -> Result<()> {
 /// and the whole reason the window is a second binary is that it does not carry
 /// that tree. So it asks the daemon binary, which already knows.
 ///
-/// The config is read leniently rather than with `?`. A machine part-way
-/// through setup may have no config file at all, and a broken one is a reason
-/// to ignore a `gpu = ` override, not a reason to refuse to say what hardware
-/// is present.
+/// The reason it can read the config at all without a `?` is `Config::load`,
+/// which every command now shares: a broken line is a reason to ignore a
+/// `gpu = ` override, not a reason to refuse to say what hardware is present.
 fn probe() -> Result<()> {
-    let gpu = config::Config::load()
-        .ok()
-        .and_then(|settings| settings.gpu);
+    let gpu = config::Config::load().gpu;
     let plan = refine::plan(gpu);
 
     match plan.device {

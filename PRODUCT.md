@@ -39,8 +39,6 @@ The daemon is the systemd user unit `flow.service`. Dictation is hold-to-talk: d
 
 Audio follows the system default input (PipeWire or ALSA). Other apps duck while recording. Config is optional and lives at `~/.config/flow/config.toml`; vocabulary is `~/.config/flow/vocabulary.txt`, one term per line, applied by the refining model. History is a local transcript log.
 
-The console can be laid out on a machine that cannot run the daemon (`FLOW_CONSOLE_DEMO`). That is a design aid, not a second product.
-
 ## Capabilities and Constraints
 
 **Does:**
@@ -80,7 +78,7 @@ No separate logo, wordmark, or brand kit is on hand. The island and the console 
 
 - README and TROUBLESHOOTING at the repo root; config keys in `packaging/config.template.toml`.
 - Island implementation: `src/overlay.rs`.
-- Console: `crates/console/` (iced). Demo states via `FLOW_CONSOLE_DEMO`.
+- Console: `crates/console/` (iced).
 - Desktop entry: `packaging/flow-console.desktop`.
 
 No testimonials, customers, benchmarks for marketing, or press. Future work must not invent them. Model speed and hardware notes in the repo are engineering measurements, not claims to quote as social proof.

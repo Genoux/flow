@@ -94,8 +94,43 @@ pub fn service(verb: &str) -> Result<(), String> {
     if matches!(verb, "start" | "restart") {
         ensure_running()
     } else {
+        terminate_daemon();
         Ok(())
     }
+}
+
+/// Stop the daemon itself, and not only the unit systemd knows about.
+///
+/// `systemctl stop` reaches a daemon systemd started and nothing else. One
+/// launched any other way - `flow daemon` in a terminal, the checkout that
+/// `flow-dev` runs - keeps its grab on the chord, so the window reported Flow
+/// stopped while the trigger key still opened the microphone. Stop is the one
+/// word here that has to be believed: it is the user saying not now, and the
+/// only way back is the Start button beside it.
+///
+/// The pid file is the daemon's own answer to which process it is, which is
+/// what `flow start` and `flow stop` already signal. Reading `comm` before
+/// signalling is what makes that safe from this side: the file outlives a
+/// crash, and by then the pid may belong to somebody else entirely.
+fn terminate_daemon() {
+    let path = flow_paths::pid_file();
+    let Some(pid) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+    else {
+        return;
+    };
+    if !is_flow_process(pid) {
+        return;
+    }
+    run("kill", &["-TERM", &pid.to_string()]);
+    // SIGTERM leaves the daemon no chance to tidy up after itself, so the file
+    // it wrote is ours to clear. A stale one is only ever a wrong answer.
+    let _ = std::fs::remove_file(&path);
+}
+
+fn is_flow_process(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|comm| comm.trim() == "flow")
 }
 
 /// `systemctl start` can succeed before a short-lived daemon exits. Confirm the
@@ -201,6 +236,33 @@ impl Model {
 /// Measure what is actually on disk. The sizes used to be written into the
 /// source, so they stayed the same however much was really there - including
 /// when nothing was.
+/// How many of the installed files are missing or the wrong length, straight
+/// from the daemon binary - which is the one that pins their names and sizes.
+///
+/// `None` means no verdict: no `flow` on PATH, or it did not answer inside the
+/// budget. The window falls back to what it can see for itself rather than
+/// claiming an install is whole on the strength of a command that never ran.
+///
+/// Costs about three milliseconds, which is what makes it something the window
+/// can do every time it opens. The hashing pass is Repair's job.
+pub fn damage() -> Option<usize> {
+    let output = run("flow", &["check", "--porcelain"])?;
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // The verdict line is the handshake: without it this is an older `flow`
+    // that has no idea what was asked of it, and an empty stdout would
+    // otherwise read as a clean bill of health.
+    let answered = text
+        .lines()
+        .any(|line| matches!(line.trim(), "whole" | "broken"));
+
+    answered.then(|| {
+        text.lines()
+            .filter(|line| line.starts_with("damaged "))
+            .count()
+    })
+}
+
 pub fn models() -> Vec<Model> {
     let root = flow_paths::models_dir();
 
@@ -315,6 +377,15 @@ const OPENER: &str = if cfg!(target_os = "macos") {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stop signals whatever the pid file names, so the one thing standing
+    /// between that and killing an innocent process is this check. A recycled
+    /// pid is exactly what a stale pid file looks like from here.
+    #[test]
+    fn only_a_process_called_flow_is_signalled() {
+        assert!(!is_flow_process(std::process::id()));
+        assert!(!is_flow_process(u32::MAX));
+    }
 
     #[test]
     fn bytes_read_the_way_a_person_would() {

@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use flow::overlay::{
-    BLOOM, DWELL, SILENT, SURFACE_WIDTH, TOAST_HOLD, TOAST_LIFE, TOAST_RISE, WINDOW, arrived,
-    band_fraction, bar_height, bloom, dead_line, fresh_window, giving_nothing, mountain, resting,
-    rounded_rect_distance, smooth, smooth_bar, sweep, toast_grown, toast_width,
+    BLOOM, DWELL, MUTED, NO_INPUT, SURFACE_WIDTH, Silence, TOAST_HOLD, TOAST_LIFE, TOAST_RISE,
+    WINDOW, arrived, band_fraction, bar_height, bloom, dead_line, fit, fresh_window, mountain,
+    resting, rounded_rect_distance, silence, smooth, smooth_bar, sweep, toast_grown, toast_width,
 };
 
 /// Regression, and the whole reason the scale is in decibels.
@@ -522,7 +522,7 @@ fn the_message_narrows_the_way_it_widened() {
 /// outgrows it does not overflow - it silently clips. Caught here instead.
 #[test]
 fn the_message_fits_the_surface() {
-    for (message, scale) in [SILENT]
+    for (message, scale) in [MUTED, NO_INPUT]
         .into_iter()
         .flat_map(|message| [1.0, 2.0, 3.0].map(|scale| (message, scale)))
     {
@@ -545,6 +545,9 @@ fn the_message_fits_the_surface() {
 /// The room-tone case is the whole reason this lives on the island rather than
 /// on the finished recording: it fires mid-hold, and firing on someone pausing
 /// to think would cut a real dictation short.
+///
+/// The two silences are told apart because they need opposite advice, and a
+/// single answer sent people to their mute button for an unplugged microphone.
 #[test]
 fn a_dead_microphone_is_not_a_quiet_room() {
     let opened = 100;
@@ -552,28 +555,68 @@ fn a_dead_microphone_is_not_a_quiet_room() {
 
     // The device went away: nothing has arrived since the hold opened, so
     // there is no window to measure at all.
-    assert!(giving_nothing(opened, opened, None), "stream stopped");
-    assert!(
-        giving_nothing(delivering - 1, opened, None),
+    assert_eq!(
+        silence(opened, opened, None),
+        Some(Silence::Gone),
+        "stream stopped"
+    );
+    assert_eq!(
+        silence(delivering - 1, opened, None),
+        Some(Silence::Gone),
         "not a full window yet"
     );
 
     // Muted: buffers keep coming, every sample flat.
-    assert!(
-        giving_nothing(delivering, opened, Some(0.0)),
+    assert_eq!(
+        silence(delivering, opened, Some(0.0)),
+        Some(Silence::Muted),
         "muted source"
     );
 
     // Room tone with nobody speaking. An order of magnitude above the floor -
     // this is the case that must survive.
-    assert!(
-        !giving_nothing(delivering, opened, Some(0.046)),
+    assert_eq!(
+        silence(delivering, opened, Some(0.046)),
+        None,
         "a pause to think is not a dead microphone"
     );
-    assert!(
-        !giving_nothing(delivering, opened, Some(0.2)),
+    assert_eq!(
+        silence(delivering, opened, Some(0.2)),
+        None,
         "speech is obviously alive"
     );
+}
+
+/// Each silence has to send the user somewhere different, which is the entire
+/// reason they are separate cases.
+#[test]
+fn each_silence_gives_its_own_advice() {
+    assert_ne!(Silence::Muted.message(), Silence::Gone.message());
+    assert!(
+        !Silence::Gone.message().contains("muted"),
+        "an unplugged microphone was blamed on the mute button"
+    );
+}
+
+/// Messages built from an error are whatever length the failure happened to be,
+/// and the surface clips silently. Elision is what keeps a cut visible.
+#[test]
+fn a_message_too_long_for_the_surface_is_elided() {
+    assert_eq!(fit(MUTED), MUTED, "a message that fits is left alone");
+
+    let long = "Dictation failed: the transcription model could not be loaded from disk \
+                because the file is missing or unreadable, check the install";
+    let cut = fit(long);
+    assert!(cut.ends_with('\u{2026}'), "the cut is not marked: {cut:?}");
+    assert!(
+        !cut.ends_with(" \u{2026}"),
+        "a space was left hanging before the ellipsis: {cut:?}"
+    );
+    assert!(
+        toast_width(&cut, 1.0) <= SURFACE_WIDTH as f32,
+        "the elided message still overruns the surface"
+    );
+    assert!(long.starts_with(cut.trim_end_matches('\u{2026}')));
 }
 
 /// A tap session is the user's to end.

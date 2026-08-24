@@ -25,7 +25,7 @@ const TIMEOUT_SECONDS: &str = "10";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Status {
     /// Nothing asked yet. Only ever seen for a moment now that the window
-    /// checks on open, or for good in demo mode, which never asks.
+    /// checks on open.
     #[default]
     Unknown,
     Checking,

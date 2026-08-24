@@ -11,16 +11,12 @@ set -euo pipefail
 # /dev/input and /dev/uinput, talks Wayland, and links a Vulkan llama.cpp. Run
 # on a Mac this used to spend two minutes reaching cmake and then failing inside
 # llama.cpp's Vulkan backend, which reads as a missing dependency rather than as
-# the wrong machine. The console alone does build here, for laying screens out
-# (see `FLOW_CONSOLE_DEMO`), but installing it without a daemon or a systemd
-# unit would be installing a window onto nothing.
+# the wrong machine. The console alone does build here, but installing it
+# without a daemon or a systemd unit would be installing a window onto nothing.
 if [ "$(uname -s)" != "Linux" ]; then
   echo "Flow is Linux-only - this is $(uname -s)." >&2
   echo "The daemon needs /dev/uinput, Wayland and a Vulkan llama.cpp, none of" >&2
   echo "which exist here. Run this on the machine you dictate on." >&2
-  echo >&2
-  echo "To lay out the console here instead:" >&2
-  echo "  FLOW_CONSOLE_DEMO=setup cargo run --manifest-path crates/console/Cargo.toml" >&2
   exit 1
 fi
 

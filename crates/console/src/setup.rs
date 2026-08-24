@@ -212,6 +212,10 @@ pub struct State {
     /// True once `flow install` has been spawned. The intro plays first so
     /// hashing a 650 MB file cannot hitch the fade.
     pub spawned: bool,
+    /// True once anything has actually come down the wire. Sticky, so the
+    /// caption does not fall back to "checking" between the last byte and the
+    /// daemon starting.
+    pub fetching: bool,
     /// True once the user stopped this download on purpose, which makes the
     /// kill that follows an answer rather than a failure.
     pub stopped: bool,
@@ -246,6 +250,7 @@ impl State {
             elapsed: 0.0,
             count_in: 0.0,
             spawned: false,
+            fetching: false,
             stopped: false,
             daemon_started: false,
             starting_daemon: false,
@@ -262,7 +267,10 @@ impl State {
             Event::Installed => {}
             Event::Progress(done) => self.done = self.done.max(done),
             Event::Verifying(what) => self.phase = Phase::Verifying(what),
-            Event::Fetching(what) => self.phase = Phase::Fetching(what),
+            Event::Fetching(what) => {
+                self.fetching = true;
+                self.phase = Phase::Fetching(what);
+            }
             Event::Finished => {
                 self.done = self.total;
                 self.phase = Phase::Done;
@@ -351,6 +359,29 @@ impl State {
         self.elapsed = self.elapsed.max(INTRO);
     }
 
+    /// The one line under the ring, which is the whole of what this screen
+    /// says.
+    pub fn caption(&self) -> String {
+        match self.failed() {
+            Some(why) => why.to_string(),
+            None if self.starting_daemon => "Starting Flow…".to_string(),
+            // The last thing on screen, and the reason the outro holds before
+            // it runs. A repair that finds everything right is over in about a
+            // second, and a second that ends in silence reads as a button that
+            // did not work - so it ends on the answer instead.
+            None if self.finished() => match self.fetching {
+                true => "Flow is ready".to_string(),
+                false => "Nothing to fix".to_string(),
+            },
+            // Hashing a missing file is microseconds, so on a first run this is
+            // a state no frame ever paints. On a repair with both models already
+            // on disk it is the whole screen - 3 GB of sha256 and nothing
+            // fetched - and calling that a download was why it read as a fault.
+            None if !self.fetching => "Checking files".to_string(),
+            None => "Downloading models".to_string(),
+        }
+    }
+
     /// Whether this screen has been up long enough to be allowed to finish.
     /// See `FLOOR`.
     pub fn settled(&self) -> bool {
@@ -422,6 +453,11 @@ const LIFTS: usize = 4;
 
 /// When the last of them has landed.
 const INTRO: f32 = COVER + STEP * (LIFTS - 1) as f32 + RISE;
+
+/// How long the closing line stands still before the outro takes it away.
+/// `fading` starts here as a negative, so the screen sits at full opacity for
+/// exactly this long and then dissolves on the usual four beats.
+pub const HOLD: f32 = 1.1;
 
 /// The outro, in four beats rather than one dissolve. Slower than the intro on
 /// purpose: arriving should get out of the way, finishing is the part worth
@@ -507,14 +543,7 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
     let button_lift = arrive(3) * (1.0 - shed(3));
 
     let failed = state.failed();
-    let caption = match failed {
-        Some(why) => why.to_string(),
-        None if state.starting_daemon => "Starting Flow…".to_string(),
-        // This overlay is a download. Hashing a missing or partial file is
-        // milliseconds; naming it "checking" made a flash of a second state
-        // that this screen never really has.
-        None => "Downloading Flow's models".to_string(),
-    };
+    let caption = state.caption();
 
     let count = match (failed, state.total) {
         (None, total) if total > 0 => {
@@ -601,6 +630,12 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
         )
     });
 
+    over(veil, page)
+}
+
+/// A page centred on the veil, at `veil` opacity: the ground covers the
+/// console, the words sit in the middle.
+fn over<'a>(veil: f32, page: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     stack![
         container(Space::new())
             .width(Fill)
@@ -609,7 +644,7 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
                 background: Some(iced::Background::Color(iced::Color { a: veil, ..BG })),
                 ..Default::default()
             }),
-        container(page)
+        container(page.into())
             .width(Fill)
             .height(Fill)
             .align_x(iced::alignment::Horizontal::Center)
@@ -972,5 +1007,50 @@ mod tests {
         assert_eq!(ticking(0), "0 MB");
         assert_eq!(ticking(670_619_803), "670 MB");
         assert_eq!(ticking(1_850_000_000), "1.85 GB");
+    }
+}
+
+#[cfg(test)]
+mod closing_line {
+    use super::*;
+
+    fn done(fetching: bool) -> State {
+        State {
+            elapsed: FLOOR,
+            phase: Phase::Done,
+            fetching,
+            ..State::new(Handle::default())
+        }
+    }
+
+    #[test]
+    fn a_repair_that_found_nothing_wrong_says_so() {
+        // The whole point of the hold: this run takes about a second, and a
+        // second that ends in silence is what got the button reported broken.
+        assert_eq!(done(false).caption(), "Nothing to fix");
+    }
+
+    #[test]
+    fn a_run_that_fetched_something_ends_on_the_install() {
+        assert_eq!(done(true).caption(), "Flow is ready");
+    }
+
+    #[test]
+    fn nothing_fetched_yet_is_a_check_rather_than_a_download() {
+        let checking = State {
+            phase: Phase::Verifying("tdt/vocab.txt".into()),
+            ..State::new(Handle::default())
+        };
+        assert_eq!(checking.caption(), "Checking files");
+    }
+
+    #[test]
+    fn a_failure_outranks_the_closing_line() {
+        let broken = State {
+            phase: Phase::Failed("the download stopped".into()),
+            fetching: true,
+            ..done(true)
+        };
+        assert_eq!(broken.caption(), "the download stopped");
     }
 }

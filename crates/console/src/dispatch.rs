@@ -10,13 +10,6 @@ use iced::Task;
 
 impl Console {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
-        // The socket is the one thing the demo cannot talk over: it is either
-        // absent or belongs to a real daemon, and either way its first event
-        // would replace the state being looked at.
-        if self.demo && matches!(message, Message::Daemon(_)) {
-            return Task::none();
-        }
-
         match message {
             Message::Select(section) => {
                 self.section = section;
@@ -239,15 +232,6 @@ impl Console {
                 }
             }
             Message::BeginSetup => {
-                // Demo mode never spawns the installer: the point of it is to
-                // lay this screen out on a machine that has no `flow` binary
-                // at all, and a failure line is not the state worth looking at.
-                if self.demo {
-                    self.download = Some(demo::setup_state());
-                    self.showing_setup = true;
-                    return Task::none();
-                }
-
                 // Already on setup (a failed fetch, Try again): the veil is
                 // up, so skip the intro and start fetching.
                 let skip = self.showing_setup && self.download.is_some();
@@ -338,8 +322,10 @@ impl Console {
                     // then dropped it as the veil landed.
                     self.models = system::models();
                     // Setup's whole job is done, so it dissolves rather than
-                    // waiting to be dismissed. There is nothing on it to read.
-                    self.fading = Some(0.0);
+                    // waiting to be dismissed - after the beat its closing line
+                    // needs to be read. Negative, so the screen stands still
+                    // for `HOLD` and then runs the usual outro.
+                    self.fading = Some(-setup::HOLD);
                 }
             }
         }

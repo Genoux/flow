@@ -266,3 +266,69 @@ fn the_download_size_is_reported_in_gigabytes() {
     );
     assert!(both > speech, "refining should add to the total");
 }
+
+/// The launch check: what the console spawns to find out whether an install is
+/// whole, without hashing 3 GB to do it.
+mod damage_report {
+    use flow::install;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("flow-damage-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    /// A file of `bytes` length at `dest`, the way a real install leaves it.
+    fn place(root: &std::path::Path, asset: &install::Asset, bytes: u64) {
+        let path = root.join(asset.dest);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+        std::fs::write(&path, vec![0u8; bytes as usize]).expect("write");
+    }
+
+    fn whole(root: &std::path::Path) {
+        for asset in install::SPEECH.iter().chain(install::REFINE) {
+            place(root, asset, asset.bytes);
+        }
+    }
+
+    #[test]
+    fn a_whole_install_reports_nothing() {
+        let root = scratch("whole");
+        whole(&root);
+        assert!(install::damaged_in(&root).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_file_is_named() {
+        let root = scratch("missing");
+        whole(&root);
+        let gone = install::SPEECH.first().expect("an asset");
+        std::fs::remove_file(root.join(gone.dest)).expect("remove");
+
+        let damaged = install::damaged_in(&root);
+        assert_eq!(damaged.len(), 1, "{damaged:?}");
+        assert_eq!(damaged[0].dest, gone.dest);
+    }
+
+    #[test]
+    fn a_file_of_the_wrong_length_is_named() {
+        // The blind spot this whole check exists for: the directory is there,
+        // the file is there, and the console used to call that installed.
+        let root = scratch("truncated");
+        whole(&root);
+        let short = install::SPEECH.first().expect("an asset");
+        place(&root, short, short.bytes / 2);
+
+        let damaged = install::damaged_in(&root);
+        assert_eq!(damaged.len(), 1, "{damaged:?}");
+        assert_eq!(damaged[0].dest, short.dest);
+    }
+
+    #[test]
+    fn nothing_installed_names_everything() {
+        let root = scratch("empty");
+        let damaged = install::damaged_in(&root);
+        assert_eq!(damaged.len(), install::SPEECH.len() + install::REFINE.len());
+    }
+}

@@ -147,7 +147,7 @@ impl Console {
         // Above everything, because an unfinished install is not a fact about
         // this page - it is a fact about the product, and the way out of it is
         // the only thing on screen worth pressing.
-        if let Some(banner) = self.finish_setup_banner() {
+        if let Some(banner) = self.install_banner() {
             page = page.push(banner);
             page = page.push(Space::new().height(GAP));
         }
@@ -163,36 +163,39 @@ impl Console {
         ]))
     }
 
-    /// The way out of a stopped setup.
+    /// The one place a broken install announces itself.
     ///
-    /// Only reachable by having pressed Stop, so it is worded as the resumption
-    /// of something started rather than as an offer of something extra - and it
-    /// does not say what the download costs, because that was on screen when
-    /// the decision was made.
-    fn finish_setup_banner(&self) -> Option<Element<'_, Message>> {
-        if !self.incomplete() {
-            return None;
-        }
+    /// It used to appear only for a setup someone had stopped, which meant the
+    /// far more common fault - an install that lost a file later - had nowhere
+    /// to be seen and waited for the user to go looking in About. `flow check`
+    /// runs at launch now, so this is what it reports through. What it says
+    /// depends on the situation; see `install_problem`.
+    fn install_banner(&self) -> Option<Element<'_, Message>> {
+        let (line, offer, tone) = self.install_problem()?.banner();
+
+        // Filled only when the news is good. A saturated green button is the
+        // brightest thing in an amber banner, and the eye lands on the way out
+        // before it has read the problem - the same reason setup's error screen
+        // outlines its button instead of filling it.
+        let inviting = tone == ACCENT;
 
         Some(
             container(
                 row![
-                    text("Setup isn't finished, so Flow isn't running yet.")
-                        .size(12.5)
-                        .color(ACCENT),
+                    text(line).size(12.5).color(tone),
                     Space::new().width(Fill),
-                    action_msg("Finish setup", true, Message::BeginSetup),
+                    action_msg(offer, inviting, Message::BeginSetup),
                 ]
                 .align_y(iced::Center),
             )
             .padding([10, 12])
             .width(Fill)
-            .style(|_| container::Style {
-                background: Some(Background::Color(mix(BG, ACCENT, 0.055))),
+            .style(move |_| container::Style {
+                background: Some(Background::Color(mix(BG, tone, 0.055))),
                 border: Border {
                     radius: 8.0.into(),
                     width: 1.0,
-                    color: mix(BG, ACCENT, 0.22),
+                    color: mix(BG, tone, 0.22),
                 },
                 ..Default::default()
             })

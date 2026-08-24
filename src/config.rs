@@ -57,9 +57,41 @@ impl Default for Config {
     }
 }
 
+/// Every line worth applying, paired with the way its errors name themselves.
+/// Blank lines and comments are gone; the number is the one in the file.
+fn numbered(text: &str) -> impl Iterator<Item = (String, String)> + '_ {
+    text.lines().enumerate().filter_map(|(index, raw)| {
+        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
+        (!line.is_empty()).then(|| (format!("line {}", index + 1), line.to_string()))
+    })
+}
+
 impl Config {
-    pub fn load() -> Result<Self> {
-        Self::load_from(&path())
+    /// How every `flow` command reads the config: it starts.
+    ///
+    /// Complaints go to the journal, one line each, and whatever the file got
+    /// right is kept. `load_from` stays strict for the live reload, which has
+    /// a last good config to fall back on and so can afford to say no.
+    pub fn load() -> Self {
+        let text = match std::fs::read_to_string(path()) {
+            Ok(text) => text,
+            // Absent is the normal state: a machine part-way through setup has
+            // no config file, and the defaults are the product.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(err) => {
+                eprintln!(
+                    "flow: {} unreadable ({err}), using defaults",
+                    path().display()
+                );
+                return Self::default();
+            }
+        };
+
+        let (config, complaints) = Self::parse_forgiving(&text);
+        for complaint in complaints {
+            eprintln!("flow: ignoring {complaint}");
+        }
+        config
     }
 
     /// Absent is the normal state and yields the defaults. Present but broken is
@@ -77,63 +109,84 @@ impl Config {
     // toml crate if the config ever needs tables, arrays, or strings with a `#`.
     pub fn parse(text: &str) -> Result<Self> {
         let mut config = Self::default();
+        for (at, line) in numbered(text) {
+            config.apply(&at, &line)?;
+        }
+        Ok(config)
+    }
 
-        for (index, raw) in text.lines().enumerate() {
-            let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            let at = format!("line {}", index + 1);
-            let Some((key, value)) = line.split_once('=') else {
-                bail!("{at}: expected `key = value`, found {line:?}");
-            };
-            let (key, value) = (key.trim(), value.trim());
-
-            match key {
-                "push_to_talk" => config.push_to_talk = boolean(&at, key, value)?,
-                "cleanup" => {
-                    config.cleanup = super::refine::Cleanup::parse(value).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "{at}: cleanup wants none, light, or medium, found {value:?}"
-                        )
-                    })?
-                }
-                // Accepted so an existing config keeps working across the rename.
-                // `refine = false` was the only way to turn polish off before
-                // levels existed, and it means exactly `cleanup = none`.
-                "refine" => {
-                    config.cleanup = if boolean(&at, key, value)? {
-                        super::refine::Cleanup::default()
-                    } else {
-                        super::refine::Cleanup::None
-                    }
-                }
-                "denoise" => config.denoise = boolean(&at, key, value)?,
-                "sound" => config.sound = boolean(&at, key, value)?,
-                "record_debug" => config.record_debug = boolean(&at, key, value)?,
-                "hotkey" => {
-                    config.chord = super::hotkey::Chord::parse(value)
-                        .with_context(|| format!("{at}: bad hotkey"))?
-                }
-                "gpu" => {
-                    config.gpu = Some(value.parse().with_context(|| {
-                        format!("{at}: gpu wants a device index, found {value:?}")
-                    })?)
-                }
-                "duck" => {
-                    config.duck = value
-                        .parse()
-                        .with_context(|| format!("{at}: duck wants a number, found {value:?}"))?;
-                    if config.duck > 100 {
-                        bail!("{at}: duck is a percentage, found {value}");
-                    }
-                }
-                _ => bail!("{at}: unknown key {key:?}"),
+    /// The same read, except that a line this version cannot make sense of is
+    /// reported and skipped instead of refusing the whole file.
+    ///
+    /// This is how the daemon starts, and it exists because the strict read
+    /// turned a version skew into a dead app: a `flow` older than the key the
+    /// window had already written read `sound = false`, exited 1, and systemd
+    /// restarted it into the same error for as long as anyone watched. A key
+    /// from another version is not a reason to stop dictating - it is a reason
+    /// to say so and carry on with everything else the file got right, which is
+    /// also what the live reload has always done.
+    pub fn parse_forgiving(text: &str) -> (Self, Vec<String>) {
+        let mut config = Self::default();
+        let mut complaints = Vec::new();
+        for (at, line) in numbered(text) {
+            if let Err(err) = config.apply(&at, &line) {
+                complaints.push(format!("{err:#}"));
             }
         }
+        (config, complaints)
+    }
 
-        Ok(config)
+    /// One `key = value` line onto this config. The single place a key is
+    /// spelled, so the strict read and the forgiving one cannot drift.
+    fn apply(&mut self, at: &str, line: &str) -> Result<()> {
+        let Some((key, value)) = line.split_once('=') else {
+            bail!("{at}: expected `key = value`, found {line:?}");
+        };
+        let (key, value) = (key.trim(), value.trim());
+        let config = self;
+
+        match key {
+            "push_to_talk" => config.push_to_talk = boolean(at, key, value)?,
+            "cleanup" => {
+                config.cleanup = super::refine::Cleanup::parse(value).ok_or_else(|| {
+                    anyhow::anyhow!("{at}: cleanup wants none, light, or medium, found {value:?}")
+                })?
+            }
+            // Accepted so an existing config keeps working across the rename.
+            // `refine = false` was the only way to turn polish off before
+            // levels existed, and it means exactly `cleanup = none`.
+            "refine" => {
+                config.cleanup = if boolean(at, key, value)? {
+                    super::refine::Cleanup::default()
+                } else {
+                    super::refine::Cleanup::None
+                }
+            }
+            "denoise" => config.denoise = boolean(at, key, value)?,
+            "sound" => config.sound = boolean(at, key, value)?,
+            "record_debug" => config.record_debug = boolean(at, key, value)?,
+            "hotkey" => {
+                config.chord = super::hotkey::Chord::parse(value)
+                    .with_context(|| format!("{at}: bad hotkey"))?
+            }
+            "gpu" => {
+                config.gpu =
+                    Some(value.parse().with_context(|| {
+                        format!("{at}: gpu wants a device index, found {value:?}")
+                    })?)
+            }
+            "duck" => {
+                config.duck = value
+                    .parse()
+                    .with_context(|| format!("{at}: duck wants a number, found {value:?}"))?;
+                if config.duck > 100 {
+                    bail!("{at}: duck is a percentage, found {value}");
+                }
+            }
+            _ => bail!("{at}: unknown key {key:?}"),
+        }
+
+        Ok(())
     }
 
     /// Flags are the outermost layer, so `flow daemon --raw` can contradict the

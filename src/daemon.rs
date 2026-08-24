@@ -172,6 +172,13 @@ pub fn run(
                     // text before it touches the keyboard, so anything that
                     // fails from there on leaves it recoverable with Ctrl+V.
                     status.problem(err.to_string());
+                    // The island is already on screen and already the thing the
+                    // user is looking at, so it carries the failure itself
+                    // rather than only the sweep stopping and nothing being
+                    // said. The error goes in whole - it is what distinguishes
+                    // a model that would not load from a uinput permission -
+                    // and `say` elides whatever does not fit.
+                    island.say(format!("Dictation failed: {err}"));
                     notify::failure(
                         "Dictation failed",
                         "Any text recognised is on your clipboard - press Ctrl+V.",
@@ -181,6 +188,9 @@ pub fn run(
                 drop(engine);
                 // The island is showing the sweep until the text lands, error
                 // or not - a failed transcription must not leave it spinning.
+                // Sent even after a message: the island keeps the first ending
+                // it is given, so this closes an ordinary dictation and does
+                // not talk over one that has something to say.
                 island.finish();
                 status.ready();
             }
