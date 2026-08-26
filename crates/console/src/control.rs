@@ -208,31 +208,31 @@ pub(crate) fn option_row(
             .align_y(iced::Center),
     )
     .width(Fill)
-        .padding([9, 11])
-        .style(move |_theme, status| {
-            let fill = if current {
-                1.0
-            } else if matches!(status, button::Status::Hovered) {
-                0.55
-            } else {
-                0.0
-            };
-            button::Style {
-                // `RAIL_ON` at `fill` alpha over the panel, which is the same
-                // colour `mix` gave at rest and nothing at all once the dialog
-                // is gone - a row walked to `RAISED` would have stayed a solid
-                // bar inside a panel that had already left.
-                background: Some(Background::Color(dissolve(RAIL_ON, fill * fade))),
-                text_color: dissolve(ink, fade),
-                border: Border {
-                    radius: RADIUS.into(),
-                    ..Default::default()
-                },
+    .padding([9, 11])
+    .style(move |_theme, status| {
+        let fill = if current {
+            1.0
+        } else if matches!(status, button::Status::Hovered) {
+            0.55
+        } else {
+            0.0
+        };
+        button::Style {
+            // `RAIL_ON` at `fill` alpha over the panel, which is the same
+            // colour `mix` gave at rest and nothing at all once the dialog
+            // is gone - a row walked to `RAISED` would have stayed a solid
+            // bar inside a panel that had already left.
+            background: Some(Background::Color(dissolve(RAIL_ON, fill * fade))),
+            text_color: dissolve(ink, fade),
+            border: Border {
+                radius: RADIUS.into(),
                 ..Default::default()
-            }
-        })
-        .on_press(on_press)
-        .into()
+            },
+            ..Default::default()
+        }
+    })
+    .on_press(on_press)
+    .into()
 }
 
 /// The × that shuts a dialog. `ghost`, because a close button is the one

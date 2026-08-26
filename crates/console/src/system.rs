@@ -158,7 +158,7 @@ fn ensure_running() -> Result<(), String> {
 
 /// The description of the default PipeWire source, which is what Flow records
 /// from until somebody picks a specific microphone. That is what labels the
-/// Automatic row on the Settings screen, so it is still read from `pactl`
+/// Auto-detect row on the Settings screen, so it is still read from `pactl`
 /// rather than remembered: the desktop's own sound settings can change it at
 /// any moment, and this window does not own that answer.
 pub fn default_input() -> Option<String> {
@@ -521,13 +521,16 @@ Source #6133567
             .collect();
         assert_eq!(
             descriptions,
-            ["Full HD webcam Digital Stereo (IEC958)", "USB Audio Microphone"],
+            [
+                "Full HD webcam Digital Stereo (IEC958)",
+                "USB Audio Microphone"
+            ],
             "the listing has these the other way round"
         );
     }
 
     /// No PipeWire, or a version that says something else entirely: an empty
-    /// list leaves Automatic as the only row, which is the honest answer.
+    /// list leaves Auto-detect as the only row, which is the honest answer.
     #[test]
     fn nothing_to_offer_is_an_empty_list() {
         assert!(sources("").is_empty());

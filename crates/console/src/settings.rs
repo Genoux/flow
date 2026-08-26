@@ -423,7 +423,7 @@ mod tests {
     }
 
     /// Same absence-means-automatic rule as `gpu`, and the same failure if it
-    /// is got wrong: going back to Automatic has to take the line out, because
+    /// is got wrong: going back to Auto-detect has to take the line out, because
     /// the daemon reads a name that is still there as a mic that is still
     /// pinned.
     #[test]

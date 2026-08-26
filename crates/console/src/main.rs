@@ -272,7 +272,7 @@ enum Message {
     /// screen, so it saves immediately rather than behind a confirm.
     SetCleanup(settings::Cleanup),
     Denoise(bool),
-    /// Which microphone to record from. `None` is Automatic - follow whatever
+    /// Which microphone to record from. `None` is Auto-detect - follow whatever
     /// the system default is, now and whenever it changes. Picking one also
     /// closes the dialog it was picked in: the choice takes effect on the next
     /// press, so there is nothing left to confirm.
@@ -341,7 +341,7 @@ struct Console {
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
     autostart: Option<bool>,
-    /// The description of the system default source, which is what Automatic
+    /// The description of the system default source, which is what Auto-detect
     /// resolves to.
     input: Option<String>,
     /// Every microphone that can be picked, as (source name, description).

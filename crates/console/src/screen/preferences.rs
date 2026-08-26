@@ -176,8 +176,8 @@ impl Console {
     /// spend. The dialog's subtitle says the fact now, and nothing is clipped.
     ///
     /// A value, so no full stop - the two lines are a label and its answer, not
-    /// a sentence. The exceptions still read as answers: what Automatic
-    /// resolves to is part of what Automatic currently means, and a machine with
+    /// a sentence. The exceptions still read as answers: what Auto-detect
+    /// resolves to is part of what Auto-detect currently means, and a machine with
     /// no microphone has to say so rather than name one.
     fn input_hint(&self) -> String {
         let Some(pinned) = self.settings.input_device.as_deref() else {
@@ -206,7 +206,7 @@ impl Console {
     /// The microphone dialog, or nothing while it is shut.
     ///
     /// A dialog rather than a menu because the choice needs more than a label
-    /// per row. Automatic is not a device and has to say where it takes its
+    /// per row. Auto-detect is not a device and has to say where it takes its
     /// answer from; a pinned microphone that is switched off has to stay
     /// offerable and say that it is off. Neither fits in a `pick_list` option,
     /// and both are the difference between a list of names and a list you can
@@ -326,13 +326,11 @@ impl Console {
                         })
                 )
                 .on_press(Message::ClosePicker),
-                iced::widget::container(
-                    iced::widget::container(dialog).max_width(DIALOG_WIDTH)
-                )
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center),
+                iced::widget::container(iced::widget::container(dialog).max_width(DIALOG_WIDTH))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Center),
             ]
             .into(),
         )
