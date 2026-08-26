@@ -210,6 +210,12 @@ fn sources(listing: &str) -> Vec<(String, String)> {
             }
         }
     }
+    // PipeWire lists by registry order, which shifts as devices come and go -
+    // the dialog re-reads on every open, so the same four microphones came back
+    // in a different order each time and the row under the cursor was not the
+    // one it was a moment ago. Sorted by description, which is what the rows
+    // are labelled with.
+    found.sort_by(|(_, a), (_, b)| a.cmp(b));
     found
 }
 
@@ -494,14 +500,29 @@ Source #6133567
             sources(MIXED),
             vec![
                 (
-                    "alsa_input.usb-Generic_USB_Audio-00.HiFi_5_1__Mic__source".to_owned(),
-                    "USB Audio Microphone".to_owned()
-                ),
-                (
                     "alsa_input.usb-webcam-02.iec958-stereo".to_owned(),
                     "Full HD webcam Digital Stereo (IEC958)".to_owned()
                 ),
+                (
+                    "alsa_input.usb-Generic_USB_Audio-00.HiFi_5_1__Mic__source".to_owned(),
+                    "USB Audio Microphone".to_owned()
+                ),
             ]
+        );
+    }
+
+    /// The dialog re-reads on every open, so an order that follows the listing
+    /// moves the rows around under the cursor between one opening and the next.
+    #[test]
+    fn the_order_does_not_follow_the_listing() {
+        let descriptions: Vec<_> = sources(MIXED)
+            .into_iter()
+            .map(|(_, description)| description)
+            .collect();
+        assert_eq!(
+            descriptions,
+            ["Full HD webcam Digital Stereo (IEC958)", "USB Audio Microphone"],
+            "the listing has these the other way round"
         );
     }
 
