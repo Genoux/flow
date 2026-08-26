@@ -166,15 +166,48 @@ pub(crate) fn option_row(
         block = block.push(Space::new().height(3));
         // `MUTED`, not the `FAINT` a second line usually gets. `FAINT` is sized
         // for 11px meta - a timestamp, a month - and it sits at 3.07:1 on the
-        // `RAIL_ON` the current row is painted with. This line names the
-        // microphone Automatic actually resolved to, which is the reason
-        // somebody opened the dialog, so it is text rather than decoration and
-        // gets a colour that clears the bar: 4.60:1 on that fill, 5.59:1 on the panel.
+        // `RAIL_ON` the current row is painted with. A note here says why a row
+        // is not what it looks like - that the pinned microphone is unplugged -
+        // so it is text rather than decoration and gets a colour that clears
+        // the bar: 4.60:1 on that fill, 5.59:1 on the panel.
         block = block.push(text(note).size(11.5).color(dissolve(MUTED, fade)));
     }
 
-    button(block)
-        .width(Fill)
+    // The mark, not the fill, is what says which microphone is on. `RAIL_ON`
+    // over the panel is 1.23:1, and it is also what hover paints, so state and
+    // cursor said the same thing in the same material and every row swept past
+    // impersonated the current one. A dot in the green the toggles and sliders
+    // already mean "on" with says it once - and says it in chroma rather than a
+    // near-black luminance step, which is the first thing a video encoder drops
+    // on a streamed desktop. Trailing, so the labels keep the left edge they
+    // share with the dialog title, and width-matched when absent so no row
+    // shifts as the choice moves.
+    let mark: Element<'static, Message> = if current {
+        container(Space::new().width(6).height(6))
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(dissolve(ACCENT, fade))),
+                border: Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    } else {
+        Space::new().width(6).into()
+    };
+
+    // `Fill` on the block rather than a spacer between it and the mark. A
+    // spacer is only what is left over, so a note wide enough to use the whole
+    // row took it to zero and pushed the mark off the edge - which is how the
+    // current row became the one row with no mark on it. Bounded, a long note
+    // wraps instead, and the mark keeps its 6px whatever the device is called.
+    button(
+        row![container(block).width(Fill), mark]
+            .spacing(8)
+            .align_y(iced::Center),
+    )
+    .width(Fill)
         .padding([9, 11])
         .style(move |_theme, status| {
             let fill = if current {

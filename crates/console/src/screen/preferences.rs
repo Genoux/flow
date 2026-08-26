@@ -182,9 +182,11 @@ impl Console {
     fn input_hint(&self) -> String {
         let Some(pinned) = self.settings.input_device.as_deref() else {
             return match (&self.input, self.sources.is_empty()) {
-                (Some(default), _) => format!("Automatic · {default}"),
+                (Some(default), _) => format!("Auto-detect · {default}"),
                 (None, true) => "No microphone found".to_string(),
-                (None, false) => "Automatic · your system default is not a microphone".to_string(),
+                (None, false) => {
+                    "Auto-detect · your system default is not a microphone".to_string()
+                }
             };
         };
 
@@ -204,8 +206,8 @@ impl Console {
     /// The microphone dialog, or nothing while it is shut.
     ///
     /// A dialog rather than a menu because the choice needs more than a label
-    /// per row. Automatic is not a device and has to say what it currently
-    /// resolves to; a pinned microphone that is switched off has to stay
+    /// per row. Automatic is not a device and has to say where it takes its
+    /// answer from; a pinned microphone that is switched off has to stay
     /// offerable and say that it is off. Neither fits in a `pick_list` option,
     /// and both are the difference between a list of names and a list you can
     /// choose from.
@@ -224,11 +226,15 @@ impl Console {
         let lift = picker.lift(self.now);
 
         let mut rows = column![option_row(
-            "Automatic",
+            // Where it takes its answer from, in the row's own name, so the
+            // list is one line per choice. Not the microphone it resolves to
+            // today: that read as settled when it is only a reading, and it put
+            // the same string on two rows stacked one above the other.
             match &self.input {
-                Some(default) => format!("Follows your system default · {default}"),
-                None => "No microphone for it to follow".to_string(),
+                Some(_) => "Auto-detect (system default)",
+                None => "Auto-detect (no system default)",
             },
+            String::new(),
             self.settings.input_device.is_none(),
             lift,
             Message::InputDevice(None),
@@ -269,16 +275,23 @@ impl Console {
         let dialog = panel_at(
             lift,
             column![
-                row![
-                    text("Microphone").size(15).color(dissolve(FG, lift)),
-                    Space::new().width(Length::Fill),
-                    close_btn(lift),
-                ]
-                .align_y(iced::Center),
-                Space::new().height(4),
-                text("Flow records from this. Your system default stays as it is.")
-                    .size(12)
-                    .color(dissolve(FAINT, lift)),
+                // Indented by the row buttons' own horizontal padding, so the
+                // title and the option labels share a left edge. Without it the
+                // header hangs 11px left of the list it introduces. Left only:
+                // the row is `Fill`, so the close button keeps the corner.
+                iced::widget::container(column![
+                    row![
+                        text("Microphone").size(15).color(dissolve(FG, lift)),
+                        Space::new().width(Length::Fill),
+                        close_btn(lift),
+                    ]
+                    .align_y(iced::Center),
+                    Space::new().height(4),
+                    text("Flow records from this. Your system default stays as it is.")
+                        .size(12)
+                        .color(dissolve(FAINT, lift)),
+                ])
+                .padding(iced::Padding::ZERO.left(11)),
                 Space::new().height(14),
                 rows,
             ]
