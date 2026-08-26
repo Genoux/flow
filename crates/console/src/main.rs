@@ -52,9 +52,9 @@ use crate::layout::{
     scroll_inset, section_shell, setting,
 };
 use crate::theme::{
-    mix, progress, ACCENT, BG, CALENDAR_DAYS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR, FADE, FAINT,
-    FG, GAP, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD,
-    SCROLL_PAD, STARTING, WARN,
+    mix, progress, ACCENT, BG, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR,
+    FADE, FAINT, FG, GAP, HAIRLINE, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RADIUS,
+    RAIL_WIDTH, ROW_PAD, SCROLL_PAD, STARTING, WARN,
 };
 use iced::{Color, Subscription, Task, Theme};
 
@@ -64,8 +64,13 @@ fn main() -> iced::Result {
         .theme(theme)
         .subscription(subscription)
         .window(iced::window::Settings {
-            size: iced::Size::new(1040.0, 680.0),
+            size: iced::Size::new(1060.0, 694.0),
             position: iced::window::Position::Centered,
+            // Not scaled with the opening size, and deliberately: this is not a
+            // matter of taste like the line above it, it is the point below
+            // which the layout stops working - the rail is a fixed 176 and the
+            // pane's insets are fixed either side of it, so the floor is set by
+            // what still fits rather than by how big the window should feel.
             min_size: Some(iced::Size::new(640.0, 460.0)),
             // Without this the Wayland app_id is empty, so compositor window
             // rules, taskbars and .desktop matching have nothing to key on.
@@ -99,12 +104,30 @@ fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
 fn subscription(state: &Console) -> Subscription<Message> {
     let daemon =
         Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon));
-    if !state.moving() {
-        // Redrawing every frame forever to animate nothing would be a way to
-        // make a settings window cost battery.
-        return daemon;
+    let mut subs = vec![daemon];
+
+    // Escape shuts the dialog. A modal you can only leave with the pointer is
+    // a modal somebody gets stuck in, and the listener costs nothing while
+    // there is no dialog to shut.
+    if matches!(state.picking_input, Some(Picker::Opening(_))) {
+        subs.push(iced::event::listen_with(|event, _status, _window| {
+            matches!(
+                event,
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                })
+            )
+            .then_some(Message::ClosePicker)
+        }));
     }
-    Subscription::batch([daemon, iced::window::frames().map(Message::Tick)])
+
+    // Redrawing every frame forever to animate nothing would be a way to make
+    // a settings window cost battery.
+    if state.moving() {
+        subs.push(iced::window::frames().map(Message::Tick));
+    }
+    Subscription::batch(subs)
 }
 
 /// The longest step any animation may be advanced by in one frame, in seconds.
@@ -195,6 +218,52 @@ impl Section {
     }
 }
 
+/// The microphone dialog's clock, and which way it is running.
+///
+/// Not a bool, and that is the whole point: a dismissed dialog has to stay in
+/// the widget tree until its fade has run out, so `Closing` is a dialog you can
+/// still see. It used to be `Option<Instant>` cleared on close, which meant the
+/// thing faded in over 200ms and then vanished between two frames - the arrival
+/// was animated and the departure was a cut.
+#[derive(Debug, Clone, Copy)]
+enum Picker {
+    Opening(std::time::Instant),
+    Closing(std::time::Instant),
+}
+
+impl Picker {
+    /// 1 when fully open, 0 when it is no longer there.
+    ///
+    /// Eased on the way in and linear on the way out, which is not a lapse.
+    /// `progress` is a quartic ease-out - the right curve for an arrival, since
+    /// it settles rather than stops - and the exit was written as `1 - progress`
+    /// on the assumption that reversing a good curve gives a good curve. It does
+    /// not: inverted, the quartic front-loads the whole fade, so the dialog was
+    /// under 7% opacity a quarter of the way through 200ms and then hung there
+    /// as a ghost for the rest. Opacity has no position to settle into, so an
+    /// exit has nothing to gain from easing and everything to lose from a tail.
+    fn lift(self, now: std::time::Instant) -> f32 {
+        match self {
+            Self::Opening(at) => progress(at, now, FADE),
+            Self::Closing(at) => {
+                let elapsed = now.saturating_duration_since(at).as_millis() as f32;
+                1.0 - (elapsed / FADE as f32).clamp(0.0, 1.0)
+            }
+        }
+    }
+
+    /// Faded out and finished with. `view` stops drawing it; `Tick` drops it.
+    fn spent(self, now: std::time::Instant) -> bool {
+        matches!(self, Self::Closing(_)) && self.lift(now) <= 0.0
+    }
+
+    fn since(self) -> std::time::Instant {
+        match self {
+            Self::Opening(at) | Self::Closing(at) => at,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     Select(Section),
@@ -203,6 +272,15 @@ enum Message {
     /// screen, so it saves immediately rather than behind a confirm.
     SetCleanup(settings::Cleanup),
     Denoise(bool),
+    /// Which microphone to record from. `None` is Automatic - follow whatever
+    /// the system default is, now and whenever it changes. Picking one also
+    /// closes the dialog it was picked in: the choice takes effect on the next
+    /// press, so there is nothing left to confirm.
+    InputDevice(Option<String>),
+    /// Open the microphone dialog. See `mic_dialog`.
+    PickInput,
+    /// Dismiss it without choosing - the close button, or a click on the veil.
+    ClosePicker,
     Sound(bool),
     Autostart(bool),
     Duck(u32),
@@ -263,8 +341,14 @@ struct Console {
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
     autostart: Option<bool>,
-    /// The microphone PipeWire is actually handing the daemon.
+    /// The description of the system default source, which is what Automatic
+    /// resolves to.
     input: Option<String>,
+    /// Every microphone that can be picked, as (source name, description).
+    sources: Vec<(String, String)>,
+    /// The microphone dialog while it is on screen or on its way off, `None`
+    /// once it is gone. See [`Picker`].
+    picking_input: Option<Picker>,
     entries: Vec<history::Entry>,
     /// Which row was last copied and when, so its button can say so and then
     /// go back to saying what it does.
@@ -340,6 +424,8 @@ impl Console {
                 service_pending: None,
                 autostart: system::autostart_enabled(),
                 input: system::default_input(),
+                sources: system::input_sources(),
+                picking_input: None,
                 entries,
                 copied: None,
                 days: history::daily(CALENDAR_DAYS),
@@ -411,6 +497,9 @@ impl Console {
             || running(self.entry_hover_at, FADE)
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
             || self.toggled_at.values().any(|at| running(*at, KNOB))
+            || self
+                .picking_input
+                .is_some_and(|picker| running(picker.since(), FADE))
             || self.fading.is_some()
             // The only motion in the product driven by something outside it:
             // the ring is chasing a download, so it moves until it catches up
@@ -564,6 +653,7 @@ impl Console {
         self.models = system::models();
         self.damage = system::damage();
         self.input = system::default_input();
+        self.sources = system::input_sources();
         self.entries = history::recent();
         self.autostart = system::autostart_enabled();
     }

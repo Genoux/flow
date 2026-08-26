@@ -13,11 +13,18 @@ pub const SAMPLE_RATE: u32 = 16_000;
 /// already late; without this the first word is gone by the time the hold starts.
 const PRE_ROLL: usize = SAMPLE_RATE as usize / 5;
 
-/// Whatever the system calls its default input, and nothing else. Flow used to
-/// hunt for a device named "pipewire" to get free rate conversion, but on a
-/// PipeWire machine `default` already IS PipeWire and converts identically
-/// (measured: both accept 16kHz mono f32 from 48kHz stereo hardware). Preferring
-/// one by name only meant ignoring the source the user had actually selected.
+/// Always the cpal default device, whatever a pinned microphone says.
+///
+/// Flow used to hunt for a device named "pipewire" to get free rate conversion,
+/// but on a PipeWire machine `default` already IS PipeWire and converts
+/// identically (measured: both accept 16kHz mono f32 from 48kHz stereo
+/// hardware). That conversion is the reason this must not become a device
+/// lookup again: [`Capture::attach`] hardcodes 16kHz mono f32, which only works
+/// because it is talking to PipeWire rather than to the hardware, and opening a
+/// raw `hw:` PCM through cpal fails outright.
+///
+/// Choosing a microphone therefore happens one layer up, by moving the stream
+/// this opens onto another source - see [`Capture::set_source`].
 pub fn open_device() -> Result<Device> {
     cpal::default_host()
         .default_input_device()
@@ -28,8 +35,17 @@ pub fn open_device() -> Result<Device> {
 /// zeros, which is what "hold and nothing" looked like. Unsuspend before we
 /// open a stream so the first callback is real audio.
 pub fn wake_default_source() {
+    wake_source("@DEFAULT_SOURCE@");
+}
+
+/// Unsuspend one source by name. Separate from [`wake_default_source`] because
+/// a pinned microphone is by definition not the default one, and waking
+/// `@DEFAULT_SOURCE@` while recording from another mic wakes the wrong device -
+/// leaving the one actually being recorded suspended, which is the burst of
+/// zeros above.
+pub fn wake_source(name: &str) {
     let _ = Command::new("pactl")
-        .args(["suspend-source", "@DEFAULT_SOURCE@", "0"])
+        .args(["suspend-source", name, "0"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -43,6 +59,94 @@ pub fn default_source_name() -> Option<String> {
     let name = String::from_utf8(output.stdout).ok()?;
     let name = name.trim();
     (!name.is_empty()).then(|| name.to_string())
+}
+
+/// The name of the running executable, which is what the PipeWire ALSA plugin
+/// names our capture stream after.
+///
+/// Read at runtime rather than hardcoded to "flow". The plugin publishes
+/// `alsa_capture.<binary>`, so anything running under another name - a test
+/// binary, a dev build, a renamed release - would look for a stream that does
+/// not exist and silently go on recording from the default microphone. That is
+/// not hypothetical: it is what tests/routing.rs did before this was derived.
+fn binary_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "flow".to_string())
+}
+
+fn unquote(value: &str) -> Option<&str> {
+    value.strip_prefix('"')?.strip_suffix('"')
+}
+
+/// Whether this property line names the capture stream belonging to `binary`.
+///
+/// Two spellings because the ALSA plugin writes both, and matching either means
+/// this survives a PipeWire that stops publishing one of them. Matching on the
+/// pid instead would be exact and is not available: the plugin does not publish
+/// `application.process.id` for its own streams, though pipewire-pulse clients
+/// beside us in the same listing do.
+fn names_stream(line: &str, binary: &str) -> bool {
+    match line.split_once(" = ") {
+        Some(("node.name", value)) => {
+            unquote(value).and_then(|name| name.strip_prefix("alsa_capture.")) == Some(binary)
+        }
+        Some(("application.name", value)) => {
+            unquote(value)
+                .and_then(|name| name.strip_prefix("PipeWire ALSA ["))
+                .and_then(|name| name.strip_suffix(']'))
+                == Some(binary)
+        }
+        _ => false,
+    }
+}
+
+/// The id of our own capture stream in `pactl list source-outputs`.
+///
+/// Split from the command that produces the listing so the parsing is testable
+/// with no PipeWire running.
+fn our_source_output(listing: &str, binary: &str) -> Option<String> {
+    let mut id = None;
+    for line in listing.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("Source Output #") {
+            id = Some(value.trim().to_owned());
+        } else if names_stream(line, binary) {
+            return id;
+        }
+    }
+    None
+}
+
+/// Point Flow's live capture at `source`, leaving every other stream and the
+/// system default exactly as they were.
+///
+/// This is the whole per-app routing mechanism. Rebuilding the cpal stream
+/// against a chosen device was the obvious alternative and does not work - see
+/// [`open_device`] - whereas PipeWire will happily move a running stream
+/// between sources and remembers the choice for itself.
+fn move_stream_to(source: &str) -> Result<()> {
+    let binary = binary_name();
+    let listing = Command::new("pactl")
+        .args(["list", "source-outputs"])
+        .output()?;
+    let id = our_source_output(&String::from_utf8_lossy(&listing.stdout), &binary)
+        .ok_or_else(|| anyhow!("no capture stream named after {binary} in the graph"))?;
+
+    let moved = Command::new("pactl")
+        .args(["move-source-output", &id, source])
+        .output()?;
+    if !moved.status.success() {
+        return Err(anyhow!(
+            "pactl move-source-output: {}",
+            String::from_utf8_lossy(&moved.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
 /// A read-only view of what the microphone is hearing right now, for whoever is
@@ -194,6 +298,11 @@ pub struct Capture {
     pre_roll: Arc<Mutex<VecDeque<f32>>>,
     last_write: Arc<AtomicU64>,
     heard: Arc<AtomicU64>,
+    /// The source the config asks for, and the source actually applied to the
+    /// stream as it stands. Two fields rather than one because a rebuilt stream
+    /// is a new source-output id, so what was wanted outlives what was applied.
+    wanted_source: Mutex<Option<String>>,
+    routed_to: Mutex<Option<String>>,
 }
 
 impl Capture {
@@ -212,6 +321,8 @@ impl Capture {
             pre_roll: Arc::new(Mutex::new(VecDeque::with_capacity(PRE_ROLL))),
             last_write: Arc::new(AtomicU64::new(now_millis())),
             heard: Arc::new(AtomicU64::new(0)),
+            wanted_source: Mutex::new(None),
+            routed_to: Mutex::new(None),
         };
         capture.attach(device)?;
         Ok(capture)
@@ -253,7 +364,77 @@ impl Capture {
         // leaves the old stream in place rather than nothing at all.
         *self.stream.lock().unwrap() = Some(stream);
         self.last_write.store(now_millis(), Ordering::Relaxed);
+
+        // A new stream is a new source-output, so whatever was routed applies
+        // to something that no longer exists. `begin_inner` re-applies from
+        // `wanted_source` on the next press.
+        *self.routed_to.lock().unwrap() = None;
         Ok(())
+    }
+
+    /// Record from `wanted`, or from the system default when it is `None`.
+    ///
+    /// Called per dictation from the daemon, which is how a microphone picked
+    /// in the console lands on the next press rather than the next restart -
+    /// the same read-at-the-point-of-use rule as ducking and the chord.
+    pub fn set_source(&self, wanted: Option<&str>) {
+        *self.wanted_source.lock().unwrap() = wanted.map(str::to_owned);
+        self.apply_source();
+    }
+
+    /// Move the stream onto the wanted source unless it is already there.
+    ///
+    /// Never fails a dictation. A microphone that has been unplugged leaves
+    /// `routed_to` unset so the next press tries again, and PipeWire keeps
+    /// feeding us the default in the meantime - degrading to the wrong mic is
+    /// recoverable, and degrading to silence is not.
+    fn apply_source(&self) {
+        let wanted = self.wanted_source.lock().unwrap().clone();
+        let mut routed = self.routed_to.lock().unwrap();
+
+        // Never pinned and still not pinned, which is nearly every machine:
+        // PipeWire follows the default source on its own, so there is nothing
+        // to do and - more to the point - nothing to ask it, keeping the
+        // common path free of a shell-out entirely.
+        if wanted.is_none() && routed.is_none() {
+            return;
+        }
+
+        // Going back to Automatic has to name the default explicitly. The
+        // stream is sitting on a mic somebody pinned and will stay there.
+        let Some(target) = wanted.or_else(default_source_name) else {
+            return;
+        };
+        if routed.as_deref() == Some(target.as_str()) {
+            return;
+        }
+
+        match move_stream_to(&target) {
+            Ok(()) => {
+                wake_source(&target);
+                eprintln!("mic source: {target}");
+                *routed = Some(target);
+            }
+            Err(err) => {
+                *routed = None;
+                eprintln!("could not record from {target}, using the default instead: {err:#}");
+            }
+        }
+    }
+
+    /// The source the stream was last successfully moved onto, or `None` while
+    /// it is simply following the system default.
+    pub fn current_source(&self) -> Option<String> {
+        self.routed_to.lock().unwrap().clone()
+    }
+
+    /// Unsuspend whichever source we are actually on, which is not always the
+    /// default one. See [`wake_source`].
+    fn wake_current(&self) {
+        match self.routed_to.lock().unwrap().as_deref() {
+            Some(name) => wake_source(name),
+            None => wake_default_source(),
+        }
     }
 
     /// Time since the last callback delivered anything.
@@ -320,7 +501,7 @@ impl Capture {
     pub fn warmup(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            wake_default_source();
+            self.wake_current();
             let pre = self.pre_roll.lock().unwrap();
             if pre.iter().any(|s| s.abs() > SILENCE_RMS) {
                 return true;
@@ -346,10 +527,13 @@ impl Capture {
     }
 
     fn begin_inner(&self, keep_pre_roll: bool) {
-        wake_default_source();
         // Before the pre-roll is copied: a rebuilt stream starts with an empty
         // ring, and taking the stale one would prepend audio from another device.
         self.ensure_live();
+        // After it, not before: a reopen builds a new source-output, so the
+        // routing has to be re-applied to the stream that now exists.
+        self.apply_source();
+        self.wake_current();
         let pre = self.pre_roll.lock().unwrap();
         let mut samples = self.samples.lock().unwrap();
         samples.clear();
@@ -451,3 +635,94 @@ pub fn rms(samples: &[f32]) -> f32 {
 /// also passes silence-transcribed-as-nonsense. Separating those needs Silero
 /// VAD, not a level check.
 pub const SILENCE_RMS: f32 = 0.005;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two streams, ours second, because the bug this guards is returning the
+    /// id of whichever block happened to come first and moving another app's
+    /// microphone instead of our own.
+    const OUTPUTS: &str = "\
+Source Output #6733079
+\tDriver: PipeWire
+\tSource: 6733069
+\tProperties:
+\t\tapplication.name = \"sunshine\"
+\t\tnode.name = \"sunshine\"
+Source Output #6192836
+\tDriver: PipeWire
+\tSource: 6133567
+\tProperties:
+\t\tapplication.name = \"PipeWire ALSA [flow]\"
+\t\tnode.name = \"alsa_capture.flow\"
+";
+
+    #[test]
+    fn our_own_stream_is_the_one_that_moves() {
+        assert_eq!(
+            our_source_output(OUTPUTS, "flow").as_deref(),
+            Some("6192836")
+        );
+    }
+
+    /// No stream of ours in the graph is the normal state before the capture
+    /// opens. It must read as "nothing to move", never as somebody else's id.
+    #[test]
+    fn another_app_is_never_mistaken_for_ours() {
+        let others = OUTPUTS.split("Source Output #6192836").next().unwrap();
+        assert_eq!(our_source_output(others, "flow"), None);
+        assert_eq!(our_source_output("", "flow"), None);
+    }
+
+    /// The name is the binary's, not the string "flow". Looking for the wrong
+    /// one finds nothing and silently leaves the capture on the default
+    /// microphone, which is how this was caught: the test binary is not called
+    /// flow, so the first version of this feature did nothing under test while
+    /// appearing to work.
+    #[test]
+    fn the_stream_is_found_under_whatever_the_binary_is_called() {
+        let renamed = OUTPUTS.replace("flow", "flow-dev");
+        assert_eq!(
+            our_source_output(&renamed, "flow-dev").as_deref(),
+            Some("6192836")
+        );
+        assert_eq!(our_source_output(&renamed, "flow"), None);
+    }
+
+    /// The ALSA plugin has published either spelling depending on the PipeWire
+    /// version, and finding neither would silently disable the whole feature.
+    #[test]
+    fn either_spelling_identifies_the_stream() {
+        for line in [
+            r#"node.name = "alsa_capture.flow""#,
+            r#"application.name = "PipeWire ALSA [flow]""#,
+        ] {
+            assert!(names_stream(line, "flow"), "{line} was not recognised");
+        }
+    }
+
+    /// A prefix match would claim `flow-dev`'s stream for `flow`, and move a
+    /// microphone out from under another running copy.
+    #[test]
+    fn a_similar_name_is_not_our_stream() {
+        for line in [
+            r#"node.name = "alsa_capture.flow-dev""#,
+            r#"node.name = "alsa_capture.flowers""#,
+            r#"node.name = "sunshine""#,
+            r#"application.name = "PipeWire ALSA [flow-dev]""#,
+            r#"application.name = "flow""#,
+        ] {
+            assert!(!names_stream(line, "flow"), "{line} was claimed as ours");
+        }
+    }
+
+    /// Whatever it resolves to, it has to be a name the listing could actually
+    /// contain - an empty one would match the wrong stream or none at all.
+    #[test]
+    fn the_binary_always_has_a_name() {
+        let name = binary_name();
+        assert!(!name.is_empty());
+        assert!(!name.contains('/'), "{name} is a path, not a name");
+    }
+}

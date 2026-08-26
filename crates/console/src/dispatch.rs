@@ -9,10 +9,25 @@ use crate::*;
 use iced::Task;
 
 impl Console {
+    /// Start the microphone dialog's way out, unless it is already on it - a
+    /// second Escape, or an Escape landing on a click-off already in flight,
+    /// must not restart the fade from full.
+    fn close_picker(&mut self) {
+        if matches!(self.picking_input, Some(Picker::Opening(_))) {
+            self.picking_input = Some(Picker::Closing(std::time::Instant::now()));
+        }
+    }
+
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Select(section) => {
                 self.section = section;
+                // Re-read on arrival, so a microphone plugged in while the
+                // window was open is on the list by the time it is looked at.
+                if section == Section::Settings {
+                    self.sources = system::input_sources();
+                    self.input = system::default_input();
+                }
             }
             Message::Tick(now) => {
                 // The gap since the last frame, which is what the bar's easing
@@ -31,6 +46,13 @@ impl Console {
                 self.now = now;
                 if let Some(state) = self.download.as_mut() {
                     state.advance(elapsed);
+                }
+                // Off the tree already - `view` stopped drawing it when the
+                // fade ran out. This is only the state catching up, and it has
+                // to happen here because nothing else will ask again once
+                // `moving` goes quiet.
+                if self.picking_input.is_some_and(|picker| picker.spent(now)) {
+                    self.picking_input = None;
                 }
                 if let Some(fading) = self.fading.as_mut() {
                     *fading += elapsed;
@@ -77,6 +99,23 @@ impl Console {
                 self.settings.duck = value;
                 self.persist();
             }
+            Message::InputDevice(name) => {
+                self.settings.input_device = name;
+                // Fades out rather than snapping: the row behind updates on the
+                // same frame, so the dialog leaving is what shows the choice
+                // landing instead of hiding it.
+                self.close_picker();
+                self.persist();
+            }
+            Message::PickInput => {
+                // Re-read on the way in, the same rule as arriving at the
+                // screen: the list a dialog shows should be the list as of the
+                // moment it was asked for.
+                self.sources = system::input_sources();
+                self.input = system::default_input();
+                self.picking_input = Some(Picker::Opening(std::time::Instant::now()));
+            }
+            Message::ClosePicker => self.close_picker(),
             Message::Autostart(on) => {
                 self.toggled_at
                     .insert("autostart", std::time::Instant::now());

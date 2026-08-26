@@ -9,7 +9,7 @@ use crate::control::{copy_btn, hairline};
 use crate::format::{clip_tail, display_path};
 use crate::theme::{
     mix, BG, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, GROUP_GAP, GROUP_PAD, LABEL_GAP, MUTED,
-    PAGE_TOP, RAIL_ON, ROW_PAD, SCROLL_PAD,
+    PAGE_TOP, RADIUS, RAIL_ON, ROW_PAD, SCROLL_PAD,
 };
 use crate::{history, Message, Section};
 use iced::widget::{
@@ -78,7 +78,7 @@ pub(crate) fn entry_row<'a>(
             warmth * 0.7,
         ))),
         border: Border {
-            radius: 6.0.into(),
+            radius: RADIUS.into(),
             ..Default::default()
         },
         ..Default::default()
@@ -101,14 +101,25 @@ pub(crate) fn entry_list<'a>(rows: impl Into<Element<'a, Message>>) -> Element<'
         .into()
 }
 
-/// A scrollable with a thin, browser-style bar: invisible until the pointer
-/// is over it, a faint hairline while hovered. Iced's default is a wide rail
-/// that sits there permanently, which reads as chrome in a window this small.
+/// A scrollable with no bar at all.
 ///
-/// Top and bottom padding is on the content, not the pane: it is the air
-/// above the heading and below the last row, and it scrolls with them. The
-/// right pad is for the bar itself, which iced overlays on top of the
-/// content rather than beside it.
+/// It went from iced's permanent wide rail, to a 4px hairline that appeared on
+/// hover, to nothing - each step for the same reason, which is that this window
+/// is small and a bar is the one piece of chrome that is never about the page it
+/// is on. The wheel does not need it: iced drives scrolling from
+/// `cursor_over_scrollable`, so the bar is decoration, and `draw_scrollbar`
+/// guards on `bounds.width > 0.0` for both the rail and the scroller - a zero
+/// width is genuinely nothing drawn, not a transparent quad still being painted.
+///
+/// Zero rather than a transparent 4px, which was the other way to do it: a
+/// transparent bar is still draggable, so the far right edge would scroll the
+/// page when grabbed with nothing there to say why.
+///
+/// Top and bottom padding is on the content, not the pane: it is the air above
+/// the heading and below the last row, and it scrolls with them. The right pad
+/// is the page's own margin - it used to be partly for the bar, which iced
+/// overlays on top of the content rather than beside it, and it stays because
+/// the text still needs a margin.
 pub(crate) fn scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     scroll_pad(content, PAGE_TOP)
 }
@@ -132,28 +143,10 @@ pub(crate) fn scroll_inset<'a>(
     )
     .direction(scrollable::Direction::Vertical(
         scrollable::Scrollbar::new()
-            .width(4)
-            .margin(2)
-            .scroller_width(4),
+            .width(0)
+            .margin(0)
+            .scroller_width(0),
     ))
-    .style(|theme, status| {
-        let base = scrollable::default(theme, status);
-        let scroller_colour = match status {
-            scrollable::Status::Active { .. } => Color::TRANSPARENT,
-            _ => FAINT,
-        };
-        scrollable::Style {
-            vertical_rail: scrollable::Rail {
-                background: None,
-                scroller: scrollable::Scroller {
-                    background: scroller_colour.into(),
-                    ..base.vertical_rail.scroller
-                },
-                ..base.vertical_rail
-            },
-            ..base
-        }
-    })
     .height(Fill)
     .into()
 }
@@ -257,7 +250,7 @@ pub(crate) fn nav(
                 background: None,
                 text_color: mix(BG, MUTED, 0.45),
                 border: Border {
-                    radius: 6.0.into(),
+                    radius: RADIUS.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -279,7 +272,7 @@ pub(crate) fn nav(
                 background: Some(Background::Color(mix(Color::TRANSPARENT, RAIL_ON, fill))),
                 text_color: colour,
                 border: Border {
-                    radius: 6.0.into(),
+                    radius: RADIUS.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -299,9 +292,10 @@ pub(crate) fn nav(
 /// made a row with nothing to explain taller than the rows either side of it.
 pub(crate) fn setting<'a>(
     label: &'a str,
-    description: &'a str,
+    description: impl Into<String>,
     control: Element<'a, Message>,
 ) -> Element<'a, Message> {
+    let description = description.into();
     let mut text_block = column![text(label).size(13.5).color(FG)];
     if !description.is_empty() {
         text_block = text_block.push(Space::new().height(LABEL_GAP));

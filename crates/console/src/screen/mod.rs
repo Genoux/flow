@@ -27,7 +27,13 @@ impl Console {
         let console = row![self.rail(), vertical_hairline(), self.pane()];
 
         let Some(state) = self.download.as_ref().filter(|_| self.showing_setup) else {
-            return console.into();
+            // A dialog is the only other thing in this window allowed to sit on
+            // top of the console, and it goes on top the same way setup does:
+            // the page underneath stays visible and stops taking clicks.
+            return match self.mic_dialog() {
+                Some(dialog) => stack![inert(console), dialog].into(),
+                None => console.into(),
+            };
         };
 
         // Setup dissolves into the console rather than being replaced by it.

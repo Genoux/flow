@@ -7,7 +7,8 @@
 use crate::card::card;
 use crate::format::{commas, plural};
 use crate::theme::{
-    mix, ACCENT, BG, CALENDAR_WEEKS, CELL, CELL_GAP, FAINT, FG, LINE, MUTED, RAISED, WEEKDAY_GUTTER,
+    mix, ACCENT, BG, CALENDAR_WEEKS, CELL, CELL_GAP, FAINT, FG, HAIRLINE, LINE, MUTED, RADIUS,
+    RAISED, WEEKDAY_GUTTER,
 };
 use crate::{history, Message};
 use iced::widget::{column, container, responsive, row, text, tooltip, Space};
@@ -139,8 +140,8 @@ fn day_cell(day: history::Day, number: u64, ceiling: u32) -> Element<'static, Me
                 background: Some(Background::Color(BG)),
                 border: Border {
                     color: mix(LINE, FG, 0.22),
-                    width: 1.0,
-                    radius: 6.0.into(),
+                    width: HAIRLINE,
+                    radius: RADIUS.into(),
                 },
                 ..Default::default()
             }),

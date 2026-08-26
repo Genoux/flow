@@ -193,8 +193,8 @@ impl Console {
             .style(move |_| container::Style {
                 background: Some(Background::Color(mix(BG, tone, 0.055))),
                 border: Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
+                    radius: CARD_RADIUS.into(),
+                    width: HAIRLINE,
                     color: mix(BG, tone, 0.22),
                 },
                 ..Default::default()

@@ -22,9 +22,18 @@
 //! the app-level rows that belong to no topic - starting with the login item,
 //! which is where macOS files its own.
 
+use crate::card::panel_at;
+use crate::control::{close_btn, option_row};
+use crate::format::clip_tail;
+use crate::theme::dissolve;
 use crate::*;
-use iced::widget::{column, row, text, Space};
-use iced::{Element, Font};
+use iced::widget::{column, mouse_area, row, stack, text, Space};
+use iced::{Element, Font, Length};
+
+/// The dialog's own measure. Wide enough for a full PipeWire description at
+/// 13px, narrow enough that it still reads as a dialog on a 1040px window
+/// rather than as a second page.
+const DIALOG_WIDTH: f32 = 420.0;
 
 impl Console {
     pub(super) fn preferences_section(&self) -> Element<'_, Message> {
@@ -128,22 +137,10 @@ impl Console {
     /// input, not about the output.
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {
         vec![
-            // Read-only, and deliberately so: the daemon records from the
-            // system default source, which means changing your microphone in
-            // your desktop's own settings already works. A picker here could
-            // only ever be a second answer to the same question.
             setting(
                 "Input",
-                "Set in your system sound settings.",
-                text(
-                    self.input
-                        .clone()
-                        .unwrap_or_else(|| "not detected".to_string()),
-                )
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(MUTED)
-                .into(),
+                self.input_hint(),
+                action_msg("Change", false, Message::PickInput),
             ),
             setting(
                 "Lower other apps",
@@ -165,5 +162,166 @@ impl Console {
                 ),
             ),
         ]
+    }
+
+    /// The line under Input, which is the microphone itself.
+    ///
+    /// It used to explain the feature here - "Only Flow. Your system default is
+    /// untouched." - while the device name sat in the value slot on the right,
+    /// squeezed into a column shared with the "Lower other apps" slider and
+    /// clipped at 26 characters because that is all that fits there. Two
+    /// mistakes in one row: the fact belonged in the dialog, where it is read at
+    /// the moment somebody is choosing rather than every time they scroll past,
+    /// and the value belonged on the line that has the whole left column to
+    /// spend. The dialog's subtitle says the fact now, and nothing is clipped.
+    ///
+    /// A value, so no full stop - the two lines are a label and its answer, not
+    /// a sentence. The exceptions still read as answers: what Automatic
+    /// resolves to is part of what Automatic currently means, and a machine with
+    /// no microphone has to say so rather than name one.
+    fn input_hint(&self) -> String {
+        let Some(pinned) = self.settings.input_device.as_deref() else {
+            return match (&self.input, self.sources.is_empty()) {
+                (Some(default), _) => format!("Automatic · {default}"),
+                (None, true) => "No microphone found".to_string(),
+                (None, false) => "Automatic · your system default is not a microphone".to_string(),
+            };
+        };
+
+        // The description, not the source name. `..._USB_Audio-00.HiFi_5_1__Mic\
+        // __source` is what the config stores; "USB Audio Microphone" is what a
+        // person picked. The raw name only surfaces for a microphone that is
+        // pinned and not in the graph, where there is no description to be had -
+        // clipped from the end, because its tail is what tells one port on a
+        // card from another.
+        self.sources
+            .iter()
+            .find(|(name, _)| name == pinned)
+            .map(|(_, description)| description.clone())
+            .unwrap_or_else(|| format!("{} · not connected", clip_tail(pinned, 34)))
+    }
+
+    /// The microphone dialog, or nothing while it is shut.
+    ///
+    /// A dialog rather than a menu because the choice needs more than a label
+    /// per row. Automatic is not a device and has to say what it currently
+    /// resolves to; a pinned microphone that is switched off has to stay
+    /// offerable and say that it is off. Neither fits in a `pick_list` option,
+    /// and both are the difference between a list of names and a list you can
+    /// choose from.
+    ///
+    /// Stacked over the console by `view` on the same `inert` + veil pattern
+    /// setup uses, so there is one way in this window for something to sit on
+    /// top of something else.
+    pub(crate) fn mic_dialog(&self) -> Option<Element<'_, Message>> {
+        let picker = self.picking_input?;
+        // Nothing left to draw: the fade has run out and `Tick` is about to drop
+        // the state. Drawing it at lift 0 would leave an invisible veil eating
+        // clicks meant for the page underneath.
+        if picker.spent(self.now) {
+            return None;
+        }
+        let lift = picker.lift(self.now);
+
+        let mut rows = column![option_row(
+            "Automatic",
+            match &self.input {
+                Some(default) => format!("Follows your system default · {default}"),
+                None => "No microphone for it to follow".to_string(),
+            },
+            self.settings.input_device.is_none(),
+            lift,
+            Message::InputDevice(None),
+        )]
+        .spacing(2);
+
+        for (name, description) in &self.sources {
+            rows = rows.push(option_row(
+                description,
+                String::new(),
+                self.settings.input_device.as_deref() == Some(name.as_str()),
+                lift,
+                Message::InputDevice(Some(name.clone())),
+            ));
+        }
+
+        // A pinned microphone that is not in the graph right now - unplugged, or
+        // a headset that is off. Offered anyway: dropping it would leave the row
+        // naming a device the dialog denied existed, and no way back to it once
+        // the list had forgotten it. Clipped from the end, because this is the
+        // raw source name and its tail is what separates `..._Mic__source` from
+        // `..._Line__source`.
+        if let Some(missing) = self
+            .settings
+            .input_device
+            .as_deref()
+            .filter(|name| !self.sources.iter().any(|(id, _)| id == name))
+        {
+            rows = rows.push(option_row(
+                &clip_tail(missing, 34),
+                "Not connected".to_string(),
+                true,
+                lift,
+                Message::InputDevice(Some(missing.to_owned())),
+            ));
+        }
+
+        let dialog = panel_at(
+            lift,
+            column![
+                row![
+                    text("Microphone").size(15).color(dissolve(FG, lift)),
+                    Space::new().width(Length::Fill),
+                    close_btn(lift),
+                ]
+                .align_y(iced::Center),
+                Space::new().height(4),
+                text("Flow records from this. Your system default stays as it is.")
+                    .size(12)
+                    .color(dissolve(FAINT, lift)),
+                Space::new().height(14),
+                rows,
+            ]
+            .into(),
+        );
+
+        Some(
+            stack![
+                // Click-off, which is the other half of a close button. The
+                // dialog is above this in the stack, so a click that lands on
+                // the dialog never reaches it.
+                //
+                // Black, not `BG`. Setup's veil is `BG` because it covers the
+                // whole window and becomes the new ground - but a scrim's job
+                // is to darken the old one, and `BG` over a page whose ground
+                // is already `BG` darkens it by ΔL* 0.00. It dimmed the text
+                // and the switches and left the ground exactly where it was,
+                // which is why the dialog read as washed out rather than
+                // floating: it had only ΔL* 4.66 of separation from a scrim
+                // that had not moved. Black at 0.66 takes the ground to
+                // #030405 and the panel's separation to ΔL* 6.63.
+                mouse_area(
+                    iced::widget::container(Space::new())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(move |_| iced::widget::container::Style {
+                            background: Some(iced::Background::Color(iced::Color {
+                                a: 0.66 * lift,
+                                ..iced::Color::BLACK
+                            })),
+                            ..Default::default()
+                        })
+                )
+                .on_press(Message::ClosePicker),
+                iced::widget::container(
+                    iced::widget::container(dialog).max_width(DIALOG_WIDTH)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center),
+            ]
+            .into(),
+        )
     }
 }

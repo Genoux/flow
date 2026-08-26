@@ -48,8 +48,8 @@ impl Console {
                     background: Background::Color(BG),
                     border: Border {
                         color: LINE,
-                        width: 1.0,
-                        radius: 6.0.into()
+                        width: HAIRLINE,
+                        radius: RADIUS.into()
                     },
                     icon: FAINT,
                     placeholder: FAINT,

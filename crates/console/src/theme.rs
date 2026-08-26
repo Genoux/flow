@@ -12,12 +12,21 @@
 
 use iced::Color;
 
+// Every grey here leans a little cool and none of them lean far. The lean used
+// to be twice this: `MUTED` and `FAINT` sat 16 and 17 points of blue above their
+// own red, and since those two paint every label and every description in the
+// product - over grounds leaning the same way underneath them - the whole window
+// read blue rather than dark. Halved by holding the green channel and walking
+// red up as blue came down, which is why none of the contrast work recorded
+// below moved: green carries 71% of luminance, so the ratios shifted by at most
+// 0.02. A new grey belongs at b-r of 8 or under, and a neutral one is fine.
+
 pub(crate) const BG: Color = Color {
-    r: 0.039,
+    r: 0.043,
     g: 0.043,
-    b: 0.055,
+    b: 0.051,
     a: 1.0,
-}; // #0A0B0E
+}; // #0B0B0D
 pub(crate) const FG: Color = Color {
     r: 0.925,
     g: 0.929,
@@ -29,47 +38,47 @@ pub(crate) const FG: Color = Color {
 /// the body text clears comfortably. Quiet is a job for weight and size here,
 /// not for a grey that has to be squinted at.
 pub(crate) const MUTED: Color = Color {
-    r: 0.541,
+    r: 0.549,
     g: 0.565,
-    b: 0.604,
+    b: 0.580,
     a: 1.0,
-}; // #8A909A
+}; // #8C9094
 /// The quietest text in the product - 11px meta: timestamps, month names, the
 /// label half of a label/value pair. Also lifted, from #4E545C at 2.2:1, which
 /// is decoration rather than text at that size.
 pub(crate) const FAINT: Color = Color {
-    r: 0.424,
+    r: 0.431,
     g: 0.451,
-    b: 0.490,
+    b: 0.463,
     a: 1.0,
-}; // #6C737D
+}; // #6E7376
 pub(crate) const LINE: Color = Color {
-    r: 0.106,
+    r: 0.114,
     g: 0.118,
-    b: 0.137,
+    b: 0.129,
     a: 1.0,
-}; // #1B1E23
+}; // #1D1E21
 /// The lifted surface a card sits on. Half a step off the ground rather than a
 /// full one: a card already carries a hairline and a shadow, and three depth
 /// cues on one rectangle - repeated down a page of them - is what turned the
 /// Overview into a stack of grey plates. The container recedes; the words on
 /// it are the thing to see.
 pub(crate) const RAISED: Color = Color {
-    r: 0.082,
+    r: 0.086,
     g: 0.090,
-    b: 0.106,
+    b: 0.098,
     a: 1.0,
-}; // #15171B
+}; // #161719
 /// What a rail item sits on when it is the current section. `RAISED` was doing
 /// this job too, and at card weight against the same ground the selected item
 /// was nearly invisible - a rail should stay quiet, but quiet still has to be
 /// legible.
 pub(crate) const RAIL_ON: Color = Color {
-    r: 0.145,
+    r: 0.153,
     g: 0.157,
-    b: 0.176,
+    b: 0.169,
     a: 1.0,
-}; // #25282D
+}; // #27282B
 /// Any line drawn *on* a card - its border, and any rule inside it.
 ///
 /// `LINE` is a page-ground colour and is one value off `RAISED`: a hairline in
@@ -83,11 +92,11 @@ pub(crate) const RAIL_ON: Color = Color {
 /// the lowest value that still separates a card from the ground and still
 /// shows up as a rule *on* the card.
 pub(crate) const EDGE: Color = Color {
-    r: 0.149,
+    r: 0.157,
     g: 0.165,
-    b: 0.184,
+    b: 0.173,
     a: 1.0,
-}; // #262A2F
+}; // #282A2C
 pub(crate) const ACCENT: Color = Color {
     r: 0.180,
     g: 0.835,
@@ -122,6 +131,31 @@ pub(crate) const ON_ACCENT: Color = Color {
     b: 0.059,
     a: 1.0,
 };
+
+/// The corner every control in the window is cut to. One value, because a page
+/// carrying two radii reads as a page assembled out of two kits.
+pub(crate) const RADIUS: f32 = 6.0;
+
+/// The corner a card is cut to - the cleanup levels, the Overview's banner.
+/// Two steps larger than a control's, and deliberately so: a card is a surface
+/// and a control is a target, and the radius is most of what says which one you
+/// are looking at. Two values in the whole window, both named here, rather than
+/// the seven that were typed out across five files.
+pub(crate) const CARD_RADIUS: f32 = 8.0;
+
+/// Every border here is a hairline. Nothing is outlined heavier than this:
+/// depth comes from surface colour, never from stroke weight - see `EDGE`,
+/// which had to be lowered for exactly that reason.
+pub(crate) const HAIRLINE: f32 = 1.0;
+
+/// Inside anything clickable: a button, a dropdown. Shared so a dropdown
+/// sitting two rows from a button is the same height as it without either
+/// having been measured against the other by eye.
+pub(crate) const CONTROL_PAD: [f32; 2] = [7.0, 14.0];
+
+/// The text inside a control. One size, so a row's button and a row's dropdown
+/// do not read as two different weights of the same decision.
+pub(crate) const CONTROL_TEXT: f32 = 13.0;
 
 pub(crate) const RAIL_WIDTH: f32 = 176.0;
 
@@ -225,4 +259,25 @@ pub(crate) fn mix(from: Color, to: Color, t: f32) -> Color {
 /// the label pops in already painted.
 pub(crate) fn emerge(colour: Color, t: f32) -> Color {
     mix(BG, colour, t)
+}
+
+/// A colour at `t` opacity, for anything that has to leave rather than arrive.
+///
+/// The counterpart to [`emerge`], and the two are not interchangeable. `emerge`
+/// walks RGB toward `BG`, which is right for a thing appearing on a page whose
+/// ground is `BG`: the colour it fades from is the colour already there. It is
+/// wrong for a thing that has to stop existing. A panel walked to `BG` is still
+/// an opaque rectangle, and over a page with words on it that rectangle is a
+/// hole punched through them - which is exactly what the microphone dialog left
+/// behind on its way out, a `BG` plate sitting over the settings rows for as
+/// long as the fade lasted.
+///
+/// Alpha is the only fade that ends in nothing. It works on text too, despite
+/// what `emerge` says above: `iced_graphics::text::to_color` takes the colour
+/// through `into_rgba8` and hands all four channels to cosmic-text.
+pub(crate) fn dissolve(colour: Color, t: f32) -> Color {
+    Color {
+        a: colour.a * t.clamp(0.0, 1.0),
+        ..colour
+    }
 }

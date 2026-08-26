@@ -3,7 +3,7 @@
 //! A card is a container with a hairline and a shadow; everything about how
 //! one is drawn lives here so seven of them on a page cannot drift apart.
 
-use crate::theme::{mix, EDGE, FAINT, FG, MUTED, RAISED};
+use crate::theme::{dissolve, mix, EDGE, FAINT, FG, HAIRLINE, MUTED, RAISED};
 use crate::Message;
 use iced::widget::{column, container, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Font};
@@ -12,19 +12,36 @@ use iced::{Background, Border, Color, Element, Fill, Font};
 /// built from, so a handful of related facts read as one glance rather than
 /// more rows in the same list.
 pub(crate) fn panel<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
+    panel_at(1.0, content)
+}
+
+/// The same surface, arriving or leaving. Split out for the microphone dialog,
+/// whose panel has to fade with the words on it: left at full weight it was a
+/// solid plate popping onto a console that had not dimmed yet, and only then
+/// did the veil catch up - the one beat of the whole thing that read as two
+/// events instead of one.
+///
+/// [`dissolve`], not [`emerge`]. A panel is a filled rectangle, and a filled
+/// rectangle walked toward `BG` is still filled - on the way out it sat over the
+/// settings rows as an opaque plate with the page's own words behind it, which
+/// is the "placeholder" it left while disappearing. Only alpha ends in nothing.
+///
+/// Shares this body rather than copying it, so the dialog cannot end up on a
+/// surface a shade off the cards.
+pub(crate) fn panel_at<'a>(fade: f32, content: Element<'a, Message>) -> Element<'a, Message> {
     container(content)
         .padding(14)
         .width(Fill)
-        .style(|_theme| container::Style {
-            background: Some(Background::Color(RAISED)),
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(dissolve(RAISED, fade))),
             border: Border {
-                color: EDGE,
-                width: 1.0,
+                color: dissolve(EDGE, fade),
+                width: HAIRLINE,
                 radius: 10.0.into(),
             },
             shadow: iced::Shadow {
                 color: Color {
-                    a: 0.22,
+                    a: 0.22 * fade,
                     ..Color::BLACK
                 },
                 offset: iced::Vector::new(0.0, 2.0),

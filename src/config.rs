@@ -36,6 +36,14 @@ pub struct Config {
     /// long sessions add up on disk fast; on, it is the only way to A/B the
     /// denoiser on the same source audio.
     pub record_debug: bool,
+    /// Which microphone to record from, as a pactl source name. `None` follows
+    /// the system default, which is what a fresh install does and what most
+    /// machines should keep.
+    ///
+    /// Pinning one is per-app routing, not a change to the system default:
+    /// Flow moves its own capture stream and leaves everything else where it
+    /// is. See `audio::Capture::set_source`.
+    pub input_device: Option<String>,
 }
 
 impl Default for Config {
@@ -53,6 +61,7 @@ impl Default for Config {
             denoise: false,
             sound: true,
             record_debug: false,
+            input_device: None,
         }
     }
 }
@@ -162,6 +171,12 @@ impl Config {
                     super::refine::Cleanup::None
                 }
             }
+            // Never validated against the running graph: a mic that is not
+            // plugged in right now is still the mic this machine dictates
+            // with, and refusing to start over it would be the wrong trade.
+            // A name that resolves to nothing falls back to the system
+            // default at the point of use.
+            "input_device" => config.input_device = (!value.is_empty()).then(|| value.to_owned()),
             "denoise" => config.denoise = boolean(at, key, value)?,
             "sound" => config.sound = boolean(at, key, value)?,
             "record_debug" => config.record_debug = boolean(at, key, value)?,

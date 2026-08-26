@@ -84,8 +84,8 @@ impl Console {
                     _ => tint,
                 })),
                 border: Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
+                    radius: CARD_RADIUS.into(),
+                    width: HAIRLINE,
                     color: if chosen {
                         mix(BG, OK, 0.3)
                     } else {

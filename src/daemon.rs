@@ -47,6 +47,9 @@ pub fn run(
         eprintln!("mic source: {name}");
     }
     let capture = audio::Capture::open(&device)?;
+    // Before the warmup, so it listens to the microphone this machine actually
+    // dictates with rather than warming the default and then moving off it.
+    capture.set_source(live.lock().expect("config").input_device.as_deref());
     if capture.warmup(Duration::from_secs(2)) {
         eprintln!("mic is live");
     } else {
@@ -502,9 +505,14 @@ fn begin(
     early: &std::sync::Mutex<Vec<String>>,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
 ) -> Option<Duration> {
-    let (duck, hold_to_talk, sound) = {
+    let (duck, hold_to_talk, sound, input_device) = {
         let config = live.lock().expect("config");
-        (config.ducking(), config.push_to_talk, config.sound)
+        (
+            config.ducking(),
+            config.push_to_talk,
+            config.sound,
+            config.input_device.clone(),
+        )
     };
     // Before the island is asked for, since arming it is what makes the sound.
     // Read per dictation so the console's switch lands on the next chord rather
@@ -577,6 +585,10 @@ fn begin(
     // pre-roll ring, being the 200ms before the key went down, could never be
     // anything else. Both are dropped here: turn the room down, wait for the
     // ramp to land, then start listening.
+    // Covers both ways of starting below, and costs a string compare in the
+    // steady state - the stream is only ever moved when the answer changed.
+    capture.set_source(input_device.as_deref());
+
     if duck.is_some() {
         capture.begin_without_pre_roll();
     } else {

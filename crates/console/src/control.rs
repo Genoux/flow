@@ -4,10 +4,28 @@
 //! toggle that redraws instantly from its boolean has nowhere to put a
 //! position, and the travel is the part that acknowledges the click.
 
-use crate::theme::{mix, ACCENT, BG, EDGE, FAINT, FG, LINE, MUTED, ON_ACCENT};
+use crate::theme::{
+    dissolve, mix, ACCENT, BG, CONTROL_PAD, CONTROL_TEXT, EDGE, FAINT, FG, HAIRLINE, LINE, MUTED,
+    ON_ACCENT, RADIUS, RAIL_ON,
+};
 use crate::Message;
-use iced::widget::{button, canvas, container, row, slider, text, Canvas, Space};
+use iced::widget::{button, canvas, column, container, row, slider, text, Canvas, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length, Point, Size, Theme};
+
+/// The border every secondary control wears.
+///
+/// This is the whole of such a control's chrome - there is no fill to change -
+/// which is why it is also the whole of its hover state. Shared between the
+/// buttons and the dropdown so the two cannot drift apart, which they did the
+/// first time the dropdown was styled on its own and arrived with a grey box
+/// behind it that nothing else in the window has.
+fn control_border(colour: Color) -> Border {
+    Border {
+        color: colour,
+        width: HAIRLINE,
+        radius: RADIUS.into(),
+    }
+}
 
 /// A toggle whose knob travels rather than teleports.
 ///
@@ -19,6 +37,17 @@ use iced::{Background, Border, Color, Element, Fill, Font, Length, Point, Size, 
 /// `travel` is 0 at the moment of the click and 1 when it has arrived; the
 /// knob moves toward `value` over that, so a toggle flipped back mid-flight
 /// simply reverses.
+/// The switch, in sizes rather than in corners.
+///
+/// Both radii here are written as half a height because both shapes are round
+/// by construction - a circle in a pill - and not because a corner was chosen.
+/// They are deliberately *not* `RADIUS`: a later pass unifying the window's
+/// corner radii would land on these two `6.0`s and `9.0`s, and squaring off the
+/// switch is not what that pass would have meant to do.
+const KNOB_SIZE: f32 = 12.0;
+const TRACK_WIDTH: f32 = 34.0;
+const TRACK_HEIGHT: f32 = 18.0;
+
 pub(crate) fn toggle(
     value: bool,
     travel: f32,
@@ -28,12 +57,12 @@ pub(crate) fn toggle(
     let left = (at * 1000.0) as u16;
 
     let knob = container(Space::new())
-        .width(Length::Fixed(12.0))
-        .height(Length::Fixed(12.0))
+        .width(Length::Fixed(KNOB_SIZE))
+        .height(Length::Fixed(KNOB_SIZE))
         .style(move |_| container::Style {
             background: Some(Background::Color(mix(MUTED, ON_ACCENT, at))),
             border: Border {
-                radius: 6.0.into(),
+                radius: (KNOB_SIZE / 2.0).into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -47,13 +76,13 @@ pub(crate) fn toggle(
         ]
         .align_y(iced::Center),
     )
-    .width(Length::Fixed(34.0))
-    .height(Length::Fixed(18.0))
+    .width(Length::Fixed(TRACK_WIDTH))
+    .height(Length::Fixed(TRACK_HEIGHT))
     .padding([3, 3])
     .style(move |_| container::Style {
         background: Some(Background::Color(mix(LINE, ACCENT, at))),
         border: Border {
-            radius: 9.0.into(),
+            radius: (TRACK_HEIGHT / 2.0).into(),
             ..Default::default()
         },
         ..Default::default()
@@ -107,6 +136,90 @@ pub(crate) fn value_slider<'a>(
     ]
     .align_y(iced::Center)
     .into()
+}
+
+/// One choosable thing on its own line, for the microphone dialog.
+///
+/// The rail's language, reused: `RAIL_ON` behind the current one, and hover
+/// approaching that fill without arriving at it, so "this is the one you are
+/// using" and "this is the one you are about to click" never read as the same
+/// state. Which is the whole reason this exists instead of a `pick_list` menu -
+/// iced's menu has one selection fill and gives it to whatever the pointer is
+/// over, so it can only ever show the second of those two things.
+///
+/// `note` is the second line, and "" means the row has none rather than an
+/// empty one - the same rule `setting` follows, for the same reason: a device
+/// with nothing to explain should not be taller than its neighbours.
+pub(crate) fn option_row(
+    title: &str,
+    note: String,
+    current: bool,
+    fade: f32,
+    on_press: Message,
+) -> Element<'static, Message> {
+    let ink = if current { FG } else { MUTED };
+    let mut block = column![text(title.to_string())
+        .size(13)
+        .color(dissolve(ink, fade))
+        .wrapping(text::Wrapping::None)];
+    if !note.is_empty() {
+        block = block.push(Space::new().height(3));
+        // `MUTED`, not the `FAINT` a second line usually gets. `FAINT` is sized
+        // for 11px meta - a timestamp, a month - and it sits at 3.07:1 on the
+        // `RAIL_ON` the current row is painted with. This line names the
+        // microphone Automatic actually resolved to, which is the reason
+        // somebody opened the dialog, so it is text rather than decoration and
+        // gets a colour that clears the bar: 4.60:1 on that fill, 5.59:1 on the panel.
+        block = block.push(text(note).size(11.5).color(dissolve(MUTED, fade)));
+    }
+
+    button(block)
+        .width(Fill)
+        .padding([9, 11])
+        .style(move |_theme, status| {
+            let fill = if current {
+                1.0
+            } else if matches!(status, button::Status::Hovered) {
+                0.55
+            } else {
+                0.0
+            };
+            button::Style {
+                // `RAIL_ON` at `fill` alpha over the panel, which is the same
+                // colour `mix` gave at rest and nothing at all once the dialog
+                // is gone - a row walked to `RAISED` would have stayed a solid
+                // bar inside a panel that had already left.
+                background: Some(Background::Color(dissolve(RAIL_ON, fill * fade))),
+                text_color: dissolve(ink, fade),
+                border: Border {
+                    radius: RADIUS.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        })
+        .on_press(on_press)
+        .into()
+}
+
+/// The × that shuts a dialog. `ghost`, because a close button is the one
+/// control in a dialog that should not compete with what the dialog is asking.
+pub(crate) fn close_btn(fade: f32) -> Element<'static, Message> {
+    button(text("\u{00d7}").size(17).color(dissolve(MUTED, fade)))
+        .padding([0, 4])
+        .style(move |_theme, status| button::Style {
+            text_color: dissolve(
+                if matches!(status, button::Status::Hovered) {
+                    FG
+                } else {
+                    MUTED
+                },
+                fade,
+            ),
+            ..ghost(&Theme::Dark, status)
+        })
+        .on_press(Message::ClosePicker)
+        .into()
 }
 
 /// A 7px dot. The only place the accent appears besides a primary button.
@@ -179,7 +292,7 @@ pub(crate) fn action_faded(
     };
     button(
         text(label.to_string())
-            .size(13)
+            .size(CONTROL_TEXT)
             .color(crate::theme::emerge(ink, fade))
             // A button is as wide as its label, full stop. Left to wrap, a
             // "Download" beside a long path folded onto two lines and then
@@ -187,7 +300,7 @@ pub(crate) fn action_faded(
             // it asked for.
             .wrapping(text::Wrapping::None),
     )
-    .padding([7, 14])
+    .padding(CONTROL_PAD)
     .style(move |_theme, status| {
         let paint = |colour: Color| crate::theme::emerge(colour, fade);
         if matches!(status, button::Status::Disabled) {
@@ -195,11 +308,7 @@ pub(crate) fn action_faded(
             return button::Style {
                 background: primary.then_some(Background::Color(fill)),
                 text_color: paint(FAINT),
-                border: Border {
-                    color: if primary { fill } else { paint(LINE) },
-                    width: 1.0,
-                    radius: 6.0.into(),
-                },
+                border: control_border(if primary { fill } else { paint(LINE) }),
                 ..Default::default()
             };
         }
@@ -212,17 +321,13 @@ pub(crate) fn action_faded(
         button::Style {
             background: primary.then_some(Background::Color(primary_fill)),
             text_color: paint(if primary { ON_ACCENT } else { FG }),
-            border: Border {
-                color: if primary {
-                    primary_fill
-                } else if hovered {
-                    paint(FAINT)
-                } else {
-                    paint(LINE)
-                },
-                width: 1.0,
-                radius: 6.0.into(),
-            },
+            border: control_border(if primary {
+                primary_fill
+            } else if hovered {
+                paint(FAINT)
+            } else {
+                paint(LINE)
+            }),
             ..Default::default()
         }
     })

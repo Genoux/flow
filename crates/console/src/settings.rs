@@ -132,6 +132,10 @@ pub struct Settings {
     /// The chord held to dictate, in the daemon's spelling, e.g.
     /// "super+shift+d".
     pub hotkey: String,
+    /// Which microphone to record from, as a pactl source name. `None` follows
+    /// the system default and is written as no line at all, the same way `gpu`
+    /// spells "choose for me".
+    pub input_device: Option<String>,
 }
 
 /// The chord a fresh install dictates with, and what Reset puts back.
@@ -155,6 +159,7 @@ impl Default for Settings {
             duck: 50,
             gpu: None,
             hotkey: DEFAULT_HOTKEY.to_string(),
+            input_device: None,
         }
     }
 }
@@ -197,6 +202,9 @@ impl Settings {
                 }
                 "gpu" => settings.gpu = value.parse().ok(),
                 "hotkey" => settings.hotkey = value.to_owned(),
+                "input_device" => {
+                    settings.input_device = (!value.is_empty()).then(|| value.to_owned())
+                }
                 _ => {}
             }
         }
@@ -218,7 +226,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 8] = [
+        let wanted: [(&str, Option<String>); 9] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.as_str().to_string())),
             // Deleted rather than left alone. The daemon still understands
@@ -231,6 +239,7 @@ impl Settings {
             ("duck", Some(self.duck.to_string())),
             ("gpu", self.gpu.map(|index| index.to_string())),
             ("hotkey", Some(self.hotkey.clone())),
+            ("input_device", self.input_device.clone()),
         ];
 
         let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
@@ -349,6 +358,7 @@ mod tests {
             duck: 0,
             gpu: Some(0),
             hotkey: "ctrl+alt+space".to_string(),
+            input_device: Some("alsa_input.usb-Generic_USB_Audio-00.HiFi_5_1__Mic__source".into()),
         };
         assert_eq!(Settings::parse(&settings.render("")), settings);
     }
@@ -410,5 +420,29 @@ mod tests {
         let back = automatic.render(&out);
         assert!(!back.contains("gpu ="), "gpu line survived:\n{back}");
         assert_eq!(Settings::parse(&back).gpu, None);
+    }
+
+    /// Same absence-means-automatic rule as `gpu`, and the same failure if it
+    /// is got wrong: going back to Automatic has to take the line out, because
+    /// the daemon reads a name that is still there as a mic that is still
+    /// pinned.
+    #[test]
+    fn automatic_input_removes_the_key() {
+        let pinned = Settings {
+            input_device: Some("alsa_input.usb-webcam-02.iec958-stereo".into()),
+            ..Settings::default()
+        };
+        let out = pinned.render("");
+        assert_eq!(
+            Settings::parse(&out).input_device.as_deref(),
+            Some("alsa_input.usb-webcam-02.iec958-stereo")
+        );
+
+        let back = Settings::default().render(&out);
+        assert!(
+            !back.contains("input_device"),
+            "input_device line survived:\n{back}"
+        );
+        assert_eq!(Settings::parse(&back).input_device, None);
     }
 }

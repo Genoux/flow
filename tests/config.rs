@@ -37,6 +37,7 @@ fn file_overrides_every_key() {
             denoise: true,
             sound: true,
             record_debug: false,
+            input_device: None,
         }
     );
 }
@@ -168,6 +169,38 @@ fn a_line_without_a_value_is_an_error() {
     assert!(Config::parse("push_to_talk\n").is_err());
 }
 
+/// A microphone is named, never validated. The mic this machine dictates with
+/// is still the right answer while it is unplugged, and refusing to start over
+/// a name the graph cannot resolve would turn a dropped USB lead into a daemon
+/// that will not run.
+#[test]
+fn a_pinned_microphone_is_taken_at_its_word() {
+    let name = "alsa_input.usb-Generic_USB_Audio-00.HiFi_5_1__Mic__source";
+    assert_eq!(
+        Config::parse(&format!("input_device = {name}\n"))
+            .expect("parse")
+            .input_device
+            .as_deref(),
+        Some(name)
+    );
+    assert!(Config::parse("input_device = no_such_source\n").is_ok());
+}
+
+/// Absent means "follow the system default", which is what a fresh install
+/// does. An empty value is the same statement, and must not pin a source
+/// called "".
+#[test]
+fn no_microphone_named_means_the_system_default() {
+    assert_eq!(Config::default().input_device, None);
+    assert_eq!(Config::parse("").expect("parse").input_device, None);
+    assert_eq!(
+        Config::parse("input_device =\n")
+            .expect("parse")
+            .input_device,
+        None
+    );
+}
+
 #[test]
 fn flags_win_over_the_file() {
     let from_file = Config {
@@ -179,6 +212,7 @@ fn flags_win_over_the_file() {
         denoise: false,
         sound: true,
         record_debug: false,
+        input_device: None,
     };
     let flags = ["daemon", "--raw", "--duck", "20", "--denoise"]
         .map(String::from)
@@ -216,6 +250,7 @@ fn absent_flags_leave_the_file_alone() {
         denoise: false,
         sound: true,
         record_debug: false,
+        input_device: None,
     };
     assert_eq!(
         from_file.clone().overridden_by(&[String::from("daemon")]),
