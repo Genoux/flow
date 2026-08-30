@@ -36,9 +36,32 @@ const CASES: &[Case] = &[
         level: Cleanup::Light,
         raw: "um so I was thinking that uh we could maybe like ship the the the \
               feature on on Friday you know",
-        forbidden: &["um ", "uh ", " like ", "the the", "on on", "you know"],
-        required: &["Friday", "ship"],
+        forbidden: &["um ", "uh ", "the the", "on on"],
+        // "maybe" and "you know" are required, not forbidden, and that is the
+        // whole difference between this level and the one above it. Light takes
+        // the sounds that are never words; deciding that a "you know" was
+        // carrying nothing is a judgement, and judgements live in Medium.
+        //
+        // The input's "like" is not required with them, and that is a measured
+        // limit rather than an oversight. It sits in "maybe like ship", and the
+        // model reads the pair as one hedge said twice however the rule is
+        // worded - six prompt revisions moved every other word on this list and
+        // never that one. A "like" the speaker leant on alone survives; a "like"
+        // pressed against another hedge is a coin toss, and asserting it here
+        // would make this suite flaky rather than make Light better.
+        required: &["Friday", "ship", "maybe", "you know"],
         max_words: 20,
+    },
+    // The bug this level was reported for: a dictation ended on a real closing
+    // question and Light deleted it, because the rule hunting trailing fillers
+    // does not stop at fillers. The end of a dictation is usually its point.
+    Case {
+        name: "light keeps the closing question",
+        level: Cleanup::Light,
+        raw: "um so I reckon we should ship it on Friday what do you think",
+        forbidden: &["um "],
+        required: &["Friday", "what do you think"],
+        max_words: 16,
     },
     Case {
         name: "self-correction keeps the final choice",
@@ -125,6 +148,9 @@ const CASES: &[Case] = &[
     // Light is required to keep every word that is doing work; Medium is the
     // level allowed to decide some of them are not. A fatty sentence is the
     // only way to see that, so this case brings its own.
+    // Medium is the level that gets to decide a "you know" was carrying
+    // nothing, and the level that gets to choose different words for the same
+    // point. Both are forbidden below it.
     Case {
         name: "medium cuts what light has to keep",
         level: Cleanup::Medium,
@@ -343,7 +369,8 @@ fn refining_behaves() {
     // grammar, three cards would become two with three names and the whole list
     // would stay green. Only one input through both levels can catch it, and
     // this is now the sharpest seam in the ladder - Light forbids exactly what
-    // Medium permits.
+    // Medium permits: choosing words, and choosing which of the speaker's own
+    // words were carrying nothing.
     //
     // A four-level dial shipped for a release cycle with its top two levels
     // indistinguishable. That is the failure this assertion exists to prevent.
@@ -383,13 +410,22 @@ fn refining_behaves() {
             words(&light)
         ));
     }
-    // Both levels remove fillers; only the grammar above tells them apart.
+    // Every level deletes a hesitation sound. Only Medium deletes a discourse
+    // filler, so the advertised input's trailing "you know" is the seam: Light
+    // owes it back, Medium owes it gone.
     for (name, text) in [("light", &light), ("medium", &medium)] {
-        for filler in ["um", "you know"] {
-            if text.to_lowercase().contains(filler) {
-                failures.push(format!("{name} kept the filler {filler:?} in {text:?}"));
-            }
+        if text.to_lowercase().contains("um") {
+            failures.push(format!("{name} kept the hesitation \"um\" in {text:?}"));
         }
+    }
+    if !light.to_lowercase().contains("you know") {
+        failures.push(format!(
+            "light dropped \"you know\" from {light:?} - deleting a word that \
+             is a filler only sometimes is Medium's judgement to make"
+        ));
+    }
+    if medium.to_lowercase().contains("you know") {
+        failures.push(format!("medium kept the filler \"you know\" in {medium:?}"));
     }
 
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));

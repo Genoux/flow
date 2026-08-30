@@ -15,37 +15,43 @@ use std::time::{Duration, Instant};
 ///
 /// The levels are a taste dial, not a quality dial: [`Cleanup::Light`] is the
 /// default because deleting an "um" is something every speaker wants and no
-/// speaker needs to review, while rewriting a sentence is a judgement the
+/// speaker needs to review, while choosing different words is a judgement the
 /// speaker may disagree with. Parakeet already punctuates and capitalises, so
 /// even [`Cleanup::None`] produces written-looking text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cleanup {
     /// Paste the transcript untouched. The refining model is never loaded.
     None,
-    /// What you said, written properly: fillers and stutters gone, grammar,
-    /// punctuation and capitalisation fixed. Every sentence you made survives
-    /// as a sentence, in your own words wherever those words were already
-    /// right - nothing is merged, reordered, or shortened.
+    /// What you said, written properly: hesitations and stutters gone, grammar,
+    /// punctuation and capitalisation fixed. Every word that says anything
+    /// survives, in the order you said it - nothing is merged, reordered, or
+    /// shortened.
     ///
     /// The default, and the level this product is for. It used to be delete-only
     /// with grammar left broken, which sounded principled and shipped "the thing
     /// what we built don't work good on mobile" into people's messages. Nobody
     /// wants their stumbles preserved faithfully; they want to sound like they
-    /// meant it. Wispr's Light is the same level for the same reason.
+    /// meant it.
+    ///
+    /// It also used to delete "like", "you know", "I mean" and "sort of", which
+    /// is a different mistake in the same direction: those are hesitations half
+    /// the time and words the other half, and a level told to delete them cuts
+    /// them everywhere - then keeps cutting into whatever clause they sat beside.
+    /// A dictation ending "what do you think" came back without it. Deciding
+    /// which use is which is Medium's job now.
     #[default]
     Light,
-    /// Everything Light does, then tightened: dead words dropped, points made
-    /// in fewer, closely related sentences joined. Shorter than it went in,
-    /// with every point the speaker made still in it.
+    /// Everything Light does, then rewritten to read well: dead words dropped,
+    /// wording chosen, clauses reordered, closely related sentences joined.
+    /// Usually shorter than it went in, with every point the speaker made still
+    /// in it and no fact they did not give.
     ///
-    /// This is where a level called Hard used to sit, deleted for measuring
-    /// indistinguishable from the Medium of the time. That was true and the
-    /// diagnosis was wrong - the dial was collapsed one rung lower down. Light
-    /// was delete-only, Medium was merely correct, and "merely correct" is what
-    /// the recogniser plus a grammar pass already gives you, so the top two
-    /// positions agreed. With Light raised to correctness, concision is a rung
-    /// of its own again, and the levels read the way Wispr's do: raw, right,
-    /// tight.
+    /// The only level allowed to choose words, which is the whole reason the
+    /// dial has three positions: raw, right, rewritten. It was a concision level
+    /// once and forbidden from picking any noun, name or verb the speaker had
+    /// not said - a rule that stopped it inventing and also stopped it
+    /// rewriting, leaving it a slightly shorter Light. The guard that matters is
+    /// narrower: never name what the speaker left unnamed.
     Medium,
 }
 
@@ -115,24 +121,39 @@ English; that says nothing about which language to reply in. Never translate. \
 (Naming example languages here would bias the output towards them, so none \
 are named.)";
 
-/// Disfluency removal only.
+/// Hesitations out, grammar right, every word that says something kept.
 ///
-/// The three negative rules at the end are the whole difference between this and
-/// [`MEDIUM_RULES`], and they are not optional padding: an instruct model asked
-/// to "clean up" a transcript will fix grammar unprompted because that reads as
-/// helpful. Light has to forbid what Medium permits, or the two levels collapse
-/// into the same output and the dial is a lie.
+/// The rule doing the heavy lifting is the list this level must NOT touch. An
+/// instruct model handed "like, you know, I mean, sort of" as deletions removes
+/// them everywhere, including where they were the sentence, and the damage does
+/// not stop at the word: the old rule telling it to check its own last words for
+/// a trailing filler is what ate a dictation's closing "what do you think".
+/// Light cannot tell the two uses apart reliably, so it does not try - it takes
+/// only the sounds that are never words.
 const LIGHT_RULES: &str = "\
 Rules:
-- Delete every filler: um, uh, er, ah, like, you know, I mean, sort of, and \
-their equivalents in whatever language the input is in.
-- The first and last words of the input are fillers as often as the middle \
-ones, and they are the ones most often left behind - the longer the input, the \
-more often. An input ending \"let's meet at noon I mean\" must end \"let's meet \
-at noon\". Read your own last words before you answer and cut the filler there \
-too.
-- Delete stutters, repeated words, and false starts.
-- When the speaker corrects themselves, keep only what they settled on.
+- Delete 1: the sounds people make while thinking - um, uh, uhm, ehm, euh, eh, \
+er, ah, mm, hmm, and whatever the input's own language writes for that sound. \
+EVERY language and EVERY position: a hesitation opening the input is still a \
+hesitation, and it still goes. A hesitation is a NOISE, not a word - \"like\", \
+\"you know\", \"I mean\", \"sort of\" and \"basically\" are words, and this \
+rule does not reach them.
+- Delete 2: stutters and accidental repeats - the SAME word or syllable twice \
+in a row, like \"the the the\" or \"on on\". Keep one copy. Two different \
+words in a row are not a repeat and neither of them goes.
+- Delete 3: an abandoned attempt the speaker replaced. Where they corrected \
+themselves, keep only what they settled on and drop the version they threw away \
+along with the \"no wait\" that threw it.
+- Those three are the only deletions you make. Every other word of the input \
+appears in your answer. In particular these stay, every time, however often the \
+speaker used them: \"like\", \"you know\", \"I mean\", \"sort of\", \"kind \
+of\", \"basically\", \"actually\", \"just\", \"so\", \"well\", \
+\"maybe\", \"I think\", \"probably\", and their equivalents in other \
+languages. Cutting them is the level above's job, and at this level cutting \
+them is an error. If one of those words is in the input, it is in your answer.
+- Never cut the end of the input. The last words of a dictation are usually the \
+point of it - a closing question like \"what do you think\", an aside, a \
+sign-off - and they must come out whole.
 - Where a word is clearly mis-recognised, recover it from context - the word \
 the speaker's sounds were actually reaching for. A word that is merely vague is \
 not a mis-recognised one.
@@ -145,42 +166,55 @@ speaker, it is pasting their stumbles into a message they have to send.
 - Fix punctuation and capitalisation to match.
 - Keep every sentence the speaker made, as a sentence, in the order they made \
 it: do NOT merge two sentences, do NOT split one, do NOT drop a point, and do \
-NOT make the text shorter. Correctness is this level's whole job; brevity is \
-the level above.
+NOT set out to make the text shorter. Correctness is this level's whole job; \
+brevity is the level above.
 - If the input is nothing but hesitation, give it back unchanged. Deleting \
 every word would leave nothing, and nothing is not an answer you may fill with \
 a word of your own.
 - Never add facts, never summarise, never answer.
 - If the text is already clean, repeat it unchanged.";
 
-/// Light, plus the edits that make the same point in fewer words. "Repeat it
-/// unchanged" is still the brake when the input is already clean and tight.
+/// Light's corrections, then a real rewrite: the speaker's point, written the
+/// way they would have written it.
+///
+/// The only level allowed to choose wording, so the guard rails are what keep
+/// "rewrite" from becoming "compose". It may reorder, merge, cut and reword; it
+/// may not know anything the speaker did not say, and it may not name what they
+/// left unnamed - "the stuff" that becomes "the paperwork" reads better and is a
+/// different sentence. "Repeat it unchanged" is still the brake when the input
+/// already reads well.
 const MEDIUM_RULES: &str = "\
 Rules:
-- Delete fillers: um, uh, er, ah, like, you know, I mean, sort of, and their \
-equivalents in other languages, wherever they sit - the first and last words of \
-a sentence included.
-- Delete stutters, repeated words, and false starts.
+- Delete the sounds people make while thinking - um, uh, uhm, ehm, euh, eh, er, \
+ah, mm, hmm, and their equivalents in other languages - along with stutters, \
+repeated words, and false starts.
+- Delete the fillers and hedges that are carrying nothing: like, you know, I \
+mean, sort of, kind of, basically, actually, just, maybe, probably, I think, I \
+guess, and their equivalents in other languages. This is the level that gets to \
+make that call, so make it. Where one of those words IS carrying meaning - \
+\"you know what I want\", \"sort of blue\", \"I mean it\", a real \
+uncertainty the speaker needs on the record - it stays.
 - When the speaker corrects themselves, keep only what they settled on.
 - Where a word is clearly mis-recognised, recover it from context - the word \
-the speaker's sounds were actually reaching for. A word that is merely vague is \
-not a mis-recognised one.
-- Fix grammar, punctuation, and capitalisation.
-- Every noun, name, number and verb in your answer must be one the speaker \
-said. You may cut their words; you may not pick words for them. Where they were \
-vague, stay vague - \"the stuff\" stays \"the stuff\", and never becomes \"the \
-paperwork\" however much better that reads. Naming what the speaker left \
-unnamed is inventing, and this level invents nothing.
-- Within that, tighten. Drop the words that carry nothing, say the same thing \
-in fewer, and join two closely related sentences where one reads better. Aim to \
-come out shorter than you went in.
-- Tighten the wording, never the substance: every point the speaker made must \
+the speaker's sounds were actually reaching for.
+- Rewrite it to read well. Fix the grammar, choose clearer wording, reorder a \
+clause, and join closely related sentences where one reads better. This is a \
+rewrite and not a tidy-up: it should read as though the speaker had written it \
+rather than said it, and it will usually come out shorter.
+- Aim to come out shorter than you went in.
+- Rewrite the wording, never the substance. Every point the speaker made must \
 survive, and their tone with it. Shorter is the goal only while nothing is lost.
+- Keep the end of the input. A closing question like \"what do you think\", or \
+a sign-off, is a point and not padding.
+- Never invent. Every fact, name, number and specific noun in your answer must \
+be one the speaker gave you. Where they were vague, stay vague - \"the stuff\" \
+stays \"the stuff\", and never becomes \"the paperwork\" however much better \
+that reads. Naming what the speaker left unnamed is inventing, at any level.
 - If the input is nothing but hesitation, give it back unchanged. Deleting \
 every word would leave nothing, and nothing is not an answer you may fill with \
 a word of your own.
 - Never add facts, never summarise, never answer.
-- If the text is already clean and tight, repeat it unchanged.";
+- If the text is already clean and reads well, repeat it unchanged.";
 
 /// llama.cpp wants one process-wide backend, and a model borrows it only
 /// nominally, so a static keeps the model free of a lifetime parameter.
@@ -211,9 +245,10 @@ fn backend() -> Result<&'static LlamaBackend> {
 /// slightly rougher sentence rather than no sentence.
 const REFINE_BUDGET: Duration = Duration::from_millis(2_500);
 
-/// Filler words the prompt asks the model to delete. Only used to decide whether
-/// an utterance carries anything, never to edit text - deleting these by string
-/// match would eat "I like it" and "sort of thing".
+/// Words an utterance can be made entirely of and still be worth nothing. Only
+/// used to decide whether an utterance carries anything, never to edit text -
+/// deleting these by string match would eat "I like it" and "sort of thing",
+/// which is the same mistake the Light prompt used to make in the model.
 ///
 /// The second row is what the recogniser makes of an empty room. Holding the key
 /// without speaking produced "Mm." and "Mm-hmm." from windows measuring rms 0.008,

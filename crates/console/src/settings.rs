@@ -72,10 +72,11 @@ impl Cleanup {
             // the same clause. What went was "mistakes and all", which said it
             // in a folksier voice than the two levels beside it.
             Self::None => ("None", "Types exactly what you said, including mistakes."),
-            // Three words that have to carry the whole reason this is the
-            // default: fillers out, grammar right, nothing else touched.
-            Self::Light => ("Light", "Removes fillers and fixes grammar."),
-            Self::Medium => ("Medium", "Edits for clarity and concision."),
+            // "nothing else" is the half that makes this the default. Fillers
+            // out and grammar right is what every level above None does; not
+            // touching the rest is what tells this level from that one.
+            Self::Light => ("Light", "Removes stumbles and fixes grammar, nothing else."),
+            Self::Medium => ("Medium", "Rewrites it to read well, in fewer words."),
         }
     }
 
@@ -97,10 +98,15 @@ impl Cleanup {
     /// Chosen because it is the shortest sentence found that shows both steps:
     /// "what we built don't work good" becomes "we built doesn't work well"
     /// between None and Light, which is the grammar fix Light is sold on, and
-    /// "I think" goes between Light and Medium, which is the concision Medium
-    /// is sold on. A hedge is what Medium cuts most readily - it will not cut a
-    /// real subject, so an example built on "me and him were thinking" showed
-    /// almost no difference at the top of the dial.
+    /// "I think" and "you know" both go between Light and Medium, which is the
+    /// rewrite Medium is sold on. A hedge is what Medium cuts most readily - it
+    /// will not cut a real subject, so an example built on "me and him were
+    /// thinking" showed almost no difference at the top of the dial.
+    ///
+    /// The middle line keeps "you know" on purpose, and it is the clearest
+    /// thing on this screen: Light no longer decides that one of the speaker's
+    /// own words was worthless. That decision cost a dictation its closing
+    /// "what do you think", and it now belongs to the level below.
     ///
     /// Measured on both of this machine's GPUs, which do not always agree - see
     /// `FLOW_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
@@ -109,7 +115,7 @@ impl Cleanup {
             Self::None => {
                 "Um, I think the thing what we built don't work good on mobile, you know."
             }
-            Self::Light => "I think the thing we built doesn't work well on mobile.",
+            Self::Light => "I think the thing we built doesn't work well on mobile, you know.",
             Self::Medium => "The thing we built doesn't work well on mobile.",
         }
     }
