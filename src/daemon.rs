@@ -147,7 +147,11 @@ pub fn run(
     let engine = std::sync::Mutex::new(engine);
     let early: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let listening = std::sync::atomic::AtomicBool::new(true);
-    let (engine, early, listening) = (&engine, &early, &listening);
+    // Shared for the same reason the island is: the recording ends on the event
+    // loop, the island ends on the job thread, and the duck now ends with the
+    // island.
+    let held: Held = std::sync::Mutex::new(None);
+    let (engine, early, listening, held) = (&engine, &early, &listening, &held);
 
     std::thread::scope(|scope| {
         scope.spawn(move || {
@@ -162,7 +166,6 @@ pub fn run(
                     samples,
                     done,
                     refiner.as_ref(),
-                    island,
                     status,
                     live,
                 ) {
@@ -195,6 +198,9 @@ pub fn run(
                 // it is given, so this closes an ordinary dictation and does
                 // not talk over one that has something to say.
                 island.finish();
+                // The island is on its way out, so the music comes back up with
+                // it rather than a whole transcription earlier.
+                held.lock().expect("ducker").take();
                 status.ready();
             }
         });
@@ -282,6 +288,7 @@ pub fn run(
                                 &overlay,
                                 &reporter,
                                 early,
+                                held,
                                 &incoming,
                             )
                             .is_some()
@@ -314,6 +321,7 @@ pub fn run(
                             &overlay,
                             &reporter,
                             early,
+                            held,
                             &incoming,
                         )
                         .is_some()
@@ -338,6 +346,7 @@ pub fn run(
                             &overlay,
                             &reporter,
                             early,
+                            held,
                             &incoming,
                         )
                         .is_none()
@@ -428,6 +437,7 @@ pub fn run(
                 // of what happened.
                 (None, false, true) => {
                     overlay.cancel();
+                    held.lock().expect("ducker").take();
                     reporter.ready();
                 }
                 // Nothing started and nothing ended: a stray `flow stop`, a
@@ -452,24 +462,30 @@ pub fn run(
     Ok(())
 }
 
-/// A recording in progress. Holding the ducker here ties the volume of other
-/// apps to the life of the capture, including on cancel.
-struct Session {
-    ducker: Option<duck::Ducker>,
-}
+/// A recording in progress. Deliberately holds nothing: the ducker used to
+/// live here, which tied the volume of other apps to the life of the capture,
+/// and the capture is not what the user is looking at. See [`Held`].
+struct Session;
 
 impl Session {
     fn finish(self, capture: &audio::Capture) -> Vec<f32> {
-        let samples = capture.end();
-        drop(self.ducker);
-        samples
+        capture.end()
     }
 
     fn discard(self, capture: &audio::Capture) {
         let _ = capture.end();
-        drop(self.ducker);
     }
 }
+
+/// The duck, parked between the end of a recording and the end of the island.
+///
+/// Other apps stay down for as long as the island is up, rather than only for
+/// as long as the microphone is open. Releasing the key used to bring the music
+/// straight back while the island was still on screen transcribing, so one
+/// gesture produced two separate endings a second apart. Dropping what is in
+/// here is what starts the fade back, and it is dropped where the island is
+/// told to leave - so the sound and the shape go together.
+type Held = std::sync::Mutex<Option<duck::Ducker>>;
 
 /// How often to check whether the duck has settled while waiting to open the
 /// mic. Cheap - just an atomic load - so this can be short without cost.
@@ -496,6 +512,9 @@ const RELEASE_DEBOUNCE: Duration = Duration::from_millis(250);
 /// anyway, capturing whatever the room sounded like after the user had
 /// already let go. Polling `Ducker::settled` waits for the one real
 /// condition, and reacts to a release on the spot instead of after the fact.
+// Same reason as `handle` below: every one of these is a distinct collaborator,
+// so a context struct would move the list rather than shorten it.
+#[allow(clippy::too_many_arguments)]
 fn begin(
     capture: &audio::Capture,
     slot: &mut Option<Session>,
@@ -503,6 +522,7 @@ fn begin(
     overlay: &overlay::Overlay,
     reporter: &status::Reporter,
     early: &std::sync::Mutex<Vec<String>>,
+    held: &Held,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
 ) -> Option<Duration> {
     let (duck, hold_to_talk, sound, input_device) = {
@@ -532,11 +552,22 @@ fn begin(
     overlay.arm();
     reporter.listening();
     eprintln!("recording...");
-    *slot = Some(Session { ducker: None });
+    *slot = Some(Session);
 
     let started = Instant::now();
-    let mut ducker = None;
-    if let Some(percent) = duck {
+    // A chord pressed while the last island is still up inherits its duck
+    // instead of building a second one. `Ducker::duck` takes the volumes it
+    // finds as the originals to restore, and the volumes it would find now are
+    // the lowered ones - snapshotting those is how music comes back at half.
+    // Inheriting also means the mic opens at once: the ramp already landed.
+    let mut ducker = held
+        .lock()
+        .expect("ducker")
+        .take()
+        .filter(|_| duck.is_some());
+    if ducker.is_none()
+        && let Some(percent) = duck
+    {
         match duck::Ducker::duck(percent) {
             Ok(d) => ducker = Some(d),
             Err(err) => eprintln!("could not duck other apps: {err}"),
@@ -576,9 +607,7 @@ fn begin(
         }
     }
 
-    if let Some(session) = slot.as_mut() {
-        session.ducker = ducker;
-    }
+    *held.lock().expect("ducker") = ducker;
 
     // Ducking used to happen *after* capture started, so the opening moments of
     // every recording held whatever was playing at full volume - and the
@@ -616,7 +645,6 @@ fn handle(
     early: Vec<String>,
 
     refiner: Option<&refine::Refiner>,
-    island: &overlay::Overlay,
     reporter: &status::Reporter,
     live: &Live,
 ) -> Result<()> {
@@ -709,10 +737,6 @@ fn handle(
         eprintln!("({spoken:.1}s, {level}, only hesitation - skipped: {text:?})");
         return Ok(());
     }
-
-    // Words, and refining is about to take a while. Everything above this point
-    // returns without drawing anything, so a cough gets no spinner.
-    island.working();
 
     // A refining failure must never cost the user their words, so the raw
     // transcript stands in whenever the model errors or returns nothing.

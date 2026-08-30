@@ -60,25 +60,15 @@ const BAR_GAP: f32 = 4.0;
 const BAR_MIN: f32 = 4.0;
 const BAR_MAX: f32 = 19.0;
 
-/// How fast the bars fall away when the sweep is about to take over, and how flat
+/// How fast the bars fall away once the sweep has taken over, and how flat
 /// counts as flat.
 ///
-/// The handover used to be a cut: the bars were wherever the last syllable left
-/// them and the sweep started from its own shape, so the island jumped. Letting
-/// them settle first makes it read as one motion - the voice stops, the island
-/// comes to rest, then the sweep begins from nothing.
+/// The sweep starts on the key release, over bars that are still wherever the
+/// last syllable left them; this is what carries them down underneath it. The
+/// crest is drawn against them the whole way, so the voice becomes the sweep
+/// instead of collapsing to nothing and being replaced by it.
 const SETTLE: f32 = 0.80;
 const SETTLED: f32 = 0.02;
-
-/// How long refining has to be still running before the sweep replaces the bars.
-///
-/// Only ever started once recognition has found words - see [`Overlay::working`] -
-/// because time cannot answer the question the sweep implies. A cough on seven
-/// seconds of silence takes 280ms to recognise and comes back empty, so a delay
-/// alone showed a spinner for something that was never going to produce text. This
-/// only stops the other flash: a dictation short enough that refining returns
-/// before a spinner is worth drawing.
-const SWEEP_DELAY: Duration = Duration::from_millis(200);
 
 /// The bars animate in place rather than scrolling, so this is a real frame rate
 /// and not a sampling interval. 7ms is ~143Hz, matching a 144Hz panel: the easing
@@ -730,11 +720,9 @@ enum Command {
         /// may - see [`dead_line`].
         holding: bool,
     },
-    /// The audio went to the worker. Counted so a finish cannot outrun it, but it
-    /// says nothing about whether there is anything to transcribe yet.
+    /// The audio went to the worker: the key is up, so the bars stop answering
+    /// the room and the sweep takes over from where they are.
     Queued,
-    /// Recognition found words, so there is real work to wait for.
-    Working,
     /// The recording was thrown away on purpose - another key turned the hold
     /// into a shortcut. The user meant it, so nothing is said about it.
     Cancel,
@@ -820,16 +808,10 @@ impl Overlay {
         let _ = self.commands.send(Command::Record { holding });
     }
 
-    /// Audio handed over. Does not draw anything: until recognition has run, a
-    /// cough and a sentence are indistinguishable, and a cough must not get a
-    /// spinner.
+    /// Audio handed over. The island turns from listening to working on the
+    /// spot - the release is what the user is waiting to see answered.
     pub fn queued(&self) {
         let _ = self.commands.send(Command::Queued);
-    }
-
-    /// There are words. Refining takes long enough to be worth reporting.
-    pub fn working(&self) {
-        let _ = self.commands.send(Command::Working);
     }
 
     pub fn cancel(&self) {
@@ -1175,11 +1157,10 @@ fn render_island(
     // How loud you are, in one number. Hoisted because both halves of the glow
     // want it: the halo outside the pill and the light inside it are one
     // response to your voice, not two.
-    let level = if transcribing {
-        0.0
-    } else {
-        (heights.iter().sum::<f32>() / BAR_COUNT as f32).clamp(0.0, 1.0)
-    };
+    // Read off the bars themselves, so the glow follows the voice down through
+    // the handover rather than being cut at it. Once the sweep owns the island
+    // the bars are flat and this is zero on its own.
+    let level = (heights.iter().sum::<f32>() / BAR_COUNT as f32).clamp(0.0, 1.0);
     canvas.rounded_rect(centre, pill, corner, ISLAND, ISLAND_ALPHA * visible);
     canvas.rounded_ring(centre, pill, corner, scale, EDGE, EDGE_ALPHA * visible);
 
@@ -1225,9 +1206,12 @@ fn render_island(
     // pill opens and the wave lights up inside it over the same span. Clipping
     // the bars to the pill instead made the shape a hole they slid out from
     // behind, which is a different and busier idea than an island turning on.
+    // Working is dimmer than speaking, but it dims with the voice instead of on
+    // the release: at the moment the key comes up the bars are still loud, and
+    // dropping them to the working alpha in one frame reads as a flinch.
     let alpha = visible
         * if transcribing {
-            BAR_WORKING_ALPHA
+            BAR_WORKING_ALPHA + (BAR_ALPHA - BAR_WORKING_ALPHA) * level
         } else {
             BAR_ALPHA
         };
@@ -1240,7 +1224,10 @@ fn render_island(
         // The voice always wins: the swell is a floor under a resting island,
         // not something mixed into what is being said.
         let height = if transcribing {
-            sweep(index, seconds)
+            // The crest over the voice, not instead of it. The bars are still
+            // where the last syllable left them when the sweep starts, and
+            // taking the taller of the two lets it grow out of them.
+            sweep(index, seconds).max(*band)
         } else {
             band.max(resting(index, seconds))
         };
@@ -1463,9 +1450,6 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let handle = queue.handle();
 
     let mut island: Option<Island> = None;
-    // Set when the audio is handed over, cleared when the sweep starts or the
-    // transcript comes back empty before it ever did.
-    let mut waiting_to_sweep: Option<std::time::Instant> = None;
     let mut buffers: Option<Buffers> = None;
     let mut analyzer = Analyzer::new();
     let mut window: Vec<f32> = Vec::with_capacity(WINDOW);
@@ -1483,10 +1467,8 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut started = std::time::Instant::now();
     let mut transcribing = false;
     let mut arming = false;
-    // True only while the mic is actually open. The bars must stop the
-    // instant this goes false - `transcribing` is not that signal, it only
-    // flips on `SWEEP_DELAY` after, which is what let the bars keep answering
-    // real room sound for a couple hundred ms after the key was released.
+    // True only while the mic is actually open, so the bars stop answering the
+    // room the instant the key is up.
     let mut listening = false;
     // Hold to talk, carried from the command that opened the microphone. A tap
     // session is the user's to end - see [`dead_line`].
@@ -1529,7 +1511,6 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 transcribing = false;
                 arming = true;
                 settling = false;
-                waiting_to_sweep = None;
                 ending = None;
                 toast = None;
                 lifecycle.record();
@@ -1573,9 +1554,6 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                     woke = resume(grown);
                 }
                 leaving = None;
-                // A sweep that had not started yet belongs to the dictation this
-                // one replaces, and must not appear over the new bars.
-                waiting_to_sweep = None;
                 ending = None;
                 toast = None;
                 if !was_armed {
@@ -1596,11 +1574,15 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // recognition has not run, so there may be nothing here at all.
             Ok(Command::Queued) => {
                 listening = false;
+                transcribing = true;
+                // The crest starts at its own beginning, not partway through
+                // whatever the recording clock had reached.
+                started = std::time::Instant::now();
+                // The voice heights are still up; this walks them down under the
+                // sweep rather than cutting them.
+                settling = true;
                 lifecycle.transcribe();
             }
-            // Words exist. Still held back by SWEEP_DELAY, because a short
-            // dictation can finish refining faster than a spinner is worth showing.
-            Ok(Command::Working) => waiting_to_sweep = Some(std::time::Instant::now()),
             // Nothing came of the recording and the island never appeared. Leaving
             // it unshown is the whole point of the delay.
             // Only the finish that leaves nothing in flight takes the island
@@ -1611,7 +1593,6 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // a plain close arriving second must not talk over it.
             Ok(Command::Finish) => {
                 if lifecycle.finish() {
-                    waiting_to_sweep = None;
                     ending.get_or_insert(Ending::Close);
                 }
             }
@@ -1619,7 +1600,6 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // going is the whole answer to it - the chord did something, the
             // user saw that it did, and nothing is owed beyond that.
             Ok(Command::Cancel) => {
-                waiting_to_sweep = None;
                 listening = false;
                 lifecycle.cancel();
                 ending.get_or_insert(Ending::Close);
@@ -1627,22 +1607,12 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // The one ending that is not a leaving: the island stays out and
             // widens into the message instead - see [`toast_grown`].
             Ok(Command::Say(message)) => {
-                waiting_to_sweep = None;
                 listening = false;
                 lifecycle.cancel();
                 ending = Some(Ending::Say(message));
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
-        }
-
-        // Still working after all this time, so it is worth saying so.
-        if let Some(since) = waiting_to_sweep
-            && since.elapsed() >= SWEEP_DELAY
-        {
-            waiting_to_sweep = None;
-            transcribing = true;
-            settling = true;
         }
 
         queue.roundtrip(&mut state)?;
@@ -1676,16 +1646,13 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
 
         mapped.surface.set_buffer_scale(state.scale);
         if settling {
-            // Down to rest before the sweep, so the two do not collide.
+            // Down to rest underneath the sweep, which is already running.
             for bar in heights.iter_mut() {
                 *bar *= SETTLE;
             }
             if heights.iter().all(|bar| *bar < SETTLED) {
                 heights = [0.0; BAR_COUNT];
                 settling = false;
-                // The sweep times from the moment the island is flat, so it
-                // always begins at its start rather than partway through.
-                started = std::time::Instant::now();
             }
         } else if listening {
             let ready = match born {
@@ -1743,7 +1710,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             None => Face::Island {
                 heights: &heights,
                 seconds: started.elapsed().as_secs_f32(),
-                transcribing: transcribing && !settling,
+                transcribing,
                 wake: grown,
             },
         };

@@ -19,14 +19,16 @@ pub struct Ducker {
     active: Arc<AtomicBool>,
     /// Flips true the instant the opening fade-out actually lands on target.
     /// This is what recording waits on instead of guessing a sleep: the ramp
-    /// takes exactly `FADE_OUT`, so there is nothing to tune per machine.
+    /// takes exactly `FADE`, so there is nothing to tune per machine.
     settled: Arc<AtomicBool>,
 }
 
-/// Down quickly, since recording has already begun; back up more gently, which
-/// is how a returning track is expected to sound.
-const FADE_OUT: Duration = Duration::from_millis(200);
-const FADE_IN: Duration = Duration::from_millis(260);
+/// Both directions ride the island, in and out. The duck and the animation
+/// answer the same keypress and end on the same event, so giving them separate
+/// timings only made one lag the other - the music came back while the shape
+/// was still on screen. Derived from [`crate::overlay::BLOOM`] rather than
+/// copied from it, so the two cannot drift apart again.
+const FADE: Duration = Duration::from_millis((crate::overlay::BLOOM * 1000.0) as u64);
 
 /// A full step costs ~4ms per stream, so this is a target rather than a
 /// guarantee - the ramp is interpolated against the clock, not the step count,
@@ -265,7 +267,7 @@ impl Ducker {
         fade(
             found.clone(),
             percent.min(100),
-            FADE_OUT,
+            FADE,
             false,
             Some(settled.clone()),
         );
@@ -283,7 +285,7 @@ impl Ducker {
     }
 
     /// True once the opening fade-out has actually landed on target. Recording
-    /// waits on this rather than a fixed sleep - `FADE_OUT` is the only real
+    /// waits on this rather than a fixed sleep - `FADE` is the only real
     /// constraint, and it is the same on every machine.
     pub fn settled(&self) -> bool {
         self.settled.load(Ordering::SeqCst)
@@ -299,7 +301,7 @@ impl Ducker {
         self.active.store(false, Ordering::SeqCst);
 
         let known = self.known.lock().unwrap().clone();
-        fade(known, 100, FADE_IN, true, None);
+        fade(known, 100, FADE, true, None);
     }
 }
 
