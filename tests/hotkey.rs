@@ -154,55 +154,37 @@ fn a_chord_is_released_as_soon_as_one_key_it_saw_is_up() {
     );
 }
 
-/// A modifier lifting is not the user letting go. Three fingers come off a
-/// chord at three different moments, and ending on the first of them cut
-/// dictations off before their last word.
+/// Whichever key comes off first ends the hold. A hand does not leave a chord
+/// all at once, and waiting for the trigger specifically meant the sentence was
+/// over well before the daemon agreed it was.
 #[test]
-fn releasing_a_modifier_keeps_the_hold() {
-    for lifted in [SUPER, SHIFT] {
+fn any_key_of_the_chord_ends_the_hold() {
+    for lifted in [SUPER, SHIFT, D] {
         let mut state = PttState::new(Chord::default());
         state.apply(SUPER, true);
         state.apply(SHIFT, true);
         state.apply(D, true);
-        assert_eq!(
-            state.apply(lifted, false),
-            None,
-            "lifting {lifted:?} ended a hold the trigger was still down for"
-        );
         assert!(
-            matches!(state.apply(D, false), Some(Event::Released { .. })),
-            "the trigger no longer ends the hold after {lifted:?} lifted"
+            matches!(state.apply(lifted, false), Some(Event::Released { .. })),
+            "lifting {lifted:?} left the hold running"
         );
     }
 }
 
-/// The safety net, asserted rather than assumed.
-///
-/// A remapper can swallow the trigger's own release, leaving `held` certain the
-/// letter is still down for as long as the process lives. The hold must still
-/// end, and every modifier coming up is the other evidence that the hand has
-/// left the chord. This was believed broken once and the release rule was
-/// widened to "any key ends it" to close it - which cost a hold every time a
-/// thumb drifted off Super. The net was always here; it just had no test
-/// saying so.
+/// The rest of the hand coming off afterwards is not a second dictation, or the
+/// next lift would fire a phantom release.
 #[test]
-fn a_swallowed_trigger_release_still_ends_the_hold() {
+fn the_rest_of_the_chord_lifting_is_quiet() {
     let mut state = PttState::new(Chord::default());
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
-
-    // The remapper eats this one: the daemon never sees D go up.
-    assert_eq!(
+    assert!(matches!(
         state.apply(SUPER, false),
-        None,
-        "one modifier up is not the hand leaving the chord"
-    );
-    assert!(
-        matches!(state.apply(SHIFT, false), Some(Event::Released { .. })),
-        "with every modifier up and the trigger's release swallowed, the hold \
-         ran forever"
-    );
+        Some(Event::Released { .. })
+    ));
+    assert_eq!(state.apply(SHIFT, false), None);
+    assert_eq!(state.apply(D, false), None);
 }
 
 /// The keys of a chord do not arrive in the order they were pressed. keyd and

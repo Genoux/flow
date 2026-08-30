@@ -162,15 +162,6 @@ impl Chord {
             .all(|modifier| modifier.keys().iter().any(|key| held.contains(key)))
     }
 
-    /// Whether any modifier of the chord is still down. Not `satisfied`, which
-    /// wants all of them: this is the question of whether the hand is still on
-    /// the chord at all.
-    fn any_modifier_held(&self, held: &HashSet<KeyCode>) -> bool {
-        self.modifiers
-            .iter()
-            .any(|modifier| modifier.keys().iter().any(|key| held.contains(key)))
-    }
-
     /// Every key of the chord is physically down, in any order.
     fn fully_held(&self, held: &HashSet<KeyCode>) -> bool {
         held.contains(&self.trigger) && self.satisfied(held)
@@ -445,32 +436,21 @@ impl PttState {
             return Some(Event::Pressed);
         }
 
-        // Only the trigger ends the hold. Reaching Super+Shift+D puts three
-        // fingers down and takes them off at three different moments, and
-        // stopping on the first of them cut recordings short of their last word
-        // - or off the moment a thumb drifted from Super mid-sentence. The
-        // chord is named for the trigger and the modifiers only qualify it, so
-        // the trigger is the key the hand thinks of as the button.
+        // Any key of the chord ends the hold - the same rule `chord_released`
+        // below applies to the compositor-driven path, so both ways into a
+        // dictation end it the same way.
         //
-        // The second arm is a safety net, not the intent. A remapper that
-        // swallows the trigger's own release leaves `held` believing the letter
-        // is still down forever, so the trigger alone cannot be the only way
-        // out. Every modifier being up is the other evidence that the hand has
-        // left the chord. A bare chord has no modifiers and no need of it - its
-        // one key is the trigger.
+        // Waiting for the trigger specifically read well on paper - the chord
+        // is named for it, the modifiers only qualify it - but it is not how a
+        // hand lets go. Three fingers come off at three different moments, and
+        // holding the recording open until the last of them meant the sentence
+        // was over long before the daemon agreed it was, with the tail of the
+        // hold spent recording silence.
         //
-        // This briefly read "any key of the chord ends it", to agree with
-        // `chord_released` below and to close that remapper hang. The hang was
-        // already closed - by the second arm, which is what it is for - and the
-        // agreement was not worth buying: the two answer different questions.
-        // This path sees exact key events and can afford to be precise; that
-        // one polls a snapshot that can be stale, where a missed release must
-        // not mean recording forever. Precision here, safety there.
-        if !pressed
-            && self.down_at.is_some()
-            && self.chord.contains(key)
-            && (key == self.chord.trigger || !self.chord.any_modifier_held(&self.held))
-        {
+        // It also closes the remapper hang for free: a remapper that swallows
+        // the trigger's own release leaves `held` believing the letter is down
+        // forever, and any other chord key going up is now enough to get out.
+        if !pressed && self.down_at.is_some() && self.chord.contains(key) {
             let start = self.down_at.take().expect("checked above");
             return (!self.cancelled).then(|| Event::Released {
                 held: start.elapsed(),
