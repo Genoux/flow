@@ -235,6 +235,11 @@ impl Console {
                     }
                 }
             }
+            Message::PeripheralsLoaded(peripherals) => {
+                self.input = peripherals.input;
+                self.sources = peripherals.sources;
+                self.can_capture = peripherals.can_capture;
+            }
             Message::OpenConfig => {
                 if let Err(err) = system::open(&settings::config_path()) {
                     self.save_error = Some(err);

@@ -14,8 +14,15 @@ use std::time::Duration;
 /// Nothing here is on the dictation path, but a hung `systemctl` would freeze
 /// the UI thread just as effectively.
 const BUDGET: Duration = Duration::from_secs(3);
+/// Launch-time reads are advisory. If one owner is wedged, an absent answer is
+/// better than holding the first frame for the full interactive-action budget.
+const STARTUP_BUDGET: Duration = Duration::from_millis(250);
 
 fn run(program: &str, args: &[&str]) -> Option<std::process::Output> {
+    run_for(program, args, BUDGET)
+}
+
+fn run_for(program: &str, args: &[&str], budget: Duration) -> Option<std::process::Output> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -26,7 +33,7 @@ fn run(program: &str, args: &[&str]) -> Option<std::process::Output> {
 
     // wait_timeout is not in std, so poll: these commands return in
     // milliseconds, and the alternative is a window that can hang.
-    let deadline = std::time::Instant::now() + BUDGET;
+    let deadline = std::time::Instant::now() + budget;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => return child.wait_with_output().ok(),
@@ -35,6 +42,7 @@ fn run(program: &str, args: &[&str]) -> Option<std::process::Output> {
             }
             Ok(None) => {
                 let _ = child.kill();
+                let _ = child.wait();
                 return None;
             }
             Err(_) => return None,
@@ -46,7 +54,21 @@ fn run(program: &str, args: &[&str]) -> Option<std::process::Output> {
 /// the unit is not installed, or this is not a systemd session. `None` means
 /// "do not offer this control", not "off".
 pub fn autostart_enabled() -> Option<bool> {
-    let output = run("systemctl", &["--user", "is-enabled", "flow.service"])?;
+    autostart_enabled_for(BUDGET)
+}
+
+/// The same read with a launch-sized deadline. A stuck user bus must not keep
+/// the window invisible; the full budget remains available after interaction.
+pub fn startup_autostart_enabled() -> Option<bool> {
+    autostart_enabled_for(STARTUP_BUDGET)
+}
+
+fn autostart_enabled_for(budget: Duration) -> Option<bool> {
+    let output = run_for(
+        "systemctl",
+        &["--user", "is-enabled", "flow.service"],
+        budget,
+    )?;
     let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     match state.as_str() {
         // `linked` and `static` are enabled-ish; anything else we do not
@@ -291,7 +313,18 @@ impl Model {
 /// Costs about three milliseconds, which is what makes it something the window
 /// can do every time it opens. The hashing pass is Repair's job.
 pub fn damage() -> Option<usize> {
-    let output = run("flow", &["check", "--porcelain"])?;
+    damage_for(BUDGET)
+}
+
+/// Installation health shapes the Overview layout, so it is read before the
+/// first frame rather than arriving later and moving the page. Its deadline is
+/// nevertheless launch-sized: a wedged binary is no reason to hide the window.
+pub fn startup_damage() -> Option<usize> {
+    damage_for(STARTUP_BUDGET)
+}
+
+fn damage_for(budget: Duration) -> Option<usize> {
+    let output = run_for("flow", &["check", "--porcelain"], budget)?;
     let text = String::from_utf8_lossy(&output.stdout);
 
     // The verdict line is the handshake: without it this is an older `flow`
@@ -422,6 +455,26 @@ const OPENER: &str = if cfg!(target_os = "macos") {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A process that never answers is the failure behind the three-second
+    /// tray opening. The launch path must kill and reap it on its smaller
+    /// deadline instead of inheriting the budget meant for button presses.
+    #[test]
+    fn a_stalled_launch_probe_is_cut_short() {
+        let started = std::time::Instant::now();
+        let answer = run_for(
+            "sh",
+            &["-c", "while :; do :; done"],
+            Duration::from_millis(25),
+        );
+
+        assert!(answer.is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a launch probe outlived its deadline by too much"
+        );
+        assert!(STARTUP_BUDGET < BUDGET);
+    }
 
     /// Stop signals whatever the pid file names, so the one thing standing
     /// between that and killing an innocent process is this check. A recycled

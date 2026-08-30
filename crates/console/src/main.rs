@@ -291,6 +291,9 @@ enum Message {
     Service(&'static str),
     /// A service command finished away from the UI thread.
     ServiceFinished(&'static str, Result<(), String>),
+    /// Launch-time reads that may wait on PipeWire or an input device finished
+    /// away from the UI thread.
+    PeripheralsLoaded(Peripherals),
     /// Start listening for the next chord the user presses.
     CaptureChord,
     /// A key arrived while capturing.
@@ -323,6 +326,26 @@ enum Message {
     UpdateChecked(update::Status),
     InstallUpdate,
     UpdateInstalled(Result<String, String>),
+}
+
+/// Machine state that informs controls but does not decide the page's shape.
+/// It is deliberately loaded after construction: PipeWire and evdev are
+/// external systems, and neither gets to hold the window's first frame.
+#[derive(Debug, Clone)]
+struct Peripherals {
+    input: Option<String>,
+    sources: Vec<(String, String)>,
+    can_capture: bool,
+}
+
+impl Peripherals {
+    fn read() -> Self {
+        Self {
+            input: system::default_input(),
+            sources: system::input_sources(),
+            can_capture: chord::available(),
+        }
+    }
 }
 
 struct Console {
@@ -422,9 +445,9 @@ impl Console {
                 save_error: None,
                 service_error: None,
                 service_pending: None,
-                autostart: system::autostart_enabled(),
-                input: system::default_input(),
-                sources: system::input_sources(),
+                autostart: system::startup_autostart_enabled(),
+                input: None,
+                sources: Vec::new(),
                 picking_input: None,
                 entries,
                 copied: None,
@@ -436,7 +459,7 @@ impl Console {
                 update: update::Status::Checking,
                 updating: false,
                 models: system::models(),
-                damage: system::damage(),
+                damage: system::startup_damage(),
                 download: None,
                 showing_setup: first_run,
                 fading: None,
@@ -445,7 +468,7 @@ impl Console {
                 typing: String::new(),
                 term_error: None,
                 capturing: false,
-                can_capture: chord::available(),
+                can_capture: false,
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
                 now: std::time::Instant::now(),
@@ -459,6 +482,11 @@ impl Console {
             // already the request; a Begin button in front of it would only be
             // asking the same question twice.
             Task::batch([
+                // PipeWire can stall while devices are being relinked (remote
+                // desktop connections do exactly that), and closing even one
+                // evdev descriptor can wait on the kernel. Neither answer is
+                // needed to draw the window, so let the first frame win.
+                Task::perform(async { Peripherals::read() }, Message::PeripheralsLoaded),
                 if first_run {
                     Task::done(Message::BeginSetup)
                 } else {
