@@ -837,12 +837,10 @@ pub fn currently_held_modifiers() -> Vec<KeyCode> {
         .collect()
 }
 
-/// Block until no modifier is held. Injection no longer waits here: releasing
-/// `d` is the end of the hold, and Flow's own keyboard sends Ctrl+V without
-/// needing the physical modifiers up.
-///
-/// Still used by tests, and by anyone who needs to know whether the board is
-/// actually at rest. Gives up after `timeout`.
+/// Block until no modifier is held, or inspect once when `timeout` is zero.
+/// Injection uses the zero-time check to prefer its portable keyboard whenever
+/// the board is already clear, then waits here only if held modifiers cannot be
+/// handled by an optional compositor shortcut route. Gives up after `timeout`.
 pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     let started = Instant::now();
     let deadline = started + timeout;
@@ -854,8 +852,7 @@ pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
 
     loop {
         // A wait this long is either someone resting a hand on the keys or a
-        // release event this never saw. Injection no longer blocks on this;
-        // the line is for whoever still asks.
+        // release event this never saw.
         if !announced && started.elapsed() > Duration::from_millis(750) {
             announced = true;
             // Names them, because a wait this long is either someone resting a

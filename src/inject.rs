@@ -18,26 +18,20 @@ const KEY_DELAY: Duration = Duration::from_millis(12);
 
 /// Wait cap for physical modifiers to release before firing the paste chord.
 ///
-/// Applies to **both** backends. It used to be skipped on the Wayland vk path,
-/// on the theory that declaring the modifier mask atomically through the
-/// virtual-keyboard protocol stops the compositor conflating our Ctrl with a
-/// still-held physical Super. Measured on Hyprland, that is not true: the
-/// chord and the physical modifiers still meet somewhere before the focused
-/// client sees them.
+/// Only a portable paste with held modifiers waits - see
+/// [`compositor_paste`], which optionally avoids that wait where the compositor
+/// exposes a suitable capability. Everywhere else the chord is a key event
+/// like any other, and a still-held Super rides along with it.
 ///
-/// This is the whole of "it only works when I release every key at once".
-/// Releasing just the trigger of a super+shift+d hold ends the recording
-/// correctly - the transcript is right, the paste fires, the log says success -
-/// but the client receives super+shift+ctrl+v, which is not a paste, so
-/// nothing lands. Two dictations seconds apart, one released fully and one
-/// released by the trigger alone, differed in nothing else.
+/// Measured, not assumed: `tests/paste_live.rs` holds super+shift on a
+/// synthetic keyboard and pastes. Through the virtual keyboard the window
+/// receives nothing; the client is sent super+shift+ctrl+v, which is not a
+/// paste. That is the whole of "it only works when I release every key".
 ///
 /// Long enough to cover a hand coming off a chord at its own pace, since
-/// nothing is lost by waiting: the recording is already over, the island is
-/// already showing its sweep, and a paste that fires into held modifiers is a
-/// dictation thrown away. 3s was not enough - a deliberate "release only the
-/// trigger" hold sat on super+shift well past it, timed out, fired, and was
-/// eaten exactly as the warning predicted.
+/// nothing is lost by waiting: the recording is already over and the island is
+/// already showing its sweep. 3s was not enough - a deliberate "release only
+/// the trigger" hold sat on super+shift well past it.
 ///
 /// If even this runs out the transcript is left on the clipboard rather than
 /// restored over, so the dictation survives as a Ctrl+V - see [`Injector::inject`].
@@ -86,11 +80,10 @@ static CLIPBOARD_GENERATION: AtomicUsize = AtomicUsize::new(0);
 /// Two ways to deliver the paste chord to the focused window.
 ///
 /// The Wayland virtual-keyboard protocol (`zwp_virtual_keyboard_v1`) is the
-/// preferred path: it declares its depressed-modifier mask directly instead of
-/// pressing physical modifier keys, so the compositor sees a clean Ctrl+V
-/// even when the user's PTT chord still holds Super+Shift. Uinput remains as
-/// the fallback for X11 or the handful of Wayland compositors that don't
-/// implement the protocol.
+/// preferred path. Uinput remains as the fallback for X11 or the handful of
+/// Wayland compositors that don't implement the protocol. Both are portable
+/// keyboard backends, so both need the physical modifiers to be clear before
+/// sending a paste chord.
 enum Backend {
     Wayland(VirtualKeyboard),
     Uinput(VirtualDevice),
@@ -100,14 +93,31 @@ pub struct Injector {
     backend: Backend,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum InitialPasteRoute {
+    Portable,
+    CompositorRescue,
+}
+
+/// Pick a route before emitting anything. A keyboard backend cannot tell us
+/// whether its events reached the focused client, so delivery is not something
+/// that can be tried portably and retried through a compositor afterward.
+fn initial_paste_route(modifiers_clear: bool) -> InitialPasteRoute {
+    if modifiers_clear {
+        InitialPasteRoute::Portable
+    } else {
+        InitialPasteRoute::CompositorRescue
+    }
+}
+
 impl Injector {
     /// Built once and kept alive - rebuilding per injection would pay the
     /// settle delay every time.
     ///
-    /// Prefers the Wayland virtual-keyboard protocol so the paste chord is
-    /// unaffected by held physical modifiers; falls back to a uinput device
-    /// when the compositor doesn't advertise the protocol (or there is no
-    /// Wayland session, e.g. X11).
+    /// Prefers the Wayland virtual-keyboard protocol and falls back to a uinput
+    /// device when the compositor doesn't advertise it (or there is no Wayland
+    /// session, e.g. X11). Delivery waits for physical modifiers on either
+    /// backend; choosing Wayland does not make seat-wide modifiers disappear.
     pub fn new() -> Result<Self> {
         match VirtualKeyboard::new(KEY_DELAY) {
             Ok(kb) => {
@@ -145,10 +155,12 @@ impl Injector {
     }
 
     /// Put `text` in the focused window by staging it on the clipboard and
-    /// sending one paste chord from Flow's own keyboard.
+    /// sending one paste chord.
     ///
-    /// Both backends wait for the user's own modifiers to come up first - see
-    /// [`MODIFIER_WAIT`] for why the Wayland path is no exception.
+    /// Flow's own keyboard is always the default. If the user's physical
+    /// modifiers are still down, an optional compositor route may deliver the
+    /// chord without inheriting them - see [`compositor_paste`]. Without one,
+    /// Flow waits for the board to clear and uses its own keyboard as usual.
     pub fn inject(&mut self, text: &str) -> Result<()> {
         let generation = CLIPBOARD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         let saved = snapshot_clipboard();
@@ -160,32 +172,48 @@ impl Injector {
         )
         .context("staging text on the clipboard")?;
 
-        let modifiers_clear = hotkey::wait_for_modifiers_released(MODIFIER_WAIT);
-        if !modifiers_clear {
-            let stuck: Vec<String> = hotkey::currently_held_modifiers()
-                .iter()
-                .map(|key| format!("{key:?}"))
-                .collect();
-            // Nothing has failed and nothing will return an error: the chord
-            // fires, the compositor eats it, and the user watches an empty text
-            // field. The text is already staged, so say where it went.
-            crate::notify::failure(
-                "Flow couldn't paste",
-                "Your text is on the clipboard - press Ctrl+V.",
-            );
-            eprintln!(
-                "paste: firing after {MODIFIER_WAIT:?} with {} still held - the chord will \
-                 probably be eaten, so the text is staying on the clipboard for a manual Ctrl+V",
-                if stuck.is_empty() {
-                    "no observed modifier".into()
-                } else {
-                    stuck.join(", ")
-                },
-            );
-        }
-
         let terminal = detect_terminal_focus().unwrap_or(UNKNOWN_IS_NOT_A_TERMINAL);
-        self.paste(terminal)?;
+        let chord = paste_keys(terminal);
+
+        // Sending first and falling back is impossible: a virtual keyboard can
+        // report that it emitted events, but not whether the focused client
+        // accepted them. Choose the portable path up front whenever its one
+        // precondition is already satisfied.
+        let mut modifiers_clear = hotkey::wait_for_modifiers_released(Duration::ZERO);
+        match initial_paste_route(modifiers_clear) {
+            InitialPasteRoute::Portable => self.paste(&chord)?,
+            InitialPasteRoute::CompositorRescue if compositor_paste(&chord) => {
+                // The compositor declared the shortcut's modifier mask
+                // explicitly, so physical modifiers do not affect delivery.
+                modifiers_clear = true;
+            }
+            InitialPasteRoute::CompositorRescue => {
+                modifiers_clear = hotkey::wait_for_modifiers_released(MODIFIER_WAIT);
+                if !modifiers_clear {
+                    let stuck: Vec<String> = hotkey::currently_held_modifiers()
+                        .iter()
+                        .map(|key| format!("{key:?}"))
+                        .collect();
+                    // Nothing has failed and nothing will return an error: the chord
+                    // fires, the compositor eats it, and the user watches an empty text
+                    // field. The text is already staged, so say where it went.
+                    crate::notify::failure(
+                        "Flow couldn't paste",
+                        "Your text is on the clipboard - press Ctrl+V.",
+                    );
+                    eprintln!(
+                        "paste: firing after {MODIFIER_WAIT:?} with {} still held - the chord will \
+                         probably be eaten, so the text is staying on the clipboard for a manual Ctrl+V",
+                        if stuck.is_empty() {
+                            "no observed modifier".into()
+                        } else {
+                            stuck.join(", ")
+                        },
+                    );
+                }
+                self.paste(&chord)?;
+            }
+        }
 
         // On its own thread, so the dictation is finished the moment the chord
         // is sent. Waiting here would put the whole delay on the critical path
@@ -209,12 +237,11 @@ impl Injector {
         Ok(())
     }
 
-    fn paste(&mut self, terminal: bool) -> Result<()> {
-        let chord = paste_keys(terminal);
+    fn paste(&mut self, chord: &[KeyCode]) -> Result<()> {
         match &mut self.backend {
-            Backend::Wayland(kb) => kb.send_combo(&chord).context("wayland vk send_combo"),
+            Backend::Wayland(kb) => kb.send_combo(chord).context("wayland vk send_combo"),
             Backend::Uinput(device) => {
-                for key in &chord {
+                for key in chord {
                     device.emit(&[*KeyEvent::new(*key, 1)])?;
                     std::thread::sleep(KEY_DELAY);
                 }
@@ -358,6 +385,119 @@ pub fn is_terminal_class(class: &str) -> bool {
 /// The paste chord, and only the paste chord. On the uinput path this list
 /// governs which keys the virtual device advertises; on the Wayland vk path
 /// modifiers are declared as a mask and only KEY_V is actually pressed.
+/// Try compositor capabilities that can deliver a shortcut with an explicit
+/// modifier mask. Absent or unsupported, the caller waits for physical
+/// modifiers and returns to the portable keyboard backend.
+fn compositor_paste(chord: &[KeyCode]) -> bool {
+    hyprland_paste(chord)
+}
+
+/// Ask Hyprland to rescue a paste that Flow's own keyboard cannot safely send
+/// while physical modifiers are held, and say whether it did.
+///
+/// # Why the compositor and not Flow's own keyboard
+///
+/// Because Hyprland merges the modifiers of every keyboard on the seat before
+/// it hands a key event on. A chord sent from Flow's virtual keyboard while the
+/// user still holds super+shift arrives at the client as super+shift+ctrl+v,
+/// which no application treats as a paste, so the dictation lands nowhere. That
+/// is why [`MODIFIER_WAIT`] exists at all: the fallback path genuinely has to
+/// wait for the hand to leave the keys.
+///
+/// `send_shortcut` declares the mask for the event instead of inheriting it, so
+/// the client is sent ctrl+v no matter what is physically down. Measured both
+/// ways in `tests/paste_live.rs`, with super+shift held throughout: the virtual
+/// keyboard delivers nothing, this delivers the text.
+///
+/// This is never the default delivery path. It is spoken over Hyprland's IPC
+/// socket rather than by running `hyprctl`, which keeps a paste to one socket
+/// write and does not require the binary to be installed. Absent or unhappy,
+/// the caller waits and uses the portable keyboard backend.
+fn hyprland_paste(chord: &[KeyCode]) -> bool {
+    let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") else {
+        return false;
+    };
+    let Ok(signature) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") else {
+        return false;
+    };
+
+    let mods: Vec<&str> = chord
+        .iter()
+        .filter_map(|key| match *key {
+            KeyCode::KEY_LEFTCTRL | KeyCode::KEY_RIGHTCTRL => Some("CTRL"),
+            KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT => Some("SHIFT"),
+            _ => None,
+        })
+        .collect();
+    // The one key that is not a modifier. Flow only ever pastes, so there is
+    // exactly one, and a chord shaped otherwise is not ours to send this way.
+    let [key] = chord
+        .iter()
+        .filter(|key| !MODIFIER_KEYS.contains(key))
+        .collect::<Vec<_>>()[..]
+    else {
+        return false;
+    };
+    let Some(name) = key_name(*key) else {
+        return false;
+    };
+
+    let request = format!(
+        r#"dispatch hl.dsp.send_shortcut{{mods="{}",key="{name}"}}"#,
+        mods.join(" ")
+    );
+
+    let socket = std::path::Path::new(&runtime)
+        .join("hypr")
+        .join(signature)
+        .join(".socket.sock");
+    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(HYPRLAND_REPLY));
+    if std::io::Write::write_all(&mut stream, request.as_bytes()).is_err() {
+        return false;
+    }
+
+    // Hyprland answers "ok", or a line beginning "error"/"warning" - notably
+    // "window not found", which is a real miss and must fall back rather than
+    // silently drop the dictation.
+    let mut reply = String::new();
+    if std::io::Read::read_to_string(&mut stream, &mut reply).is_err() {
+        return false;
+    }
+    if reply.trim() != "ok" {
+        eprintln!(
+            "paste: hyprland refused the shortcut ({}), falling back",
+            reply.trim()
+        );
+        return false;
+    }
+    crate::verbose!("paste: sent by hyprland with modifiers held");
+    true
+}
+
+/// The name `send_shortcut` knows a key by. Only the keys Flow can paste with,
+/// for the same reason the keymap it uploads has three keys in it.
+fn key_name(key: KeyCode) -> Option<&'static str> {
+    match key {
+        KeyCode::KEY_V => Some("V"),
+        _ => None,
+    }
+}
+
+/// Modifiers a paste chord can contain, as opposed to the key it presses.
+const MODIFIER_KEYS: [KeyCode; 4] = [
+    KeyCode::KEY_LEFTCTRL,
+    KeyCode::KEY_RIGHTCTRL,
+    KeyCode::KEY_LEFTSHIFT,
+    KeyCode::KEY_RIGHTSHIFT,
+];
+
+/// Hyprland answers a dispatch immediately or not at all; this only stops a
+/// wedged compositor from holding the dictation up.
+const HYPRLAND_REPLY: Duration = Duration::from_millis(200);
+
 pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
     let mut chord = vec![KeyCode::KEY_LEFTCTRL];
     if terminal {
@@ -451,4 +591,23 @@ fn read_clipboard() -> Vec<MimeSource> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InitialPasteRoute, initial_paste_route};
+
+    #[test]
+    fn the_portable_route_is_the_default() {
+        assert_eq!(
+            initial_paste_route(true),
+            InitialPasteRoute::Portable,
+            "a clear keyboard must not consult a compositor-specific path",
+        );
+        assert_eq!(
+            initial_paste_route(false),
+            InitialPasteRoute::CompositorRescue,
+            "held modifiers make portable delivery unsafe until they lift",
+        );
+    }
 }

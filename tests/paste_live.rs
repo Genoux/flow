@@ -118,3 +118,103 @@ impl Drop for Reaped {
         self.0.wait().ok();
     }
 }
+
+/// The question the whole "release every finger" complaint turns on: with the
+/// chord's own modifiers still physically down, does the paste land?
+///
+/// `MODIFIER_WAIT` exists because the answer was measured as no on an earlier
+/// Hyprland. This holds super+shift on a synthetic keyboard for the duration of
+/// the paste and reads the window back, so the answer is a fact rather than a
+/// comment.
+///
+///   cargo test --release --test paste_live -- --ignored --nocapture held
+#[test]
+#[ignore]
+fn a_paste_lands_with_the_chord_modifiers_held() {
+    use evdev::uinput::VirtualDevice;
+    use evdev::{AttributeSet, KeyCode};
+
+    let target = std::env::temp_dir().join("flow-paste-held");
+    let _ = std::fs::remove_file(&target);
+
+    let mut keys = AttributeSet::<KeyCode>::new();
+    for key in [KeyCode::KEY_LEFTMETA, KeyCode::KEY_LEFTSHIFT] {
+        keys.insert(key);
+    }
+    let device = VirtualDevice::builder()
+        .expect("open /dev/uinput")
+        .name("flow held-modifier probe")
+        .with_keys(&keys)
+        .expect("declare keys")
+        .build()
+        .expect("build");
+    // Releases on the way out however the test ends, so a panic cannot leave
+    // Super stuck down on the user's session.
+    let mut held = HeldKeys(device);
+    std::thread::sleep(Duration::from_millis(500));
+
+    let mut kitty = Reaped(
+        Command::new("kitty")
+            .arg("--title")
+            .arg("flow-paste-held")
+            .arg("sh")
+            .arg("-c")
+            .arg(format!(
+                "stty raw; head -c {} > {}",
+                SENTINEL.len(),
+                target.display()
+            ))
+            .spawn()
+            .expect("kitty is needed to receive the paste"),
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(5), || active_window_title()
+            .is_some_and(|title| title.contains("flow-paste-held"))),
+        "the spawned kitty never took focus"
+    );
+
+    let mut injector = Injector::new().expect("building the injector");
+    held.press();
+    std::thread::sleep(Duration::from_millis(100));
+
+    injector.inject(SENTINEL).expect("injecting");
+
+    let landed = wait_until(Duration::from_secs(3), || {
+        std::fs::read(&target).is_ok_and(|bytes| bytes.len() >= SENTINEL.len())
+    });
+    held.release();
+    let received = std::fs::read_to_string(&target).unwrap_or_default();
+    kitty.0.kill().ok();
+
+    eprintln!("=== with super+shift held, the window received {received:?}");
+    assert!(
+        landed && received == SENTINEL,
+        "paste did not land with modifiers held; window received {received:?}"
+    );
+}
+
+struct HeldKeys(evdev::uinput::VirtualDevice);
+
+impl HeldKeys {
+    fn press(&mut self) {
+        self.emit(1);
+    }
+
+    fn release(&mut self) {
+        self.emit(0);
+    }
+
+    fn emit(&mut self, value: i32) {
+        use evdev::{KeyCode, KeyEvent};
+        for key in [KeyCode::KEY_LEFTMETA, KeyCode::KEY_LEFTSHIFT] {
+            let _ = self.0.emit(&[*KeyEvent::new(key, value)]);
+        }
+    }
+}
+
+impl Drop for HeldKeys {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
