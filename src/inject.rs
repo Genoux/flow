@@ -54,21 +54,22 @@ const FOCUS_BUDGET: Duration = Duration::from_millis(200);
 /// `wl_clipboard_rs::copy` hands the data over on request, in the background,
 /// with no signal back here when that request actually happens - the target
 /// app has to receive the keystroke, decide to paste, and ask the compositor
-/// for the data, all of which takes real time and gets slower under load.
-/// Restoring too soon wins that race: the old clipboard content replaces the
-/// transcript before the app ever reads it, so the paste keystroke fires,
-/// nothing appears, and this code reports success because sending the
-/// keystroke is all it actually checked.
+/// for the data. Restore too soon and the old content replaces the transcript
+/// before the app ever reads it: the chord fires, nothing appears, and this
+/// code reports success because sending the keystroke is all it checked.
 ///
-/// Measured on this machine, from the journal: a dictation whose clipboard
-/// snapshot was empty (no restore at all) pasted fine, while the very next one
-/// with a restore did not - and a clipboard watch caught the transcript being
-/// overwritten 424ms after it landed, with nothing pasted. So 48ms
-/// (`KEY_DELAY * 4`, the original) and 400ms both lose this race. Seconds,
-/// not milliseconds, is the right order of magnitude for "an app got round to
-/// reading the clipboard", and since the wait no longer blocks anything (see
-/// below) there is nothing to trade off against.
-const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_secs(3);
+/// So the value is a margin over "how long does a consumer take to ask".
+/// Measured on this machine with `wl-copy --paste-once`, timing the copy until
+/// its first read: 25ms, 17ms, 18ms. The timer starts after Flow's keyboard has
+/// finished emitting the chord, or after an optional compositor route has
+/// acknowledged it, so it covers the target app's react-and-ask time rather
+/// than modifier waiting. 500ms is a 20x margin on that.
+///
+/// It used to be 3s, which was safe and wrong: a 3s window is long enough for
+/// someone to finish dictating, reach for Ctrl+V, and paste the transcript
+/// back over the image they had copied. The clipboard is the user's, not
+/// Flow's, and the whole point of snapshotting it is to hand it back promptly.
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(500);
 
 /// Which injection currently owns the clipboard. A restore only fires if its
 /// own dictation is still the newest: without this, dictating again inside
