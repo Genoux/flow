@@ -106,6 +106,17 @@ pub fn duckable(parsed: &serde_json::Value) -> Vec<(u32, u32)> {
     found
 }
 
+/// The pactl percentage that leaves `original` playing at `level` percent of
+/// its signal.
+///
+/// PulseAudio percentages are cubic in amplitude, so asking for a literal 50%
+/// hands the stream -18 dB - an eighth of the signal, which is why music at
+/// "half volume" was barely audible. The setting means half the sound, so the
+/// linear fraction is cube-rooted back into the scale pactl actually speaks.
+pub fn ducked(original: u32, level: u32) -> u32 {
+    (original as f32 * (level as f32 / 100.0).cbrt()).round() as u32
+}
+
 fn set_volume(index: u32, percent: u32) {
     // A stream that ended is expected, not an error - a track can finish
     // mid-dictation, and stale ids are normal at startup recovery. pactl still
@@ -124,7 +135,7 @@ fn set_volume(index: u32, percent: u32) {
 fn apply(streams: &[(u32, u32)], level: u32) {
     LEVEL.store(level, Ordering::SeqCst);
     for (index, original) in streams {
-        set_volume(*index, original * level / 100);
+        set_volume(*index, ducked(*original, level));
     }
 }
 
@@ -186,11 +197,11 @@ pub fn original_volume(current: u32, level: u32, known: &[(u32, u32)]) -> u32 {
     }
     if let Some((_, original)) = known
         .iter()
-        .find(|(_, original)| current.abs_diff(*original * level / 100) <= 2)
+        .find(|(_, original)| current.abs_diff(ducked(*original, level)) <= 2)
     {
         return *original;
     }
-    if current.abs_diff(level) <= 2 {
+    if current.abs_diff(ducked(100, level)) <= 2 {
         return 100;
     }
     current
@@ -199,7 +210,7 @@ pub fn original_volume(current: u32, level: u32, known: &[(u32, u32)]) -> u32 {
 /// True when a stream we already ducked has gone louder than the duck allows.
 /// Players do this on a track change without changing the stream id.
 pub fn escaped(current: u32, original: u32, level: u32) -> bool {
-    current > original * level / 100 + 2
+    current > ducked(original, level) + 2
 }
 
 /// Catch streams that appear after ducking began, and streams that jump back
@@ -222,12 +233,12 @@ fn watch(known: Arc<Mutex<Vec<(u32, u32)>>>, active: Arc<AtomicBool>) {
             for (index, volume) in current {
                 if let Some((_, original)) = known.iter().find(|(seen, _)| *seen == index) {
                     if escaped(volume, *original, level) {
-                        set_volume(index, *original * level / 100);
+                        set_volume(index, ducked(*original, level));
                     }
                     continue;
                 }
                 let original = original_volume(volume, level, &known);
-                set_volume(index, original * level / 100);
+                set_volume(index, ducked(original, level));
                 known.push((index, original));
                 dirty = true;
             }

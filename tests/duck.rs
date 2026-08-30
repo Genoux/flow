@@ -2,33 +2,45 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+/// A duck to half the signal is not a duck to half the number: pactl's scale
+/// is cubic, so a literal 50% is -18 dB and the music all but disappears.
+#[test]
+fn half_the_volume_means_half_the_signal() {
+    assert_eq!(flow::duck::ducked(100, 100), 100);
+    assert_eq!(flow::duck::ducked(100, 50), 79);
+    assert_eq!(flow::duck::ducked(100, 0), 0);
+}
+
 /// A new stream sitting at the ducked level inherited it. Restoring that
 /// number is how a track change left the music at 50%.
 #[test]
 fn a_stream_already_at_the_duck_remembers_full_volume() {
     let known = [(1, 100)];
-    assert_eq!(flow::duck::original_volume(50, 50, &known), 100);
-    assert_eq!(flow::duck::original_volume(50, 50, &[]), 100);
+    assert_eq!(flow::duck::original_volume(79, 50, &known), 100);
+    assert_eq!(flow::duck::original_volume(79, 50, &[]), 100);
 }
 
+/// 90% is above anything the duck could have produced, so it is the stream's
+/// own level. A stream sitting within rounding distance of the duck target is
+/// genuinely ambiguous and is read as a clone, not tested for here.
 #[test]
 fn a_stream_that_appears_loud_keeps_that_as_original() {
-    assert_eq!(flow::duck::original_volume(80, 50, &[]), 80);
+    assert_eq!(flow::duck::original_volume(90, 50, &[]), 90);
     assert_eq!(flow::duck::original_volume(100, 50, &[(1, 80)]), 100);
 }
 
 #[test]
 fn a_stream_matching_a_known_original_reuses_it() {
     let known = [(1, 80)];
-    assert_eq!(flow::duck::original_volume(40, 50, &known), 80);
+    assert_eq!(flow::duck::original_volume(64, 50, &known), 80);
 }
 
 #[test]
 fn a_player_that_jumps_back_up_has_escaped() {
     assert!(flow::duck::escaped(100, 100, 50));
-    assert!(flow::duck::escaped(80, 100, 50));
-    assert!(!flow::duck::escaped(50, 100, 50));
-    assert!(!flow::duck::escaped(52, 100, 50));
+    assert!(flow::duck::escaped(90, 100, 50));
+    assert!(!flow::duck::escaped(79, 100, 50));
+    assert!(!flow::duck::escaped(81, 100, 50));
 }
 
 /// The chime that says the microphone is open must not be faded out by the
@@ -192,7 +204,7 @@ fn duck_ramps_and_restores() {
         ducker.restore();
     }
 
-    let target = before / 2;
+    let target = flow::duck::ducked(before, 50);
     eprintln!("observed during fade: {seen:?}  (target {target}%)");
 
     // The point of the ramp: values strictly between start and target, rather
