@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use flow::{audio, config, daemon, inject, install, ipc, notify, refine, status, stt, wav};
+use flow::{audio, config, daemon, inject, install, ipc, notify, refine, status, stt, tray, wav};
 use std::time::{Duration, Instant};
 
 /// Audio that must be spoken before any of it is transcribed early. Long enough
@@ -172,6 +172,13 @@ fn main() -> Result<()> {
     // a `flow retry` doing this would cut the running daemon off from the
     // console it was talking to.
     let reporter = matches!(command(&args), Some("daemon")).then(status::Reporter::spawn);
+    // Bound here for the reason above, not inside the daemon with the overlay:
+    // the icon is the answer to "is Flow running", so registering it after the
+    // weights have loaded left the bar empty for the half-minute in which that
+    // question actually gets asked - at login, the one time it is not already
+    // obvious. Held to the end of `main`, since dropping the handle would take
+    // the icon with it.
+    let _tray = matches!(command(&args), Some("daemon")).then(tray::spawn);
     let mut engine = stt::Stt::load(&dir)?;
 
     match command(&args) {

@@ -15,5 +15,6 @@ pub mod overlay;
 pub mod refine;
 pub mod status;
 pub mod stt;
+pub mod tray;
 pub mod wav;
 pub mod wayland_vk;

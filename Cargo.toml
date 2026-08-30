@@ -36,6 +36,12 @@ nnnoiseless = { version = "0.5", default-features = false }
 rubato = "0.15"
 whatlang = "0.18.0"
 fontdue = "0.9.4"
+# `blocking` is only the API shape - it enables no reactor, so zbus underneath
+# it will not build alone. `async-io` is the runtime, chosen over tokio because
+# the daemon has no async anywhere else and this way it does not gain one: the
+# tray owns its thread and the rest of the process never sees it.
+ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+png = "0.18.1"
 
 # Dependencies optimised even in a debug build; this crate left alone.
 #
