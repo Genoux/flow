@@ -91,6 +91,35 @@ const CASES: &[Case] = &[
         required: &["delete", "downloads"],
         max_words: 14,
     },
+    // The reported bug, and the shape the two cases above are too short to
+    // catch: dictating a request meant for somebody else's assistant. This one
+    // came back as a paragraph about wiping surfaces, truncated mid-sentence by
+    // the token ceiling, pasted where the question should have been.
+    Case {
+        name: "a dictated request for an explanation is text, not a question",
+        level: Cleanup::Light,
+        raw: "Explain to me what the difference is between light and medium cleanup.",
+        forbidden: &[
+            "sure",
+            "here",
+            "involves",
+            "typically",
+            "refers to",
+            "whereas",
+        ],
+        required: &["difference", "cleanup"],
+        max_words: 14,
+    },
+    // Same shape at the level allowed to reword, where "answer it" and "rewrite
+    // it" are easiest to confuse. A request keeps being a request.
+    Case {
+        name: "medium does not answer a dictated request either",
+        level: Cleanup::Medium,
+        raw: "Can you show me how the flow will work, and walk me through the steps?",
+        forbidden: &["sure", "step 1", "first,", "certainly", "of course"],
+        required: &["flow", "step"],
+        max_words: 16,
+    },
     // Guards against the opposite failure: a refining pass that rewrites healthy
     // sentences puts words in the speaker's mouth.
     Case {
