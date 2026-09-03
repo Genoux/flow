@@ -43,6 +43,15 @@ fontdue = "0.9.4"
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
 png = "0.18.1"
 
+# Line tables instead of full DWARF. Backtraces still name file and line,
+# which is all the daemon's panics are ever read for, but the debug binaries
+# stop carrying every type and every dependency's symbols: `target/debug` was
+# 47G with a dozen ~300MB copies of the same binary piled up in `deps/`, and
+# cargo never collects those. Raise to 2 only while actually stepping through
+# a crate in a debugger.
+[profile.dev]
+debug = 1
+
 # Dependencies optimised even in a debug build; this crate left alone.
 #
 # Without this `flow-dev` is a toy: llama.cpp and parakeet built at opt-level 0

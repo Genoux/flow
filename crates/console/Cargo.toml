@@ -23,3 +23,9 @@ evdev = "0.13"
 [[bin]]
 name = "flow-console"
 path = "src/main.rs"
+
+# Line tables instead of full DWARF - see the root Cargo.toml for why. It
+# matters more here than there: iced drags in wgpu, and this target directory
+# reached 11G on its own.
+[profile.dev]
+debug = 1
