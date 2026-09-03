@@ -63,6 +63,15 @@ impl Console {
             ));
         }
         rows.push(setting(
+            "Show tray icon",
+            "Flow keeps running when this is off.",
+            toggle(
+                self.settings.show_tray,
+                self.travel("show_tray"),
+                Message::ShowTray,
+            ),
+        ));
+        rows.push(setting(
             "Sounds",
             "Chime when dictation starts and stops.",
             toggle(self.settings.sound, self.travel("sound"), Message::Sound),

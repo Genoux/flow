@@ -31,6 +31,9 @@ pub struct Config {
     /// silent feedback, and a dictation started over a full-screen window is
     /// otherwise unacknowledged until the text lands.
     pub sound: bool,
+    /// Publish Flow in the desktop's system tray. Hiding the icon is only a
+    /// presentation choice: the daemon, hotkey and dictation keep running.
+    pub show_tray: bool,
     /// Save every dictation's audio as WAV files to `~/.local/share/flow/recordings/`,
     /// one raw and (when denoise is on) one denoised. Off by default because
     /// long sessions add up on disk fast; on, it is the only way to A/B the
@@ -60,6 +63,7 @@ impl Default for Config {
             gpu: None,
             denoise: false,
             sound: true,
+            show_tray: true,
             record_debug: false,
             input_device: None,
         }
@@ -179,6 +183,7 @@ impl Config {
             "input_device" => config.input_device = (!value.is_empty()).then(|| value.to_owned()),
             "denoise" => config.denoise = boolean(at, key, value)?,
             "sound" => config.sound = boolean(at, key, value)?,
+            "show_tray" => config.show_tray = boolean(at, key, value)?,
             "record_debug" => config.record_debug = boolean(at, key, value)?,
             "hotkey" => {
                 config.chord = super::hotkey::Chord::parse(value)

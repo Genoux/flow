@@ -15,6 +15,7 @@ USAGE
 
 COMMANDS
     daemon           Watch the hotkey and dictate. What flow.service runs.
+    tray             Publish the system tray icon. What flow-tray.service runs.
     start | stop     Begin or end a dictation without holding the chord
     install          Download the speech and refining models
     probe            Where refining would run on this machine
@@ -110,6 +111,13 @@ fn main() -> Result<()> {
 
     let settings = config::Config::load().overridden_by(&args);
 
+    // The tray is a controller for the daemon, not part of it. It deliberately
+    // returns before either model check so a damaged or stopped dictation
+    // service can still be opened and repaired from its icon.
+    if command(&args) == Some("tray") {
+        return tray::run(settings);
+    }
+
     // Isolates injection from the mic and the model, so a silent uinput failure
     // is distinguishable from a transcription problem.
     if args.first().map(String::as_str) == Some("inject") {
@@ -172,13 +180,6 @@ fn main() -> Result<()> {
     // a `flow retry` doing this would cut the running daemon off from the
     // console it was talking to.
     let reporter = matches!(command(&args), Some("daemon")).then(status::Reporter::spawn);
-    // Bound here for the reason above, not inside the daemon with the overlay:
-    // the icon is the answer to "is Flow running", so registering it after the
-    // weights have loaded left the bar empty for the half-minute in which that
-    // question actually gets asked - at login, the one time it is not already
-    // obvious. Held to the end of `main`, since dropping the handle would take
-    // the icon with it.
-    let _tray = matches!(command(&args), Some("daemon")).then(tray::spawn);
     let mut engine = stt::Stt::load(&dir)?;
 
     match command(&args) {

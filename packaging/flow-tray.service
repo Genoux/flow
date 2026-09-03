@@ -1,0 +1,11 @@
+[Unit]
+Description=Flow system tray
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/flow tray
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

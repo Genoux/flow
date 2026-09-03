@@ -1,10 +1,9 @@
-//! The bar icon that says Flow is still listening after its window is closed.
+//! Flow's persistent launcher and daemon controller in the system tray.
 //!
-//! The daemon carries this and not the console, for the reason the icon exists
-//! at all: the console is the part that goes away. Closing it has never stopped
-//! dictation - the daemon is a separate process and a separate systemd unit -
-//! but nothing on screen said so, so the only way to check was to open the
-//! window again or read `systemctl --user status flow.service`.
+//! This runs in its own small service. In particular it is not owned by the
+//! dictation daemon: the icon is how a stopped daemon can be opened or started,
+//! so tying their lifetimes together would remove the recovery control at the
+//! exact moment it becomes useful.
 //!
 //! Wayland has no tray. What exists is StatusNotifierItem over D-Bus, and an
 //! icon only appears if the bar runs a host for it (waybar's `tray` module,
@@ -17,6 +16,7 @@ use ksni::blocking::TrayMethods;
 use ksni::menu::StandardItem;
 use ksni::{Icon, MenuItem, ToolTip, Tray};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 /// A 64px copy of the launcher icon rather than the installed 512px one.
 ///
@@ -33,16 +33,42 @@ const ICON: &[u8] = include_bytes!("../assets/tray.png");
 /// changes.
 static PIXMAP: LazyLock<Vec<Icon>> = LazyLock::new(|| vec![argb(ICON)]);
 
-/// Registers the item and leaves it running for the life of the daemon.
+/// Keep the published tray item in step with the live configuration forever.
 ///
-/// The returned handle is only worth holding on to: dropping it takes the icon
-/// down with it.
-pub fn spawn() -> Option<ksni::blocking::Handle<Flow>> {
-    // The daemon starts with `graphical-session.target`, which can easily beat
-    // the bar to it - and a watcher that is not up yet is not the same as a
-    // desktop that will never have one. Without this, starting half a second
-    // early is a permanent missing icon rather than one that appears when the
-    // bar does.
+/// The manager owns the handle and explicitly shuts it down when the icon is
+/// hidden. Nothing else in the daemon is tied to that handle, so hiding it can
+/// never acquire the meaning of the menu's explicit Quit action.
+pub fn run(initial: crate::config::Config) -> anyhow::Result<()> {
+    let config = std::sync::Arc::new(std::sync::Mutex::new(initial));
+    crate::config::watch(std::sync::Arc::clone(&config));
+    let mut visible = None;
+    let mut handle = None;
+
+    loop {
+        let requested = config.lock().expect("config").show_tray;
+        if visible != Some(requested) {
+            if requested {
+                handle = spawn();
+                // A failed registration is worth retrying: the user bus or
+                // tray host may still be arriving during login.
+                visible = handle.as_ref().map(|_| true);
+            } else {
+                if let Some(icon) = handle.take() {
+                    icon.shutdown().wait();
+                }
+                visible = Some(false);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+}
+
+/// Register the item once. [`run`] owns retrying it after a visibility
+/// setting changes.
+fn spawn() -> Option<ksni::blocking::Handle<Flow>> {
+    // The tray service starts with the user manager and can easily beat the bar
+    // to it. A watcher that is not up yet is not the same as a desktop that
+    // will never have one; the host must be allowed to arrive afterwards.
     match Flow.assume_sni_available(true).spawn() {
         Ok(handle) => Some(handle),
         Err(err) => {
@@ -68,9 +94,15 @@ impl Tray for Flow {
     }
 
     fn tool_tip(&self) -> ToolTip {
+        let running = daemon_running();
         ToolTip {
             title: "Flow".into(),
-            description: "Push-to-talk dictation. Hold your chord and speak.".into(),
+            description: if running {
+                "Dictation is running. Hold your chord and speak."
+            } else {
+                "Dictation is stopped. Open Flow or start it from the menu."
+            }
+            .into(),
             ..Default::default()
         }
     }
@@ -80,6 +112,7 @@ impl Tray for Flow {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
+        let running = daemon_running();
         vec![
             StandardItem {
                 label: "Open Flow".into(),
@@ -89,8 +122,8 @@ impl Tray for Flow {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Quit Flow".into(),
-                activate: Box::new(|_: &mut Self| quit()),
+                label: daemon_action_label(running).into(),
+                activate: Box::new(|_: &mut Self| toggle_daemon()),
                 ..Default::default()
             }
             .into(),
@@ -130,26 +163,28 @@ fn open_console() {
     eprintln!("tray: flow-console is not on PATH or in ~/.local/bin");
 }
 
-/// Stops dictation and closes the window, until Flow is started again.
-///
-/// The console goes with it because the console is Flow's only window: quitting
-/// and leaving it on screen would say the app was gone while the app was still
-/// sitting there. `SIGTERM` rather than anything gentler, which is what the
-/// console itself already sends the daemon from its own Stop control.
-///
-/// The daemon then leaves by a clean exit, on purpose: the unit is
-/// `Restart=on-failure`, so going out the front door stays gone, while anything
-/// systemd reads as a crash would bring it straight back and make this menu
-/// item look broken.
-fn quit() {
-    for pid in pids_of("flow-console") {
-        // SAFETY: no memory is involved. The worst a stale pid can do is fail
-        // with ESRCH, which is why the result is dropped rather than checked.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
+fn daemon_running() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "flow.service"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn daemon_action_label(running: bool) -> &'static str {
+    if running {
+        "Stop Dictation"
+    } else {
+        "Start Dictation"
     }
-    crate::ipc::remove_pid();
-    crate::status::remove_socket();
-    std::process::exit(0);
+}
+
+/// Start or stop only the dictation daemon. The independent tray service stays
+/// put so the opposite action remains available afterwards.
+fn toggle_daemon() {
+    let verb = if daemon_running() { "stop" } else { "start" };
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", verb, "flow.service"])
+        .status();
 }
 
 /// Whether a window of this program is open, read from `/proc` rather than asked
@@ -262,5 +297,11 @@ mod tests {
     fn a_process_name_with_a_space_does_not_shift_the_state() {
         assert!(zombie("42 (some name) Z 1 42 0"));
         assert!(!zombie("42 (some name) R 1 42 0"));
+    }
+
+    #[test]
+    fn stopping_dictation_does_not_call_it_quitting_flow() {
+        assert_eq!(daemon_action_label(true), "Stop Dictation");
+        assert_eq!(daemon_action_label(false), "Start Dictation");
     }
 }

@@ -15,10 +15,12 @@ say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 say "Stopping the daemon"
 systemctl --user disable --now flow.service 2>/dev/null || true
+systemctl --user disable --now flow-tray.service 2>/dev/null || true
 
 say "Removing binaries, service, desktop entry and icon"
 rm -fv "$bin_dir/flow" "$bin_dir/flow-console" \
        "$units/flow.service" \
+       "$units/flow-tray.service" \
        "$data/applications/flow-console.desktop" \
        "$data/icons/hicolor/512x512/apps/flow-console.png"
 

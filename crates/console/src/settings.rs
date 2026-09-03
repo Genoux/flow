@@ -130,6 +130,8 @@ pub struct Settings {
     pub denoise: bool,
     /// Play the island's arrive and leave chimes.
     pub sound: bool,
+    /// Show Flow's independent controller in the desktop's system tray.
+    pub show_tray: bool,
     pub duck: u32,
     /// Which GPU runs the refining model. `None` means the daemon picks, and is
     /// written as no line at all rather than a value - the daemon's default is
@@ -162,6 +164,7 @@ impl Default for Settings {
             cleanup: Cleanup::default(),
             denoise: false,
             sound: true,
+            show_tray: true,
             duck: 50,
             gpu: None,
             hotkey: DEFAULT_HOTKEY.to_string(),
@@ -201,6 +204,7 @@ impl Settings {
                 }
                 "denoise" => settings.denoise = value == "true",
                 "sound" => settings.sound = value == "true",
+                "show_tray" => settings.show_tray = value == "true",
                 "duck" => {
                     if let Ok(parsed) = value.parse() {
                         settings.duck = parsed;
@@ -232,7 +236,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 9] = [
+        let wanted: [(&str, Option<String>); 10] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.as_str().to_string())),
             // Deleted rather than left alone. The daemon still understands
@@ -242,6 +246,7 @@ impl Settings {
             ("refine", None),
             ("denoise", Some(self.denoise.to_string())),
             ("sound", Some(self.sound.to_string())),
+            ("show_tray", Some(self.show_tray.to_string())),
             ("duck", Some(self.duck.to_string())),
             ("gpu", self.gpu.map(|index| index.to_string())),
             ("hotkey", Some(self.hotkey.clone())),
@@ -361,6 +366,7 @@ mod tests {
             cleanup: Cleanup::Medium,
             denoise: true,
             sound: false,
+            show_tray: false,
             duck: 0,
             gpu: Some(0),
             hotkey: "ctrl+alt+space".to_string(),
@@ -376,6 +382,20 @@ mod tests {
         assert!(Settings::default().sound);
         assert!(!Settings::parse("sound = false").sound);
         assert!(Settings::default().render("").contains("sound = true"));
+    }
+
+    /// Hiding the tray is an explicit opt-out. Older config files have no key,
+    /// so upgrading must preserve the icon they had before the switch existed.
+    #[test]
+    fn the_tray_switch_starts_on_and_round_trips() {
+        assert!(Settings::default().show_tray);
+        assert!(!Settings::parse("show_tray = false").show_tray);
+        assert!(Settings {
+            show_tray: false,
+            ..Settings::default()
+        }
+        .render("")
+        .contains("show_tray = false"));
     }
 
     /// The daemon applies keys in file order, so a `refine` line left below the

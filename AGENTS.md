@@ -66,6 +66,12 @@ cost. `flow install` auto-selects a model for the machine's hardware.
 
 ## Runtime
 
+- The tray is its own `flow-tray.service`, started from `default.target`, not a
+  child of `flow.service`. It must remain available while dictation is stopped:
+  that is when its Open and Start controls are most useful. `show_tray = false`
+  unregisters only the StatusNotifierItem; the lightweight controller keeps
+  watching the config so the icon can return live. Opening `flow-console` with
+  a complete install attempts to start the dictation daemon by default.
 - Runs as the systemd user unit `flow.service`. On compositors that never activate `graphical-session.target` the unit's `WantedBy=` never fires, so it stays `disabled` and is started from the compositor's own autostart instead.
 - Config is three layers: `Config::default()`, then `~/.config/flow/config.toml`, then CLI flags. Absent file is normal; a broken one is fatal by design. Keep `flow.service` flag-free so the config file is the single place behaviour lives.
 - The git history carries no agent attribution: no `Co-authored-by:` trailers, no tool signatures in messages, no leftover agent branches. Agent tooling directories (`.claude`, `.cursor`, `.serena`) stay untracked. This has had to be rewritten out of the history more than once — do not reintroduce it in a single commit.

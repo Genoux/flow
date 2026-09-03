@@ -95,6 +95,20 @@ impl Console {
                 self.toggled_at.insert("sound", std::time::Instant::now());
                 self.persist();
             }
+            Message::ShowTray(on) => {
+                self.settings.show_tray = on;
+                self.toggled_at
+                    .insert("show_tray", std::time::Instant::now());
+                self.persist();
+                if on {
+                    return Task::perform(async { system::start_tray() }, Message::TrayStarted);
+                }
+            }
+            Message::TrayStarted(result) => {
+                if let Err(err) = result {
+                    self.save_error = Some(err);
+                }
+            }
             Message::Duck(value) => {
                 self.settings.duck = value;
                 self.persist();

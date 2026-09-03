@@ -10,6 +10,7 @@ fn defaults_need_no_file() {
     assert!(defaults.push_to_talk);
     assert_eq!(defaults.cleanup, Cleanup::Light);
     assert_eq!(defaults.duck, 50);
+    assert!(defaults.show_tray);
 }
 
 #[test]
@@ -36,6 +37,7 @@ fn file_overrides_every_key() {
             gpu: None,
             denoise: true,
             sound: true,
+            show_tray: true,
             record_debug: false,
             input_device: None,
         }
@@ -211,6 +213,7 @@ fn flags_win_over_the_file() {
         gpu: None,
         denoise: false,
         sound: true,
+        show_tray: true,
         record_debug: false,
         input_device: None,
     };
@@ -249,6 +252,7 @@ fn absent_flags_leave_the_file_alone() {
         gpu: None,
         denoise: false,
         sound: true,
+        show_tray: true,
         record_debug: false,
         input_device: None,
     };
@@ -299,6 +303,14 @@ fn the_dictation_sound_is_on_until_turned_off() {
     assert!(flow::config::Config::parse("sound = true").unwrap().sound);
     assert!(!flow::config::Config::parse("sound = false").unwrap().sound);
     assert!(flow::config::Config::parse("sound = maybe").is_err());
+}
+
+#[test]
+fn the_tray_icon_is_visible_until_turned_off() {
+    assert!(Config::default().show_tray);
+    assert!(Config::parse("show_tray = true").unwrap().show_tray);
+    assert!(!Config::parse("show_tray = false").unwrap().show_tray);
+    assert!(Config::parse("show_tray = maybe").is_err());
 }
 
 #[test]

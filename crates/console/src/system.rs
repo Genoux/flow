@@ -121,6 +121,22 @@ pub fn service(verb: &str) -> Result<(), String> {
     }
 }
 
+/// Ensure the independent tray controller exists. Starting an already active
+/// unit is a no-op, so the window can ask every time it opens.
+pub fn start_tray() -> Result<(), String> {
+    let output = run("systemctl", &["--user", "start", "flow-tray.service"])
+        .ok_or_else(|| "systemctl did not respond".to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if reason.is_empty() {
+        "systemctl could not start the Flow tray".into()
+    } else {
+        reason
+    })
+}
+
 /// Stop the daemon itself, and not only the unit systemd knows about.
 ///
 /// `systemctl stop` reaches a daemon systemd started and nothing else. One

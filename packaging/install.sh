@@ -50,6 +50,7 @@ install -m755 "$console" "$bin_dir/flow-console"
 say "Installing the service, desktop entry and icon"
 mkdir -p "$units" "$apps" "$icons"
 install -m644 "$repo/packaging/flow.service" "$units/flow.service"
+install -m644 "$repo/packaging/flow-tray.service" "$units/flow-tray.service"
 install -m644 "$repo/packaging/flow-console.desktop" "$apps/flow-console.desktop"
 install -m644 "$repo/packaging/flow-console.png" "$icons/flow-console.png"
 # Rewritten to the absolute path of the icon just installed, rather than left
@@ -60,6 +61,10 @@ install -m644 "$repo/packaging/flow-console.png" "$icons/flow-console.png"
 # read straight off disk by every loader.
 sed -i "s|^Icon=.*|Icon=$icons/flow-console.png|" "$apps/flow-console.desktop"
 systemctl --user daemon-reload
+# The tray is a lightweight controller and recovery path, not the dictation
+# engine. Keep it available at login even when Flow itself is stopped; its own
+# config decides whether an icon is published.
+systemctl --user enable --now flow-tray.service
 
 # Without these the launcher shows the entry only after the next login, which
 # reads as the install having silently failed. Both are optional tools and
@@ -107,6 +112,10 @@ fi
 if systemctl --user is-active --quiet flow.service; then
   say "Restarting the running daemon onto the new build"
   systemctl --user restart flow.service
+fi
+if systemctl --user is-active --quiet flow-tray.service; then
+  say "Restarting the tray onto the new build"
+  systemctl --user restart flow-tray.service
 fi
 
 say "Done"

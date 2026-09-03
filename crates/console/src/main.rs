@@ -282,6 +282,8 @@ enum Message {
     /// Dismiss it without choosing - the close button, or a click on the veil.
     ClosePicker,
     Sound(bool),
+    ShowTray(bool),
+    TrayStarted(Result<(), String>),
     Autostart(bool),
     Duck(u32),
     OpenConfig,
@@ -490,8 +492,17 @@ impl Console {
                 if first_run {
                     Task::done(Message::BeginSetup)
                 } else {
-                    Task::none()
+                    // Opening an installed Flow is also asking it to be ready.
+                    // `start` is harmless when the daemon is already up, and
+                    // gives a stopped daemon its expected default behaviour.
+                    Task::perform(async { system::service("start") }, |result| {
+                        Message::ServiceFinished("start", result)
+                    })
                 },
+                // The tray is independent of dictation. Restore its lightweight
+                // service whenever the window opens, even if dictation cannot
+                // start or the user has chosen to leave it stopped.
+                Task::perform(async { system::start_tray() }, Message::TrayStarted),
                 // Whether there is a newer Flow, asked without being asked.
                 // A release nobody knows about is a release nobody installs,
                 // and the answer belongs on screen before the question occurs
