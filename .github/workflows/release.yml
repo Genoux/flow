@@ -103,6 +103,14 @@ jobs:
             *-*) prerelease=--prerelease ;;
             *) prerelease= ;;
           esac
+          # `gh release create` on a tag that already has a release does not
+          # fail - it makes a second, untagged draft. Re-pushing v0.1.0 through
+          # v0.1.2 on 2026-08-23 is where the orphan draft beside v0.1.2 came
+          # from. Nothing here can tell a re-push from a first push, so refuse.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "$GITHUB_REF_NAME already has a release - delete it, or tag a new version" >&2
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --draft \
             $prerelease \
