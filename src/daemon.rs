@@ -473,7 +473,7 @@ impl Session {
     }
 
     fn discard(self, capture: &audio::Capture) {
-        let _ = capture.end();
+        let _ = capture.abandon();
     }
 }
 

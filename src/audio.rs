@@ -13,6 +13,20 @@ pub const SAMPLE_RATE: u32 = 16_000;
 /// already late; without this the first word is gone by the time the hold starts.
 const PRE_ROLL: usize = SAMPLE_RATE as usize / 5;
 
+/// The same lateness at the other end of the hold.
+///
+/// `end` used to drop the sink and take the buffer in one step, so audio the
+/// device had captured but not yet delivered was thrown away - 16 of 145 logged
+/// dictations ended mid-sentence ("then we can", "already, so"). A source is
+/// late at the release exactly as it is late at the press, and only the press
+/// was compensated for.
+const POST_ROLL: u64 = SAMPLE_RATE as u64 / 5;
+
+/// A stream that has stopped delivering never reaches [`POST_ROLL`], and the
+/// paste must not wait on a dead device. Long enough to cover a slow source,
+/// short enough to be invisible beside transcription.
+const POST_ROLL_CAP: Duration = Duration::from_millis(400);
+
 /// Always the cpal default device, whatever a pinned microphone says.
 ///
 /// Flow used to hunt for a device named "pipewire" to get free rate conversion,
@@ -558,9 +572,35 @@ impl Capture {
     }
 
     pub fn end(&self) -> Vec<f32> {
+        wait_for(&self.heard, POST_ROLL, POST_ROLL_CAP);
+        self.abandon()
+    }
+
+    /// Stop without waiting for the tail. For a recording nobody will read -
+    /// draining one only delays the next press.
+    pub fn abandon(&self) -> Vec<f32> {
         self.live.store(false, Ordering::Relaxed);
         std::mem::take(&mut *self.samples.lock().unwrap())
     }
+}
+
+/// Blocks until `counter` has advanced by `by`, or `cap` elapses.
+///
+/// Condition-based rather than a sleep of the same length, for the reason the
+/// ducker learned the hard way: a fixed wait is too long for a device that is
+/// already keeping up and too short for the one that is not. Returns whether
+/// the samples actually arrived, which only the tests read - a drain that times
+/// out still hands back everything that did land.
+fn wait_for(counter: &AtomicU64, by: u64, cap: Duration) -> bool {
+    let target = counter.load(Ordering::Relaxed) + by;
+    let deadline = Instant::now() + cap;
+    while counter.load(Ordering::Relaxed) < target {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    true
 }
 
 fn write_input(
@@ -724,5 +764,50 @@ Source Output #6192836
         let name = binary_name();
         assert!(!name.is_empty());
         assert!(!name.contains('/'), "{name} is a path, not a name");
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::wait_for;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// The tail of a hold arrives a moment after the release, which is the
+    /// whole point: `end` has to still be waiting when it lands.
+    #[test]
+    fn it_waits_for_audio_that_has_not_arrived_yet() {
+        let heard = Arc::new(AtomicU64::new(0));
+        let feeder = heard.clone();
+        std::thread::spawn(move || {
+            for _ in 0..4 {
+                std::thread::sleep(Duration::from_millis(10));
+                feeder.fetch_add(800, Ordering::Relaxed);
+            }
+        });
+
+        let started = Instant::now();
+        assert!(wait_for(&heard, 3200, Duration::from_secs(2)));
+        assert!(started.elapsed() >= Duration::from_millis(35));
+        assert!(heard.load(Ordering::Relaxed) >= 3200);
+    }
+
+    /// A device that has stopped delivering must not hold the paste open.
+    #[test]
+    fn a_silent_device_gives_up_at_the_cap() {
+        let heard = AtomicU64::new(0);
+        let started = Instant::now();
+        assert!(!wait_for(&heard, 3200, Duration::from_millis(50)));
+        assert!(started.elapsed() < Duration::from_millis(400));
+    }
+
+    /// Audio already delivered is not waited for twice.
+    #[test]
+    fn nothing_to_wait_for_returns_at_once() {
+        let heard = AtomicU64::new(0);
+        let started = Instant::now();
+        assert!(wait_for(&heard, 0, Duration::from_secs(5)));
+        assert!(started.elapsed() < Duration::from_millis(20));
     }
 }
