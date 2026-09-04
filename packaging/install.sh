@@ -31,6 +31,14 @@ say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 # A release tarball ships the binaries already built, under bin/. A git
 # checkout does not. Same script for both rather than a second install path
 # that drifts from this one.
+# Asked rather than assumed: `build.target-dir` in a cargo config puts the
+# binaries somewhere else entirely, and a shared target dir is a common setup.
+# Guessing $repo/target failed the install after a successful build.
+target_dir() {
+  cargo metadata --format-version 1 --no-deps --manifest-path "$1" |
+    sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'
+}
+
 if [ -x "$repo/bin/flow" ]; then
   daemon="$repo/bin/flow"
   console="$repo/bin/flow-console"
@@ -38,9 +46,16 @@ else
   say "Building (this takes a few minutes the first time)"
   cargo build --release --manifest-path "$repo/Cargo.toml"
   cargo build --release --manifest-path "$repo/crates/console/Cargo.toml"
-  daemon="$repo/target/release/flow"
-  console="$repo/crates/console/target/release/flow-console"
+  daemon="$(target_dir "$repo/Cargo.toml")/release/flow"
+  console="$(target_dir "$repo/crates/console/Cargo.toml")/release/flow-console"
 fi
+
+for binary in "$daemon" "$console"; do
+  if [ ! -x "$binary" ]; then
+    echo "built, but $binary is not there - cargo put it somewhere unexpected" >&2
+    exit 1
+  fi
+done
 
 say "Installing binaries into $bin_dir"
 mkdir -p "$bin_dir"
