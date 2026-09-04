@@ -11,13 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// How much the model is allowed to change what you said.
-///
-/// The levels are a taste dial, not a quality dial: [`Cleanup::Light`] is the
-/// default because deleting an "um" is something every speaker wants and no
-/// speaker needs to review, while choosing different words is a judgement the
-/// speaker may disagree with. Parakeet already punctuates and capitalises, so
-/// even [`Cleanup::None`] produces written-looking text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cleanup {
     /// Paste the transcript untouched. The refining model is never loaded.
@@ -344,6 +337,68 @@ fn is_non_answer(refined: &str, raw: &str) -> bool {
     REFUSALS.contains(&trimmed.as_str()) && !raw.to_lowercase().contains(&trimmed)
 }
 
+/// Arabic and CJK write the mark differently, and the recogniser handles 25
+/// languages. Greek's question mark is a semicolon, left out deliberately: a
+/// semicolon means something else everywhere else.
+fn is_question_mark(c: char) -> bool {
+    matches!(c, '?' | '؟' | '？')
+}
+
+fn terminal_mark(text: &str) -> Option<char> {
+    text.trim_end()
+        .chars()
+        .last()
+        .filter(|c| is_question_mark(*c) || matches!(c, '.' | '!' | '。' | '！'))
+}
+
+fn ends_as_question(text: &str) -> bool {
+    text.trim_end().chars().last().is_some_and(is_question_mark)
+}
+
+/// Only consulted for a transcript the recogniser left unpunctuated, and
+/// English only - that is the ceiling. The openers are skipped because
+/// `LIGHT_RULES` keeps them, so they sit in front of the question on both sides.
+fn opens_question(text: &str) -> bool {
+    const PREFIXES: [&str; 13] = [
+        "um", "uh", "uhm", "ehm", "euh", "eh", "er", "ah", "hmm", "so", "well", "okay", "hey",
+    ];
+    const QUESTION_WORDS: [&str; 9] = [
+        "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+    ];
+
+    let words = words(text);
+    words
+        .iter()
+        // `words` keeps an ASCII apostrophe inside the token and splits on a
+        // typographic one, so "what's" arrives in two shapes.
+        .map(|word| word.split('\'').next().unwrap_or(word))
+        .find(|word| !PREFIXES.contains(word))
+        .is_some_and(|word| QUESTION_WORDS.contains(&word))
+}
+
+/// Did the model turn a dictated question into an answer?
+///
+/// Prompting is not a guarantee: a short answer such as "It is noon" finishes
+/// well inside the generation ceiling and looks like ordinary prose to the other
+/// guards. Parakeet punctuates, so the question mark is the invariant - a
+/// question that came back without one stopped being a question, in any
+/// language and however the refiner reordered it.
+///
+/// Reading the opening words instead is what this used to do, and it is where
+/// every false positive came from: an auxiliary at the front is a question about
+/// half the time and an elliptical statement the rest, so "Was thinking we could
+/// ship it tomorrow." tripped a guard whose failure mode is pasting the raw
+/// transcript. A yes/no question with no mark cannot be told from "Can be done
+/// by Friday" without a parser, and the punctuated ones are caught above.
+///
+/// Takes the model's own output, never [`restore_edges`]' - see the call site.
+fn changed_question_to_answer(refined: &str, raw: &str) -> bool {
+    match terminal_mark(raw) {
+        Some(mark) => is_question_mark(mark) && !ends_as_question(refined),
+        None => opens_question(raw) && !opens_question(refined) && !ends_as_question(refined),
+    }
+}
+
 /// Is there anything here for the model to do?
 ///
 /// A capitalised, terminally punctuated, filler-free phrase of a few words is
@@ -361,7 +416,7 @@ pub fn needs_refining(raw: &str) -> bool {
     if text.split_whitespace().count() > TRIVIAL_WORDS {
         return true;
     }
-    if !text.ends_with(['.', '!', '?']) {
+    if terminal_mark(text).is_none() {
         return true;
     }
     if !text.starts_with(char::is_uppercase) {
@@ -691,10 +746,16 @@ impl Refiner {
             bail!("refining ran past {budget} tokens without finishing - answered instead");
         }
 
-        let refined = restore_edges(&tidy(&output), raw);
-        if is_non_answer(&refined, raw) {
-            bail!("the model answered {refined:?} instead of refining it");
+        let cleaned = tidy(&output);
+        if is_non_answer(&cleaned, raw) {
+            bail!("the model answered {cleaned:?} instead of refining it");
         }
+        // Before `restore_edges`, never after: restoration would copy the raw's
+        // question mark onto an answer that came back without one.
+        if changed_question_to_answer(&cleaned, raw) {
+            bail!("the model answered {cleaned:?} instead of preserving the question");
+        }
+        let refined = restore_edges(&cleaned, raw);
         // Losing the polish is a nuisance; losing the language the words were
         // spoken in makes the transcript somebody else's sentence.
         if changed_language(&refined, raw) {
@@ -742,8 +803,8 @@ fn restore_edges(refined: &str, raw: &str) -> String {
         out = first.to_uppercase().chain(chars).collect();
     }
 
-    if let Some(mark) = raw.chars().last().filter(|c| matches!(c, '.' | '!' | '?'))
-        && !out.ends_with(['.', '!', '?'])
+    if let Some(mark) = terminal_mark(raw)
+        && terminal_mark(&out).is_none()
     {
         out.push(mark);
     }
@@ -753,7 +814,146 @@ fn restore_edges(refined: &str, raw: &str) -> String {
 
 #[cfg(test)]
 mod edge_tests {
-    use super::restore_edges;
+    use super::{changed_question_to_answer, restore_edges};
+
+    #[test]
+    fn a_dictated_question_cannot_become_an_answer() {
+        assert!(changed_question_to_answer(
+            "It is 3:00 PM.",
+            "What time is it?"
+        ));
+        assert!(changed_question_to_answer(
+            "I cannot access your clock.",
+            "what time is it"
+        ));
+        assert!(changed_question_to_answer(
+            "Sure, I can show you.",
+            "Can you show me how this works?"
+        ));
+    }
+
+    #[test]
+    fn a_cleaned_question_keeps_its_question_shape() {
+        assert!(!changed_question_to_answer(
+            "What time is it?",
+            "um what time is it"
+        ));
+        assert!(!changed_question_to_answer(
+            "Could you show me how this works?",
+            "Can you show me how this works?"
+        ));
+        assert!(!changed_question_to_answer(
+            "What number of files remain?",
+            "How many files remain?"
+        ));
+    }
+
+    /// Spoken English drops its subjects, so an auxiliary at the front says
+    /// nothing about whether a question was asked.
+    #[test]
+    fn an_elliptical_statement_is_not_a_question() {
+        assert!(!changed_question_to_answer(
+            "I was thinking we could ship it tomorrow.",
+            "Was thinking we could ship it tomorrow."
+        ));
+        assert!(!changed_question_to_answer(
+            "It should be done by five.",
+            "Should be done by five."
+        ));
+        assert!(!changed_question_to_answer(
+            "Don't forget the keys.",
+            "Do not forget the keys."
+        ));
+        assert!(!changed_question_to_answer(
+            "The build is broken.",
+            "What I wanted to say is that the build is broken."
+        ));
+    }
+
+    /// Which apostrophe the recogniser chose used to decide whether the
+    /// dictation was guarded at all.
+    #[test]
+    fn a_contracted_question_is_still_guarded() {
+        for raw in [
+            "What's the ETA?",
+            "What\u{2019}s the ETA?",
+            "How's it going?",
+        ] {
+            assert!(
+                changed_question_to_answer("The ETA is Friday.", raw),
+                "{raw:?} was not guarded"
+            );
+        }
+        assert!(!changed_question_to_answer(
+            "What's the ETA?",
+            "What's the ETA?"
+        ));
+        assert!(changed_question_to_answer(
+            "I can fix it.",
+            "Can't you fix it?"
+        ));
+    }
+
+    /// `LIGHT_RULES` keeps "so" and "well".
+    #[test]
+    fn an_opener_in_front_of_a_question_does_not_disable_the_guard() {
+        assert!(changed_question_to_answer(
+            "It is noon.",
+            "So, what time is it?"
+        ));
+        assert!(changed_question_to_answer(
+            "Sure, here it is.",
+            "Hey, can you show me how this works?"
+        ));
+        assert!(changed_question_to_answer(
+            "It is noon.",
+            "so what time is it"
+        ));
+        assert!(!changed_question_to_answer(
+            "So, what time is it?",
+            "so um what time is it"
+        ));
+    }
+
+    /// Rewriting the shape is Medium's job and preserves the question.
+    #[test]
+    fn a_rewritten_question_keeps_its_shape() {
+        assert!(!changed_question_to_answer(
+            "Where is the office?",
+            "Can you tell me where the office is?"
+        ));
+        assert!(!changed_question_to_answer(
+            "What is the status on this?",
+            "Where do we stand on this?"
+        ));
+    }
+
+    /// The recogniser handles 25 languages; the word lists handled one.
+    #[test]
+    fn the_guard_is_not_english_only() {
+        assert!(!changed_question_to_answer(
+            "Was mich betrifft, wir sollten das verschieben.",
+            "Was mich betrifft, wir sollten das verschieben."
+        ));
+        assert!(changed_question_to_answer(
+            "Das Treffen ist um drei.",
+            "Wann ist das Treffen?"
+        ));
+        assert!(!changed_question_to_answer(
+            "\u{00bf}D\u{00f3}nde est\u{00e1} la oficina?",
+            "\u{00bf}D\u{00f3}nde est\u{00e1} la oficina?"
+        ));
+    }
+
+    /// `restore_edges` would hand this answer the mark the guard reads for.
+    #[test]
+    fn edge_restoration_cannot_launder_an_answer() {
+        assert!(changed_question_to_answer("It is 3 PM", "What time is it?"));
+        assert_eq!(
+            restore_edges("It is 3 PM", "What time is it?"),
+            "It is 3 PM?"
+        );
+    }
 
     /// The case that sent it: the only full stop rode out on ", you know."
     #[test]
