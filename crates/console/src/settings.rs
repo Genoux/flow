@@ -68,9 +68,9 @@ impl Cleanup {
     pub fn describe(self) -> (&'static str, &'static str) {
         match self {
             // "including mistakes" is the only reason anyone would not pick
-            // None, so it earns its two words - Wispr's own None card keeps
-            // the same clause. What went was "mistakes and all", which said it
-            // in a folksier voice than the two levels beside it.
+            // None, so it earns its two words. What went was "mistakes and
+            // all", which said it in a folksier voice than the two levels
+            // beside it.
             Self::None => ("None", "Types exactly what you said, including mistakes."),
             // "nothing else" is the half that makes this the default. Fillers
             // out and grammar right is what every level above None does; not
@@ -81,8 +81,8 @@ impl Cleanup {
     }
 
     /// The same sentence at each level, so the cards show the difference rather
-    /// than describing it. Wispr's own screen does this and it is the reason
-    /// their levels are legible at a glance.
+    /// than describing it. Showing beats describing here: the levels are
+    /// legible at a glance only because the reader can compare three lines.
     ///
     /// These are measured, not written. The set they replaced was invented, and
     /// it was inventing the wrong thing: it showed None as lowercase and
