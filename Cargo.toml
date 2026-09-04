@@ -11,7 +11,7 @@ exclude = ["crates/console"]
 
 [package]
 name = "flow"
-version = "0.1.3-alpha.1"
+version = "0.1.3-alpha.2"
 edition = "2024"
 license = "MIT"
 

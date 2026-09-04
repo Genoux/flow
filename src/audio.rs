@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 pub const SAMPLE_RATE: u32 = 16_000;
 
-/// Audio from just before the bind. A phone-over-network source (WO Mic) is
+/// Audio from just before the bind. A source that arrives over a network is
 /// already late; without this the first word is gone by the time the hold starts.
 const PRE_ROLL: usize = SAMPLE_RATE as usize / 5;
 
