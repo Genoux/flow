@@ -63,10 +63,13 @@ jobs:
 
       # A tag can point anywhere, including a branch CI never saw. Building an
       # untested binary is cheap; shipping one is not.
+      # --release so the tests and the shipped binary share one set of
+      # artifacts. Under the debug profile this built llama.cpp twice and put
+      # the release job from 11 minutes to 24.
       - name: Test
         run: |
-          cargo test --workspace
-          cargo test --manifest-path crates/console/Cargo.toml
+          cargo test --release --workspace
+          cargo test --release --manifest-path crates/console/Cargo.toml
 
       - name: Build
         run: |
