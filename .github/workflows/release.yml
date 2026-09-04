@@ -93,8 +93,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # SemVer: anything with a hyphen after the patch is a pre-release.
+          # Read off the tag rather than a flag someone sets by hand, because
+          # the tag is what the version check above already agreed with.
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=--prerelease ;;
+            *) prerelease= ;;
+          esac
           gh release create "$GITHUB_REF_NAME" \
             --draft \
+            $prerelease \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             flow-*.tar.gz flow-*.tar.gz.sha256
