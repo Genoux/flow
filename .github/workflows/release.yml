@@ -47,6 +47,27 @@ jobs:
             .
             crates/console
 
+      # The daemon and the console are separate workspace roots that ship as
+      # one tarball, so a release where they disagree is a release that reports
+      # a version nobody built. Nothing else compares them.
+      - name: Version matches the tag
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          for manifest in Cargo.toml crates/console/Cargo.toml; do
+            found=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
+            if [ "$found" != "$expected" ]; then
+              echo "$manifest is $found, tag is $expected" >&2
+              exit 1
+            fi
+          done
+
+      # A tag can point anywhere, including a branch CI never saw. Building an
+      # untested binary is cheap; shipping one is not.
+      - name: Test
+        run: |
+          cargo test --workspace
+          cargo test --manifest-path crates/console/Cargo.toml
+
       - name: Build
         run: |
           cargo build --release
