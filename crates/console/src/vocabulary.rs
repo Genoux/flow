@@ -125,3 +125,29 @@ mod tests {
         assert_eq!(validate("  PipeWire  ", &existing).unwrap(), "PipeWire");
     }
 }
+
+pub fn matching(terms: &[String], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    let mut matches: Vec<_> = terms
+        .iter()
+        .enumerate()
+        .filter(|(_, term)| term.to_lowercase().contains(&query))
+        .map(|(index, _)| index)
+        .collect();
+    matches.sort_by_cached_key(|&index| terms[index].to_lowercase());
+    matches
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn sorting_and_filtering_keep_the_original_removal_index() {
+        let terms = ["Zürich", "Ada", "Hyprland", "Flow"].map(str::to_owned);
+        assert_eq!(matching(&terms, ""), vec![1, 3, 2, 0]);
+        assert_eq!(matching(&terms, " HYPR "), vec![2]);
+        assert_eq!(matching(&terms, "ZÜR"), vec![0]);
+        assert!(matching(&terms, "missing").is_empty());
+    }
+}

@@ -104,25 +104,26 @@ pub(crate) fn value_slider<'a>(
     label: &str,
 ) -> Element<'a, Message> {
     row![
-        container(
-            slider(range, value, on_change)
-                .height(14)
-                .style(|_theme, _status| {
-                    slider::Style {
-                        rail: slider::Rail {
-                            backgrounds: (Background::Color(ACCENT), Background::Color(LINE)),
-                            width: 2.0,
-                            border: Border::default(),
-                        },
-                        handle: slider::Handle {
-                            shape: slider::HandleShape::Circle { radius: 5.0 },
-                            background: Background::Color(FG),
-                            border_width: 0.0,
-                            border_color: Color::TRANSPARENT,
-                        },
-                    }
-                })
+        container(crate::interaction::hover(move |amount| slider(
+            range, value, on_change
         )
+        .height(14)
+        .style(move |_theme, _status| {
+            slider::Style {
+                rail: slider::Rail {
+                    backgrounds: (Background::Color(ACCENT), Background::Color(LINE)),
+                    width: 2.0,
+                    border: Border::default(),
+                },
+                handle: slider::Handle {
+                    shape: slider::HandleShape::Circle { radius: 5.0 },
+                    background: Background::Color(mix(FG, ACCENT, amount.get() * 0.12)),
+                    border_width: 0.0,
+                    border_color: Color::TRANSPARENT,
+                },
+            }
+        })
+        .into()))
         .width(Length::Fixed(140.0)),
         Space::new().width(12),
         container(
@@ -202,57 +203,48 @@ pub(crate) fn option_row(
     // row took it to zero and pushed the mark off the edge - which is how the
     // current row became the one row with no mark on it. Bounded, a long note
     // wraps instead, and the mark keeps its 6px whatever the device is called.
-    button(
-        row![container(block).width(Fill), mark]
-            .spacing(8)
-            .align_y(iced::Center),
-    )
-    .width(Fill)
-    .padding([9, 11])
-    .style(move |_theme, status| {
-        let fill = if current {
-            1.0
-        } else if matches!(status, button::Status::Hovered) {
-            0.55
-        } else {
-            0.0
-        };
-        button::Style {
-            // `RAIL_ON` at `fill` alpha over the panel, which is the same
-            // colour `mix` gave at rest and nothing at all once the dialog
-            // is gone - a row walked to `RAISED` would have stayed a solid
-            // bar inside a panel that had already left.
-            background: Some(Background::Color(dissolve(RAIL_ON, fill * fade))),
-            text_color: dissolve(ink, fade),
-            border: Border {
-                radius: RADIUS.into(),
+    crate::interaction::hover(move |warmth| {
+        button(
+            row![container(block).width(Fill), mark]
+                .spacing(8)
+                .align_y(iced::Center),
+        )
+        .width(Fill)
+        .padding([9, 11])
+        .style(move |_theme, _status| {
+            let fill = if current { 1.0 } else { 0.55 * warmth.get() };
+            button::Style {
+                // `RAIL_ON` at `fill` alpha over the panel, which is the same
+                // colour `mix` gave at rest and nothing at all once the dialog
+                // is gone - a row walked to `RAISED` would have stayed a solid
+                // bar inside a panel that had already left.
+                background: Some(Background::Color(dissolve(RAIL_ON, fill * fade))),
+                text_color: dissolve(ink, fade),
+                border: Border {
+                    radius: RADIUS.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        }
+            }
+        })
+        .on_press(on_press)
+        .into()
     })
-    .on_press(on_press)
-    .into()
 }
 
 /// The × that shuts a dialog. `ghost`, because a close button is the one
 /// control in a dialog that should not compete with what the dialog is asking.
 pub(crate) fn close_btn(fade: f32) -> Element<'static, Message> {
-    button(text("\u{00d7}").size(17).color(dissolve(MUTED, fade)))
-        .padding([0, 4])
-        .style(move |_theme, status| button::Style {
-            text_color: dissolve(
-                if matches!(status, button::Status::Hovered) {
-                    FG
-                } else {
-                    MUTED
-                },
-                fade,
-            ),
-            ..ghost(&Theme::Dark, status)
-        })
-        .on_press(Message::ClosePicker)
-        .into()
+    crate::interaction::hover(move |warmth| {
+        button(text("\u{00d7}").size(17))
+            .padding([0, 4])
+            .style(move |_theme, status| button::Style {
+                text_color: dissolve(mix(MUTED, FG, warmth.get()), fade),
+                ..ghost(&Theme::Dark, status)
+            })
+            .on_press(Message::ClosePicker)
+            .into()
+    })
 }
 
 /// A 7px dot. The only place the accent appears besides a primary button.
@@ -323,49 +315,45 @@ pub(crate) fn action_faded(
     } else {
         FG
     };
-    button(
-        text(label.to_string())
-            .size(CONTROL_TEXT)
-            .color(crate::theme::emerge(ink, fade))
-            // A button is as wide as its label, full stop. Left to wrap, a
-            // "Download" beside a long path folded onto two lines and then
-            // clipped, because the row had already given the path every pixel
-            // it asked for.
-            .wrapping(text::Wrapping::None),
-    )
-    .padding(CONTROL_PAD)
-    .style(move |_theme, status| {
-        let paint = |colour: Color| crate::theme::emerge(colour, fade);
-        if matches!(status, button::Status::Disabled) {
-            let fill = paint(mix(ACCENT, BG, 0.62));
-            return button::Style {
-                background: primary.then_some(Background::Color(fill)),
-                text_color: paint(FAINT),
-                border: control_border(if primary { fill } else { paint(LINE) }),
+    crate::interaction::hover(move |warmth| {
+        button(
+            text(label.to_string())
+                .size(CONTROL_TEXT)
+                .color(crate::theme::emerge(ink, fade))
+                // A button is as wide as its label, full stop. Left to wrap, a
+                // "Download" beside a long path folded onto two lines and then
+                // clipped, because the row had already given the path every pixel
+                // it asked for.
+                .wrapping(text::Wrapping::None),
+        )
+        .padding(CONTROL_PAD)
+        .style(move |_theme, status| {
+            let paint = |colour: Color| crate::theme::emerge(colour, fade);
+            if matches!(status, button::Status::Disabled) {
+                let fill = paint(mix(ACCENT, BG, 0.62));
+                return button::Style {
+                    background: primary.then_some(Background::Color(fill)),
+                    text_color: paint(FAINT),
+                    border: control_border(if primary { fill } else { paint(LINE) }),
+                    ..Default::default()
+                };
+            }
+            let hovered = warmth.get();
+            let primary_fill = paint(mix(ACCENT, FG, hovered * 0.12));
+            button::Style {
+                background: primary.then_some(Background::Color(primary_fill)),
+                text_color: paint(if primary { ON_ACCENT } else { FG }),
+                border: control_border(if primary {
+                    primary_fill
+                } else {
+                    paint(mix(LINE, FAINT, hovered))
+                }),
                 ..Default::default()
-            };
-        }
-        let hovered = matches!(status, button::Status::Hovered);
-        let primary_fill = paint(match status {
-            button::Status::Hovered => mix(ACCENT, FG, 0.12),
-            button::Status::Pressed => mix(ACCENT, ON_ACCENT, 0.16),
-            _ => ACCENT,
-        });
-        button::Style {
-            background: primary.then_some(Background::Color(primary_fill)),
-            text_color: paint(if primary { ON_ACCENT } else { FG }),
-            border: control_border(if primary {
-                primary_fill
-            } else if hovered {
-                paint(FAINT)
-            } else {
-                paint(LINE)
-            }),
-            ..Default::default()
-        }
+            }
+        })
+        .on_press_maybe(if fade > 0.5 { on_press } else { None })
+        .into()
     })
-    .on_press_maybe(if fade > 0.5 { on_press } else { None })
-    .into()
 }
 
 /// Text that behaves like a link: no chrome at all, just the label.

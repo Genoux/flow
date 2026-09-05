@@ -39,3 +39,30 @@ Regenerate with:
       -ar 48000 -ac 1 -c:a pcm_s16le assets/island-show.wav
     ffmpeg -i package/sounds/minimal/deselect.mp3 \
       -ar 48000 -ac 1 -c:a pcm_s16le assets/island-hide.wav
+
+---
+
+`style-woodland.jpg` is the first frame of the user-provided clip
+`DTS_MISC_(JOEY_VIDEOS)__Joey_Bania_Clips_ID618.mp4`, found in Downloads.
+The source filename credits Joey Bania. Its mossy woodland close-up supplies
+the Style banner; the UI crops it at display time and overlays a dark gradient
+for text contrast. The original video remains in Downloads.
+
+Extract the same frame with:
+
+    ffmpeg -i 'DTS_MISC_(JOEY_VIDEOS)__Joey_Bania_Clips_ID618.mp4' \
+      -frames:v 1 -q:v 2 assets/style-woodland.jpg
+
+`vocabulary-nick-fancher.jpg` is a byte-for-byte project copy of the
+user-selected `DTS_Misc_1_(Nick_Fancher)_Nick_Fancher_Photos_ID5032.jpg`
+from Downloads. The source filename credits Nick Fancher. The Vocabulary
+banner frames the upper portion at display time to keep the subject's head
+visible in a wide crop. Both banner images are embedded using `include_bytes!`;
+the application never reads them from Downloads at runtime.
+
+`NotoSerifDisplay-Regular.ttf` supplies the editorial headline face. The font
+is vendored so the banner's metrics and appearance are consistent across
+machines. Copyright 2022 The Noto Project Authors; licensed under the SIL
+Open Font License 1.1, included in `NotoSerifDisplay-LICENSE.txt`.
+
+See [the brand direction](../design/brand-direction.md) for the visual rationale.

@@ -32,7 +32,9 @@ mod daemon;
 mod dispatch;
 mod format;
 mod history;
+mod interaction;
 mod layout;
+mod motion;
 mod screen;
 mod settings;
 mod setup;
@@ -43,9 +45,7 @@ mod vocabulary;
 
 use crate::calendar::{calendar_card, current_streak, longest_streak};
 use crate::card::{fact, panel, stat_tile};
-use crate::control::{
-    action_msg, card_rule, hairline, pip, toggle, value_slider, vertical_hairline,
-};
+use crate::control::{action_msg, card_rule, pip, toggle, value_slider, vertical_hairline};
 use crate::format::{clip, commas, plural, trend};
 use crate::layout::{
     entry_list, entry_row, fact_path, fact_row, group, heading, inert, nav, page_shell, scroll,
@@ -53,14 +53,16 @@ use crate::layout::{
 };
 use crate::theme::{
     mix, progress, ACCENT, BG, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR,
-    FADE, FAINT, FG, GAP, HAIRLINE, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RADIUS,
-    RAIL_WIDTH, ROW_PAD, SCROLL_PAD, STARTING, WARN,
+    FADE, FAINT, FG, GAP, HAIRLINE, LABEL_GAP, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH,
+    ROW_PAD, SCROLL_PAD, STARTING, WARN,
 };
 use iced::{Color, Subscription, Task, Theme};
 
 fn main() -> iced::Result {
     iced::application(Console::new, Console::update, Console::view)
         .title("Flow")
+        .antialiasing(true)
+        .font(include_bytes!("../../../assets/NotoSerifDisplay-Regular.ttf").as_slice())
         .theme(theme)
         .subscription(subscription)
         .window(iced::window::Settings {
@@ -303,8 +305,9 @@ enum Message {
     CancelCapture,
     /// Put the chord back to what a fresh install uses.
     ResetChord,
-    /// Delete the `.part` files a stopped install left behind.
     TypingTerm(String),
+    FilterTerms(String),
+    HoverCleanup(Option<settings::Cleanup>),
     AddTerm,
     RemoveTerm(usize),
     Daemon(daemon::Event),
@@ -403,6 +406,7 @@ struct Console {
     session: String,
     terms: Vec<String>,
     typing: String,
+    term_query: String,
     term_error: Option<String>,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
@@ -412,21 +416,13 @@ struct Console {
     /// Why the last attempted chord was rejected, shown in place of the hint.
     chord_error: Option<String>,
 
-    // Motion. Times rather than tweens: what a frame needs to know is how long
-    // ago something changed, and everything here derives from that.
     now: std::time::Instant,
-    hovered: Option<Section>,
-    /// Transcript under the pointer, if any. Independent of the rail so a
-    /// History hover cannot light a nav item, and the other way around.
-    hovered_entry: Option<usize>,
-    hover_at: std::time::Instant,
-    /// This row's own clock, separate from the rail's `hover_at`: sharing one
-    /// clock meant moving from a nav item onto a row (or back) restarted the
-    /// row's fade from whatever point the nav's hover had reached, so the
-    /// highlight sometimes never finished settling.
-    entry_hover_at: std::time::Instant,
+    nav_motion: [motion::Transition; 6],
+    cleanup_selection: [motion::Transition; 3],
+    cleanup_hover: [motion::Transition; 3],
+    entry_motion: std::collections::HashMap<usize, motion::Transition>,
     /// When each toggle last flipped, so its knob can travel rather than jump.
-    toggled_at: std::collections::HashMap<&'static str, std::time::Instant>,
+    toggle_motion: std::collections::HashMap<&'static str, motion::Transition>,
 }
 
 impl Console {
@@ -438,6 +434,9 @@ impl Console {
         let first_run = setup::needed();
 
         let settings = settings::Settings::load();
+        let cleanup_selection = settings::Cleanup::ALL.map(|level| {
+            motion::Transition::new(if settings.cleanup == level { 1.0 } else { 0.0 })
+        });
 
         (
             Self {
@@ -468,17 +467,18 @@ impl Console {
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
+                term_query: String::new(),
                 term_error: None,
                 capturing: false,
                 can_capture: false,
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
                 now: std::time::Instant::now(),
-                hovered: None,
-                hovered_entry: None,
-                hover_at: std::time::Instant::now(),
-                entry_hover_at: std::time::Instant::now(),
-                toggled_at: std::collections::HashMap::new(),
+                nav_motion: Section::ALL.map(|_| motion::Transition::new(0.0)),
+                cleanup_selection,
+                cleanup_hover: settings::Cleanup::ALL.map(|_| motion::Transition::new(0.0)),
+                entry_motion: std::collections::HashMap::new(),
+                toggle_motion: std::collections::HashMap::new(),
             },
             // Setup starts itself. Launching Flow with nothing installed is
             // already the request; a Begin button in front of it would only be
@@ -517,13 +517,32 @@ impl Console {
         )
     }
 
-    /// How far this toggle is through its travel, 0 to 1. A toggle that has
-    /// never moved is already home.
+    fn animate_toggle(&mut self, key: &'static str, previous: bool, target: bool) {
+        self.toggle_motion
+            .entry(key)
+            .or_insert_with(|| motion::Transition::new(u8::from(previous) as f32))
+            .set(u8::from(target) as f32, std::time::Instant::now());
+    }
+
     fn travel(&self, key: &str) -> f32 {
-        self.toggled_at
+        let on = match key {
+            "push_to_talk" => self.settings.push_to_talk,
+            "denoise" => self.settings.denoise,
+            "sound" => self.settings.sound,
+            "show_tray" => self.settings.show_tray,
+            "autostart" => self.autostart.unwrap_or(false),
+            _ => return 1.0,
+        };
+        let position = self
+            .toggle_motion
             .get(key)
-            .map(|at| progress(*at, self.now, KNOB))
-            .unwrap_or(1.0)
+            .map(|motion| motion.value(self.now))
+            .unwrap_or(u8::from(on) as f32);
+        if on {
+            position
+        } else {
+            1.0 - position
+        }
     }
 
     /// True while any motion is still running, which is what decides whether
@@ -532,10 +551,10 @@ impl Console {
         let running = |since: std::time::Instant, ms: u64| {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
-        running(self.hover_at, FADE)
-            || running(self.entry_hover_at, FADE)
+        self.nav_motion.iter().chain(&self.cleanup_selection).chain(&self.cleanup_hover).any(|motion| motion.moving(self.now))
+            || self.entry_motion.values().any(|motion| motion.moving(self.now))
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
-            || self.toggled_at.values().any(|at| running(*at, KNOB))
+            || self.toggle_motion.values().any(|motion| motion.moving(self.now))
             || self
                 .picking_input
                 .is_some_and(|picker| running(picker.since(), FADE))
@@ -556,11 +575,10 @@ impl Console {
     /// 0 to 1, how far this transcript's hover has settled. Same easing and
     /// duration as the rail (`progress`, `FADE`), just its own clock.
     fn entry_warmth(&self, index: usize) -> f32 {
-        if self.hovered_entry == Some(index) {
-            progress(self.entry_hover_at, self.now, FADE)
-        } else {
-            0.0
-        }
+        self.entry_motion
+            .get(&index)
+            .map(|motion| motion.value(self.now))
+            .unwrap_or(0.0)
     }
 
     /// Write after every change. There is no Save button on purpose: a settings

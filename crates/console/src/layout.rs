@@ -12,9 +12,7 @@ use crate::theme::{
     PAGE_TOP, RADIUS, RAIL_ON, ROW_PAD, SCROLL_PAD,
 };
 use crate::{history, Message, Section};
-use iced::widget::{
-    button, column, container, responsive, rich_text, row, scrollable, span, text, Space,
-};
+use iced::widget::{button, column, container, responsive, row, scrollable, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length};
 
 /// One transcript and what it cost: the line itself, then how long it took to
@@ -366,17 +364,21 @@ pub(crate) fn fact_path(label: &'static str, path: &std::path::Path) -> Element<
 }
 
 fn path_link(path: std::path::PathBuf, shown: String) -> Element<'static, Message> {
-    // A rich-text link, not a button: iced already turns those into a
-    // pointer and an underline on hover, which is the affordance a path
-    // sitting where Session's value sits would otherwise lack.
-    rich_text![span(shown)
-        .size(12)
-        .font(Font::MONOSPACE)
-        .color(MUTED)
-        .link(path)]
-    .on_link_click(Message::OpenPath)
-    .wrapping(text::Wrapping::None)
-    .into()
+    crate::interaction::hover(move |amount| {
+        button(
+            text(shown)
+                .size(12)
+                .font(Font::MONOSPACE)
+                .wrapping(text::Wrapping::None),
+        )
+        .padding(0)
+        .on_press(Message::OpenPath(path))
+        .style(move |_, _| button::Style {
+            text_color: mix(MUTED, FG, amount.get()),
+            ..Default::default()
+        })
+        .into()
+    })
 }
 
 /// A layer the pointer cannot reach.

@@ -22,6 +22,13 @@ impl Console {
         match message {
             Message::Select(section) => {
                 self.section = section;
+                let now = std::time::Instant::now();
+                for hover in &mut self.cleanup_hover {
+                    hover.set(0.0, now);
+                }
+                for hover in self.entry_motion.values_mut() {
+                    hover.set(0.0, now);
+                }
                 // Re-read on arrival, so a microphone plugged in while the
                 // window was open is on the list by the time it is looked at.
                 if section == Section::Settings {
@@ -63,42 +70,63 @@ impl Console {
                 return Task::batch([self.launch_install(), self.setup_usable()]);
             }
             Message::Hover(section) => {
-                if self.hovered != section {
-                    self.hovered = section;
-                    self.hover_at = std::time::Instant::now();
+                let now = std::time::Instant::now();
+                for (index, item) in Section::ALL.into_iter().enumerate() {
+                    self.nav_motion[index].set(if section == Some(item) { 1.0 } else { 0.0 }, now);
+                }
+            }
+            Message::HoverCleanup(level) => {
+                let now = std::time::Instant::now();
+                for (index, item) in settings::Cleanup::ALL.into_iter().enumerate() {
+                    self.cleanup_hover[index].set(
+                        if level == Some(item) && self.settings.cleanup != item {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        now,
+                    );
                 }
             }
             Message::HoverEntry(index) => {
-                if self.hovered_entry != index {
-                    self.hovered_entry = index;
-                    self.entry_hover_at = std::time::Instant::now();
+                let now = std::time::Instant::now();
+                for (item, transition) in &mut self.entry_motion {
+                    transition.set(if Some(*item) == index { 1.0 } else { 0.0 }, now);
+                }
+                if let Some(index) = index {
+                    self.entry_motion
+                        .entry(index)
+                        .or_insert_with(|| motion::Transition::new(0.0))
+                        .set(1.0, now);
                 }
             }
             Message::PushToTalk(on) => {
+                self.animate_toggle("push_to_talk", self.settings.push_to_talk, on);
                 self.settings.push_to_talk = on;
-                self.toggled_at
-                    .insert("push_to_talk", std::time::Instant::now());
                 self.persist();
             }
             Message::SetCleanup(level) => {
                 self.settings.cleanup = level;
-                self.toggled_at.insert("cleanup", std::time::Instant::now());
+                let now = std::time::Instant::now();
+                for (index, item) in settings::Cleanup::ALL.into_iter().enumerate() {
+                    self.cleanup_selection[index].set(if level == item { 1.0 } else { 0.0 }, now);
+                    self.cleanup_hover[index].set(0.0, now);
+                }
                 self.persist();
             }
             Message::Denoise(on) => {
+                self.animate_toggle("denoise", self.settings.denoise, on);
                 self.settings.denoise = on;
-                self.toggled_at.insert("denoise", std::time::Instant::now());
                 self.persist();
             }
             Message::Sound(on) => {
+                self.animate_toggle("sound", self.settings.sound, on);
                 self.settings.sound = on;
-                self.toggled_at.insert("sound", std::time::Instant::now());
                 self.persist();
             }
             Message::ShowTray(on) => {
+                self.animate_toggle("show_tray", self.settings.show_tray, on);
                 self.settings.show_tray = on;
-                self.toggled_at
-                    .insert("show_tray", std::time::Instant::now());
                 self.persist();
                 if on {
                     return Task::perform(async { system::start_tray() }, Message::TrayStarted);
@@ -131,13 +159,17 @@ impl Console {
             }
             Message::ClosePicker => self.close_picker(),
             Message::Autostart(on) => {
-                self.toggled_at
-                    .insert("autostart", std::time::Instant::now());
                 match system::set_autostart(on) {
                     // Re-read rather than assume: systemd is the authority on
                     // whether that worked, not our optimism.
                     Ok(()) => {
-                        self.autostart = system::autostart_enabled();
+                        let enabled = system::autostart_enabled();
+                        self.animate_toggle(
+                            "autostart",
+                            self.autostart.unwrap_or(false),
+                            enabled.unwrap_or(false),
+                        );
+                        self.autostart = enabled;
                         self.save_error = None;
                     }
                     Err(err) => self.save_error = Some(err),
@@ -169,22 +201,34 @@ impl Console {
                 self.typing = text;
                 self.term_error = None;
             }
+            Message::FilterTerms(query) => self.term_query = query,
             Message::AddTerm => match vocabulary::validate(&self.typing, &self.terms) {
                 Ok(term) => {
-                    self.terms.push(term);
-                    self.typing.clear();
-                    self.term_error = None;
-                    if let Err(err) = vocabulary::save(&self.terms) {
-                        self.term_error = Some(err.to_string());
+                    let mut terms = self.terms.clone();
+                    terms.push(term);
+                    match vocabulary::save(&terms) {
+                        Ok(()) => {
+                            self.terms = terms;
+                            self.typing.clear();
+                            self.term_query.clear();
+                            self.term_error = None;
+                            return iced::widget::operation::focus("vocabulary-entry");
+                        }
+                        Err(err) => self.term_error = Some(err.to_string()),
                     }
                 }
                 Err(why) => self.term_error = Some(why),
             },
             Message::RemoveTerm(index) => {
                 if index < self.terms.len() {
-                    self.terms.remove(index);
-                    if let Err(err) = vocabulary::save(&self.terms) {
-                        self.term_error = Some(err.to_string());
+                    let mut terms = self.terms.clone();
+                    terms.remove(index);
+                    match vocabulary::save(&terms) {
+                        Ok(()) => {
+                            self.terms = terms;
+                            self.term_error = None;
+                        }
+                        Err(err) => self.term_error = Some(err.to_string()),
                     }
                 }
             }

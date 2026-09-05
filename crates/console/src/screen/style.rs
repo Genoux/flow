@@ -1,99 +1,123 @@
-//! How much Flow may change what was said: the cleanup level cards.
-
 use crate::*;
-use iced::widget::{column, container, row, text, Space};
-use iced::{Background, Border, Color, Element, Fill, Font};
+use iced::widget::{button, column, container, responsive, row, text, Space};
+use iced::{Background, Border, Element, Fill};
 
 impl Console {
-    /// How much Flow is allowed to change what you said.
-    ///
-    /// Four rows rather than a slider or a dropdown: the levels differ by what
-    /// they are permitted to touch, which is a difference you can only judge by
-    /// reading an example of each. A dropdown shows one option at a time and
-    /// makes you remember the rest.
-    ///
-    /// The example under each title is the same sentence at every level, so the
-    /// page demonstrates the difference instead of asserting it.
     pub(super) fn style_section(&self) -> Element<'_, Message> {
-        // Cards, not settings rows: each already carries its own border and
-        // tint, so a hairline between them would double the line. A small
-        // gap does the separating instead, same as History's entries.
-        let mut list = column![];
-        for (index, level) in settings::Cleanup::ALL.into_iter().enumerate() {
-            if index > 0 {
-                list = list.push(Space::new().height(4));
-            }
-            list = list.push(self.cleanup_row(level));
-        }
+        responsive(move |size| {
+            let width = size.width - CONTENT_RIGHT;
+            let wide = width >= 650.0;
+            let cards: Element<'_, Message> = if wide {
+                settings::Cleanup::ALL
+                    .into_iter()
+                    .fold(row![], |cards, level| {
+                        cards.push(
+                            self.cleanup_card(level, if width < 740.0 { 290.0 } else { 260.0 }),
+                        )
+                    })
+                    .spacing(GAP)
+                    .into()
+            } else {
+                settings::Cleanup::ALL
+                    .into_iter()
+                    .fold(column![], |cards, level| {
+                        cards.push(self.cleanup_card(level, 236.0))
+                    })
+                    .spacing(GAP)
+                    .into()
+            };
 
-        scroll_inset(
-            column![
-                // "It never leaves this machine" used to close this line and
-                // said the same thing About's subtitle already says. A promise
-                // repeated on every page reads as a product that is anxious
-                // about it.
-                container(heading("Style", "How much Flow edits what you said."))
-                    .padding([0.0, ENTRY_INSET])
-                    .width(Fill),
-                list,
-            ],
-            PAGE_TOP,
-            CONTENT_RIGHT - ENTRY_INSET,
-        )
+            let banner = super::editorial::banner(
+                "A little polish.\nStill your voice.",
+                "Keep every word, tidy up the stumbles,\nor make your thoughts more concise.",
+                wide,
+                false,
+                super::editorial::Photo::Woodland,
+            );
+
+            scroll(column![
+                heading("Style", ""),
+                banner,
+                Space::new().height(24),
+                cards,
+                Space::new().height(20),
+                text("The same thought, with a different amount of cleanup.")
+                    .size(12)
+                    .color(MUTED),
+            ])
+        })
+        .into()
     }
 
-    /// One selectable level. The whole row is the target, because a row with a
-    /// radio at one end trains you to aim at the radio.
-    fn cleanup_row(&self, level: settings::Cleanup) -> Element<'_, Message> {
+    fn cleanup_card(&self, level: settings::Cleanup, height: f32) -> Element<'_, Message> {
         let (title, blurb) = level.describe();
         let chosen = self.settings.cleanup == level;
-
-        // Struck through at None, because that row's example is the one thing
-        // on the page that is not an improvement - it is what you actually said.
-        let example = text(level.example())
-            .size(12)
-            .font(Font::MONOSPACE)
-            .color(if chosen { MUTED } else { FAINT });
+        let selected = self.cleanup_selection[level as usize].value(self.now);
+        let warmth = if chosen {
+            0.0
+        } else {
+            self.cleanup_hover[level as usize].value(self.now)
+        };
+        let surface = mix(
+            mix(mix(BG, theme::RAISED, 0.6), ACCENT, 0.035 * selected),
+            FG,
+            warmth * 0.025,
+        );
+        let tone = mix(MUTED, ACCENT, selected);
+        let indicator = container(container(Space::new().width(6).height(6)).style(move |_| {
+            container::Style {
+                background: Some(Background::Color(mix(surface, tone, selected))),
+                border: Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }))
+        .center(16)
+        .style(move |_| container::Style {
+            border: Border {
+                radius: 8.0.into(),
+                width: HAIRLINE,
+                color: tone,
+            },
+            ..Default::default()
+        });
 
         let body = column![
             row![
-                text(title)
-                    .size(13.5)
-                    .color(if chosen { FG } else { MUTED }),
+                text(title).size(19).color(FG),
                 Space::new().width(Fill),
-                pip(if chosen { OK } else { mix(BG, FG, 0.18) }),
+                indicator,
             ]
             .align_y(iced::Center),
-            Space::new().height(LABEL_GAP),
-            text(blurb).size(12).color(MUTED),
+            Space::new().height(10),
+            container(text(blurb).size(12).line_height(1.5).color(MUTED)).height(54),
+            Space::new().height(16),
+            text("“")
+                .size(32)
+                .line_height(0.8)
+                .color(mix(MUTED, ACCENT, selected * 0.5)),
             Space::new().height(6),
-            example,
+            text(level.example()).size(14).line_height(1.5).color(FG),
         ];
 
-        let tint = if chosen {
-            mix(BG, OK, 0.05)
-        } else {
-            Color::TRANSPARENT
-        };
-        iced::widget::button(container(body).padding([10, 12]).width(Fill))
-            .padding(0)
-            .on_press(Message::SetCleanup(level))
-            .style(move |_, status| iced::widget::button::Style {
-                background: Some(Background::Color(match status {
-                    iced::widget::button::Status::Hovered if !chosen => mix(BG, FG, 0.04),
-                    _ => tint,
-                })),
-                border: Border {
-                    radius: CARD_RADIUS.into(),
-                    width: HAIRLINE,
-                    color: if chosen {
-                        mix(BG, OK, 0.3)
-                    } else {
-                        Color::TRANSPARENT
+        iced::widget::mouse_area(
+            button(container(body).padding(20).width(Fill).height(height))
+                .padding(0)
+                .width(Fill)
+                .on_press_maybe((!chosen).then_some(Message::SetCleanup(level)))
+                .style(move |_, _| button::Style {
+                    background: Some(Background::Color(surface)),
+                    border: Border {
+                        radius: CARD_RADIUS.into(),
+                        ..Default::default()
                     },
-                },
-                ..Default::default()
-            })
-            .into()
+                    ..Default::default()
+                }),
+        )
+        .on_enter(Message::HoverCleanup(Some(level)))
+        .on_exit(Message::HoverCleanup(None))
+        .into()
     }
 }

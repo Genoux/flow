@@ -7,9 +7,10 @@
 
 use crate::*;
 use iced::widget::{column, container, row, stack, text, Space};
-use iced::{Element, Fill, Font, Length};
+use iced::{Element, Fill, Length};
 
 mod about;
+mod editorial;
 mod history;
 mod overview;
 mod preferences;
@@ -58,11 +59,7 @@ impl Console {
 
         for section in Section::ALL {
             let selected = section == self.section;
-            let warmth = if self.hovered == Some(section) {
-                progress(self.hover_at, self.now, FADE)
-            } else {
-                0.0
-            };
+            let warmth = self.nav_motion[section as usize].value(self.now);
             let enabled = !self.incomplete() || section.works_without_models();
             items = items.push(nav(section, selected, warmth, enabled));
         }
@@ -74,13 +71,9 @@ impl Console {
                 // A debug build says so, and says when it was made. See
                 // `update::dev_note`.
                 container(column![
-                    text(update::running())
-                        .size(11)
-                        .font(Font::MONOSPACE)
-                        .color(FAINT),
+                    text(update::running()).size(11).color(FAINT),
                     text(update::dev_note().unwrap_or_default())
                         .size(10)
-                        .font(Font::MONOSPACE)
                         .color(FAINT),
                 ])
                 .padding([0, 9]),
@@ -125,7 +118,7 @@ impl Console {
         // where every other app puts one - flush against the edge it scrolls.
         // `scroll_pad` owns the right side, on the content, so the bar can
         // sit at the edge while the text keeps its own margin from it.
-        let left = if matches!(self.section, Section::History | Section::Style) {
+        let left = if matches!(self.section, Section::History) {
             PANE_INSET - ENTRY_INSET
         } else {
             PANE_INSET

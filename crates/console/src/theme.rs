@@ -142,6 +142,7 @@ pub(crate) const RADIUS: f32 = 6.0;
 /// are looking at. Two values in the whole window, both named here, rather than
 /// the seven that were typed out across five files.
 pub(crate) const CARD_RADIUS: f32 = 8.0;
+pub(crate) const BANNER_CORNER: f32 = 24.0;
 
 /// Every border here is a hairline. Nothing is outlined heavier than this:
 /// depth comes from surface colour, never from stroke weight - see `EDGE`,
@@ -219,20 +220,12 @@ pub(crate) const GROUP_PAD: f32 = 26.0;
 /// Between a group's label and the first row under it.
 pub(crate) const GROUP_GAP: f32 = 6.0;
 
-/// How long each motion takes. Only two things move - a toggle's knob and a
-/// rail item warming under the pointer - because those are the two that
-/// acknowledge something the user just did. Long enough that the easing
-/// curve is visible rather than read as a snap.
-pub(crate) const KNOB: u64 = 220;
 pub(crate) const FADE: u64 = 200;
 /// How long a copied row keeps its paper lit before the icon goes back to
 /// waiting for a hover. Long enough to be read, short enough that it is never
 /// still saying it by the time you look again.
 pub(crate) const COPIED: u64 = 1600;
 
-/// Quartic ease-out. Everything here moves fastest at the start and settles
-/// gently into place rather than stopping - a steeper tail than cubic, which
-/// is what turns "arrives" into "settles".
 pub(crate) fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(4)
@@ -240,7 +233,7 @@ pub(crate) fn ease_out(t: f32) -> f32 {
 
 /// 0.0 at `since`, 1.0 once `ms` has passed.
 pub(crate) fn progress(since: std::time::Instant, now: std::time::Instant, ms: u64) -> f32 {
-    ease_out(now.saturating_duration_since(since).as_millis() as f32 / ms as f32)
+    crate::motion::ease(now.saturating_duration_since(since).as_millis() as f32 / ms as f32)
 }
 
 /// Blend two colours, for hover states and the settling of a fade.
