@@ -37,7 +37,7 @@ pub fn save(terms: &[String]) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = crate::storage::read(&path)?;
     let mut out = String::new();
     for line in leading_comment(&existing) {
         out.push_str(line);
@@ -50,7 +50,7 @@ pub fn save(terms: &[String]) -> std::io::Result<()> {
         out.push_str(term);
         out.push('\n');
     }
-    std::fs::write(&path, out)
+    crate::storage::write(&path, &out)
 }
 
 /// The comment block at the top of the file, up to the first term. Comments

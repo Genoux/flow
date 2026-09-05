@@ -15,16 +15,39 @@
 
 use std::path::PathBuf;
 
-/// `$XDG_RUNTIME_DIR`, falling back to the temp dir.
-///
-/// The fallback is real rather than defensive: `XDG_RUNTIME_DIR` is genuinely
-/// absent over plain `ssh` without a login session, and everything under here
-/// (socket, pid, duck state) is transient enough that the temp dir is a correct
-/// answer rather than a damage-limiting one.
+/// `$XDG_RUNTIME_DIR`, falling back to a private per-user temporary directory.
 pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+        .unwrap_or_else(|| {
+            unsafe extern "C" {
+                fn geteuid() -> u32;
+            }
+            // POSIX geteuid has no preconditions and cannot fail.
+            let uid = unsafe { geteuid() };
+            let path = std::env::temp_dir().join(format!("flow-{uid}"));
+            private_runtime(&path, uid)
+                .expect("flow runtime directory must be private and owned by this user");
+            path
+        })
+}
+
+fn private_runtime(path: &std::path::Path, uid: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "insecure runtime directory",
+        ));
+    }
+    Ok(())
 }
 
 /// `$XDG_CONFIG_HOME`, falling back to `~/.config`.
@@ -119,6 +142,25 @@ pub fn duck_state_file() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_rejects_shared_foreign_and_symlink_directories() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let root = std::env::temp_dir().join(format!("flow-runtime-test-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let uid = std::fs::metadata(&root).unwrap().uid();
+        let private = root.join("private");
+        private_runtime(&private, uid).unwrap();
+        private_runtime(&private, uid).unwrap();
+        assert!(private_runtime(&private, uid.wrapping_add(1)).is_err());
+        let link = root.join("link");
+        symlink(&private, &link).unwrap();
+        assert!(private_runtime(&link, uid).is_err());
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_runtime(&private, uid).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// The regression this crate exists to prevent: the console used to answer
     /// this question differently from the daemon, so it wrote settings the

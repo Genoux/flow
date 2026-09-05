@@ -57,7 +57,7 @@ Extract the same frame with:
 user-selected `DTS_Misc_1_(Nick_Fancher)_Nick_Fancher_Photos_ID5032.jpg`
 from Downloads. The source filename credits Nick Fancher. The Vocabulary
 banner frames the upper portion at display time to keep the subject's head
-visible in a wide crop. Both banner images are embedded using `include_bytes!`;
+visible in a wide crop. All banner images are embedded using `include_bytes!`;
 the application never reads them from Downloads at runtime.
 
 `NotoSerifDisplay-Regular.ttf` supplies the editorial headline face. The font
@@ -66,3 +66,19 @@ machines. Copyright 2022 The Noto Project Authors; licensed under the SIL
 Open Font License 1.1, included in `NotoSerifDisplay-LICENSE.txt`.
 
 See [the brand direction](../design/brand-direction.md) for the visual rationale.
+
+`overview-mouthwash.jpg` is the first frame of the user-selected
+`DTS_Micro_Mouthwash_Studios_Clips_ID263.mp4` from Downloads. The source
+filename credits Mouthwash Studios. The extracted frame is embedded in the
+Overview banner; the original clip remains in Downloads.
+
+Extract the same frame with:
+
+    ffmpeg -i DTS_Micro_Mouthwash_Studios_Clips_ID263.mp4 \
+      -frames:v 1 -q:v 2 assets/overview-mouthwash.jpg
+
+`overview-mouthwash-wide.jpg` is an AI-extended variant of the original
+Mouthwash frame, made with the built-in imagegen tool for the 180 px Overview
+banner. The original extraction is retained above. The edit prompt asks to
+zoom out, preserve the organic subject, olive/teal palette and film grain,
+extend dark surroundings on the left for copy, and add no text or frame.

@@ -226,8 +226,8 @@ impl Settings {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        std::fs::write(&path, self.render(&existing))
+        let existing = crate::storage::read(&path)?;
+        crate::storage::write(&path, &self.render(&existing))
     }
 
     /// Apply our values onto `existing`, editing the lines that set a key we

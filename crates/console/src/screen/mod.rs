@@ -17,6 +17,10 @@ mod preferences;
 mod style;
 mod vocabulary;
 
+pub(crate) fn preload_images() -> Task<Message> {
+    editorial::preload_images()
+}
+
 impl Console {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         // Setup takes the whole window, rail included. The rail is a way to
@@ -108,10 +112,6 @@ impl Console {
             Section::About => self.about_section(),
         };
 
-        // Switching sections is deliberately instant. Motion here read as the
-        // page arriving late rather than as polish - navigation should feel
-        // like the content was already there.
-        //
         // Left only, not both sides: a right pad here would sit outside the
         // scrollable and push its whole viewport away from the window edge,
         // floating the scrollbar in a dead gutter instead of letting it run
@@ -124,7 +124,21 @@ impl Console {
             PANE_INSET
         };
 
-        container(content)
+        let opacity = 1.0 - self.page_motion.value(self.now);
+        let mut layers = stack![content];
+        if opacity > 0.0 {
+            let veil = container(Space::new().width(Fill).height(Fill))
+                .width(Fill)
+                .height(Fill)
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Color(iced::Color { a: opacity, ..BG })),
+                    ..Default::default()
+                });
+
+            layers = layers.push(veil);
+        }
+
+        container(layers)
             .width(Fill)
             .height(Fill)
             .padding(iced::Padding::default().left(left))

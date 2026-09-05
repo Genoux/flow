@@ -38,15 +38,16 @@ mod motion;
 mod screen;
 mod settings;
 mod setup;
+mod storage;
 mod system;
 mod theme;
 mod update;
 mod vocabulary;
 
 use crate::calendar::{calendar_card, current_streak, longest_streak};
-use crate::card::{fact, panel, stat_tile};
+use crate::card::stat_tile;
 use crate::control::{action_msg, card_rule, pip, toggle, value_slider, vertical_hairline};
-use crate::format::{clip, commas, plural, trend};
+use crate::format::{commas, plural, trend};
 use crate::layout::{
     entry_list, entry_row, fact_path, fact_row, group, heading, inert, nav, page_shell, scroll,
     scroll_inset, section_shell, setting,
@@ -54,7 +55,7 @@ use crate::layout::{
 use crate::theme::{
     mix, progress, ACCENT, BG, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR,
     FADE, FAINT, FG, GAP, HAIRLINE, LABEL_GAP, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH,
-    ROW_PAD, SCROLL_PAD, STARTING, WARN,
+    ROW_PAD, STARTING, WARN,
 };
 use iced::{Color, Subscription, Task, Theme};
 
@@ -67,6 +68,7 @@ fn main() -> iced::Result {
         .subscription(subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(1060.0, 694.0),
+            exit_on_close_request: false,
             position: iced::window::Position::Centered,
             // Not scaled with the opening size, and deliberately: this is not a
             // matter of taste like the line above it, it is the point below
@@ -106,7 +108,10 @@ fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
 fn subscription(state: &Console) -> Subscription<Message> {
     let daemon =
         Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon));
-    let mut subs = vec![daemon];
+    let mut subs = vec![
+        daemon,
+        iced::window::close_requests().map(Message::CloseRequested),
+    ];
 
     // Escape shuts the dialog. A modal you can only leave with the pointer is
     // a modal somebody gets stuck in, and the listener costs nothing while
@@ -269,7 +274,10 @@ impl Picker {
 #[derive(Debug, Clone)]
 enum Message {
     Select(Section),
+    BannersAllocated(Vec<Result<iced::advanced::image::Allocation, iced::advanced::image::Error>>),
     PushToTalk(bool),
+    SettingsSaved(Result<(), String>),
+    CloseRequested(iced::window::Id),
     /// A cleanup card on the Style screen. Picking a level is the whole of that
     /// screen, so it saves immediately rather than behind a confirm.
     SetCleanup(settings::Cleanup),
@@ -287,6 +295,10 @@ enum Message {
     ShowTray(bool),
     TrayStarted(Result<(), String>),
     Autostart(bool),
+    AutostartFinished(Result<Option<bool>, String>),
+    InstallChecked(Option<usize>),
+    PathOpened(Result<(), String>),
+    HistoryLoaded(Vec<history::Entry>, Vec<history::Day>),
     Duck(u32),
     OpenConfig,
     /// Reveal a path in the file manager. About's config and history rows.
@@ -355,8 +367,14 @@ impl Peripherals {
 
 struct Console {
     section: Section,
+    banner_allocations: Vec<iced::advanced::image::Allocation>,
+    banners_ready: bool,
+    page_motion: motion::Transition,
     daemon: daemon::State,
     settings: settings::Settings,
+    save_pending: bool,
+    save_dirty: bool,
+    closing_window: Option<iced::window::Id>,
     /// Set when a save fails, so a read-only config or a full disk is visible
     /// rather than a control that silently springs back.
     save_error: Option<String>,
@@ -369,6 +387,10 @@ struct Console {
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
     autostart: Option<bool>,
+    autostart_pending: bool,
+    peripherals_pending: bool,
+    history_pending: bool,
+    history_dirty: bool,
     /// The description of the system default source, which is what Auto-detect
     /// resolves to.
     input: Option<String>,
@@ -441,12 +463,22 @@ impl Console {
         (
             Self {
                 section: Section::initial(),
+                banner_allocations: Vec::new(),
+                banners_ready: false,
+                page_motion: motion::Transition::new(0.0),
                 daemon: daemon::State::default(),
                 settings,
+                save_pending: false,
+                save_dirty: false,
+                closing_window: None,
                 save_error: None,
                 service_error: None,
                 service_pending: None,
                 autostart: system::startup_autostart_enabled(),
+                autostart_pending: false,
+                peripherals_pending: true,
+                history_pending: false,
+                history_dirty: false,
                 input: None,
                 sources: Vec::new(),
                 picking_input: None,
@@ -484,6 +516,7 @@ impl Console {
             // already the request; a Begin button in front of it would only be
             // asking the same question twice.
             Task::batch([
+                screen::preload_images(),
                 // PipeWire can stall while devices are being relinked (remote
                 // desktop connections do exactly that), and closing even one
                 // evdev descriptor can wait on the kernel. Neither answer is
@@ -552,6 +585,7 @@ impl Console {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
         self.nav_motion.iter().chain(&self.cleanup_selection).chain(&self.cleanup_hover).any(|motion| motion.moving(self.now))
+            || self.page_motion.moving(self.now)
             || self.entry_motion.values().any(|motion| motion.moving(self.now))
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
             || self.toggle_motion.values().any(|motion| motion.moving(self.now))
@@ -581,15 +615,17 @@ impl Console {
             .unwrap_or(0.0)
     }
 
-    /// Write after every change. There is no Save button on purpose: a settings
-    /// window with an unsaved state is a window that can lose your settings.
-    fn persist(&mut self) {
-        match self.settings.save() {
-            Ok(()) => {
-                self.save_error = None;
-            }
-            Err(err) => self.save_error = Some(err.to_string()),
+    fn persist(&mut self) -> Task<Message> {
+        if self.save_pending {
+            self.save_dirty = true;
+            return Task::none();
         }
+        self.save_pending = true;
+        let settings = self.settings.clone();
+        Task::perform(
+            async move { settings.save().map_err(|error| error.to_string()) },
+            Message::SettingsSaved,
+        )
     }
 
     fn start_setup_daemon(&mut self) -> Task<Message> {
@@ -703,16 +739,21 @@ impl Console {
     }
 
     /// Setup is over: the window becomes the console it was standing in for.
-    fn leave_setup(&mut self) {
+    fn leave_setup(&mut self) -> Task<Message> {
         self.showing_setup = false;
         self.fading = None;
         self.download = None;
         self.models = system::models();
-        self.damage = system::damage();
-        self.input = system::default_input();
-        self.sources = system::input_sources();
-        self.entries = history::recent();
-        self.autostart = system::autostart_enabled();
+        self.autostart_pending = true;
+        Task::batch([
+            self.refresh_peripherals(),
+            self.refresh_history(),
+            Task::perform(async { system::damage() }, Message::InstallChecked),
+            Task::perform(
+                async { Ok(system::autostart_enabled()) },
+                Message::AutostartFinished,
+            ),
+        ])
     }
 }
 
@@ -826,6 +867,24 @@ mod tests {
     };
     use crate::daemon;
     use crate::theme::STARTING;
+
+    #[test]
+    fn closing_waits_for_the_latest_settings_save() {
+        use super::{Console, Message};
+        let (mut console, _) = Console::new();
+        let first = console.update(Message::Duck(10));
+        assert!(first.units() > 0);
+        assert_eq!(console.update(Message::Duck(20)).units(), 0);
+        let window = iced::window::Id::unique();
+        assert_eq!(console.update(Message::CloseRequested(window)).units(), 0);
+        assert!(console.update(Message::SettingsSaved(Ok(()))).units() > 0);
+        assert!(console.save_pending);
+        assert_eq!(console.closing_window, Some(window));
+        assert_eq!(console.settings.duck, 20);
+        assert!(console.update(Message::SettingsSaved(Ok(()))).units() > 0);
+        assert!(!console.save_pending);
+        assert!(console.closing_window.is_none());
+    }
 
     /// Running and Stopped are states of a product that is installed. Neither
     /// may be reported while a model is missing - a daemon left over from

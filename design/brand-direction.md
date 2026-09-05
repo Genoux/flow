@@ -57,3 +57,13 @@ The image should hold up as a photographic composition and the type should
 remain readable over it. At a glance, the page should feel composed and the
 style choice should be obvious. Future pages should share the photographic
 palette and typography while choosing imagery appropriate to their purpose.
+
+## Overview
+
+Make this a view of usage: a full-width photographic banner leads with the last
+seven days' word count and comparison. Dictations, speaking time, and streak
+sit below it, followed by the longer activity calendar. Use the user-selected Mouthwash Studios micro footage as a still image,
+with shared continuous corners. Keep the Overview banner at 180 px high. Use the extended photographic
+composition to pull the subject back, with quiet negative space behind the word count. Keep transcript previews, shortcuts,
+microphone details, and model counts on their dedicated pages. Service controls
+and actionable problems remain available.

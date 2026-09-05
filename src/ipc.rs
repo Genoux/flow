@@ -23,7 +23,7 @@ pub fn send(signal: libc::c_int) -> Result<()> {
     let path = pid_file();
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("no daemon running? {} missing", path.display()))?;
-    let pid: i32 = raw.trim().parse().context("malformed pid file")?;
+    let pid = parse_pid(&raw)?;
 
     // SAFETY: kill(2) with a parsed pid; failure is reported, not ignored.
     if unsafe { libc::kill(pid, signal) } != 0 {
@@ -34,4 +34,23 @@ pub fn send(signal: libc::c_int) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn parse_pid(raw: &str) -> Result<i32> {
+    let pid: i32 = raw.trim().parse().context("malformed pid file")?;
+    anyhow::ensure!(pid > 1, "invalid daemon pid: {pid}");
+    Ok(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_process_groups_and_init() {
+        for raw in ["0", "1", "-1", "-123", "2147483648", "invalid"] {
+            assert!(parse_pid(raw).is_err(), "accepted {raw}");
+        }
+        assert_eq!(parse_pid(" 123\n").unwrap(), 123);
+    }
 }
