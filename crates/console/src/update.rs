@@ -1,7 +1,7 @@
 //! Whether a newer Flow exists than the one running, and installing it.
 //!
-//! Asks GitHub for the newest published release and compares its tag against
-//! this build's version. Installing is the release tarball unpacked into a
+//! Asks GitHub for the published releases and compares the highest tag this
+//! build may be offered against its own version. Installing is the release tarball unpacked into a
 //! temporary directory and its own `packaging/install.sh` run from there - the
 //! same script a person would run by hand, rather than a second install path
 //! that can drift from it.
@@ -12,7 +12,12 @@
 
 use std::process::{Command, Stdio};
 
-const LATEST_RELEASE: &str = "https://api.github.com/repos/Genoux/flow/releases/latest";
+/// The list, not `releases/latest`. That endpoint is defined as the newest
+/// release which is neither a draft nor a prerelease, so with every release
+/// since v0.1.2 cut as a prerelease it kept answering v0.1.2 and the window
+/// reported "up to date" on top of every alpha. The list is the only endpoint
+/// that admits a prerelease exists.
+const RELEASES: &str = "https://api.github.com/repos/Genoux/flow/releases?per_page=20";
 
 /// Where the release workflow's tarball lands, named after the tag it was cut
 /// from. Kept in step with the `Package` step in `.github/workflows/release.yml`.
@@ -90,7 +95,7 @@ pub fn latest() -> Status {
             "Accept: application/vnd.github+json",
             "-w",
             "\n%{http_code}",
-            LATEST_RELEASE,
+            RELEASES,
         ])
         .output();
 
@@ -105,10 +110,10 @@ pub fn latest() -> Status {
     };
 
     match code.trim() {
-        "200" => match tag_of(json) {
-            Some(tag) if newer(&tag, running()) => Status::Available(tag),
-            Some(_) => Status::Current,
-            None => Status::Failed("GitHub sent a release with no tag".into()),
+        "200" => match pick(json, running()) {
+            Err(reason) => Status::Failed(reason),
+            Ok(Some(tag)) if newer(&tag, running()) => Status::Available(tag),
+            Ok(_) => Status::Current,
         },
         "404" => Status::Failed("no releases published yet".into()),
         "403" => Status::Failed("GitHub rate limit reached, try later".into()),
@@ -170,9 +175,27 @@ fn run(command: &mut Command) -> Result<(), String> {
     })
 }
 
-fn tag_of(json: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    Some(value.get("tag_name")?.as_str()?.to_string())
+/// The highest release this build is allowed to be offered, if any.
+///
+/// A stable build is never offered a prerelease: someone who installed 0.2.0
+/// should not be walked onto 0.3.0-alpha.1 by a check that runs on open.
+/// Running a prerelease is the opt-in, and it is the only one there is.
+fn pick(json: &str, running: &str) -> Result<Option<String>, String> {
+    let releases: Vec<serde_json::Value> =
+        serde_json::from_str(json).map_err(|err| format!("GitHub sent no release list: {err}"))?;
+    let wants_prerelease = parse(running).1;
+    Ok(releases
+        .iter()
+        .filter(|release| !release["draft"].as_bool().unwrap_or(false))
+        .filter(|release| wants_prerelease || !release["prerelease"].as_bool().unwrap_or(false))
+        .filter_map(|release| release["tag_name"].as_str())
+        // Ordered by when they were cut, not by version, so a patch backported
+        // after a minor sits above it. Ask which is actually higher.
+        .fold(None, |best: Option<&str>, tag| match best {
+            Some(best) if !newer(tag, best) => Some(best),
+            _ => Some(tag),
+        })
+        .map(str::to_string))
 }
 
 /// Whether `candidate` is a later version than `running`.
@@ -211,7 +234,7 @@ fn parse(version: &str) -> (Vec<u64>, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{newer, parse, tag_of, Status};
+    use super::{newer, parse, pick, Status};
 
     #[test]
     fn later_versions_are_newer() {
@@ -241,14 +264,57 @@ mod tests {
         assert!(newer("1.3.0-rc1", "1.2.3"));
     }
 
+    /// The shape GitHub actually returns, in the order it returns it: newest
+    /// first, drafts included for whoever can see them.
+    const LIST: &str = r#"[
+        {"tag_name":"v0.3.0","draft":true,"prerelease":false},
+        {"tag_name":"v0.2.0-alpha.1","draft":false,"prerelease":true},
+        {"tag_name":"v0.1.3-alpha.2","draft":false,"prerelease":true},
+        {"tag_name":"v0.1.2","draft":false,"prerelease":false}
+    ]"#;
+
+    /// The regression that shipped: every release after v0.1.2 was a
+    /// prerelease, `releases/latest` skips those by definition, and so the
+    /// window sat on an alpha reporting "up to date" forever.
     #[test]
-    fn the_tag_is_read_out_of_the_release() {
+    fn a_prerelease_build_is_offered_the_newest_prerelease() {
         assert_eq!(
-            tag_of(r#"{"tag_name":"v0.2.0","name":"whatever"}"#),
-            Some("v0.2.0".into())
+            pick(LIST, "0.1.3-alpha.2"),
+            Ok(Some("v0.2.0-alpha.1".into()))
         );
-        assert_eq!(tag_of("not json"), None);
-        assert_eq!(tag_of(r#"{"message":"Not Found"}"#), None);
+    }
+
+    #[test]
+    fn a_stable_build_is_never_walked_onto_a_prerelease() {
+        assert_eq!(pick(LIST, "0.1.2"), Ok(Some("v0.1.2".into())));
+        // And that is not an update, so nothing gets offered.
+        assert!(!newer("v0.1.2", "0.1.2"));
+    }
+
+    #[test]
+    fn a_draft_is_invisible_even_to_a_prerelease_build() {
+        // v0.3.0 is the highest tag in the list and must still lose.
+        assert_eq!(
+            pick(LIST, "0.2.0-alpha.1"),
+            Ok(Some("v0.2.0-alpha.1".into()))
+        );
+    }
+
+    // The list is ordered by when a release was cut, which is not the same as
+    // by version: a patch backported after a minor is returned above it.
+    #[test]
+    fn the_highest_version_wins_not_the_first_listed() {
+        let out_of_order = r#"[
+            {"tag_name":"v0.1.4","draft":false,"prerelease":false},
+            {"tag_name":"v0.9.0","draft":false,"prerelease":false}
+        ]"#;
+        assert_eq!(pick(out_of_order, "0.1.0"), Ok(Some("v0.9.0".into())));
+    }
+
+    #[test]
+    fn a_repo_with_no_releases_offers_nothing_and_is_not_an_error() {
+        assert_eq!(pick("[]", "0.1.0"), Ok(None));
+        assert!(pick("not json", "0.1.0").is_err());
     }
 
     /// The unit tests above all feed `newer` and `tag_of` strings this file
