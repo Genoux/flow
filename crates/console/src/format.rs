@@ -47,20 +47,7 @@ pub(crate) fn commas(count: u32) -> String {
     out
 }
 
-/// Cut to `chars` with an ellipsis, so a long value says it continues rather
-/// than looking like it simply stopped. Used with `Wrapping::None`, which
-/// stops the line becoming two but says nothing about where it ends.
-pub(crate) fn clip(text: &str, chars: usize) -> String {
-    if text.chars().count() <= chars {
-        return text.to_string();
-    }
-    let cut: String = text.chars().take(chars).collect();
-    format!("{}…", cut.trim_end())
-}
-
-/// Like `clip`, but keeps the end. A path that does not fit should still name
-/// the file; cutting from the start would leave a directory prefix and lose
-/// the only part that distinguishes Config from History.
+/// Keep the filename when a path is too long to fit.
 pub(crate) fn clip_tail(text: &str, chars: usize) -> String {
     let count = text.chars().count();
     if count <= chars {

@@ -31,23 +31,45 @@ fn run_for(program: &str, args: &[&str], budget: Duration) -> Option<std::proces
         .spawn()
         .ok()?;
 
-    // wait_timeout is not in std, so poll: these commands return in
-    // milliseconds, and the alternative is a window that can hang.
+    let stdout = drain(child.stdout.take()?);
+    let stderr = drain(child.stderr.take()?);
     let deadline = std::time::Instant::now() + budget;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
+            Ok(Some(status)) => {
+                return Some(std::process::Output {
+                    status,
+                    stdout: stdout
+                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                        .ok()??,
+                    stderr: stderr
+                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                        .ok()??,
+                });
             }
-            Ok(None) => {
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
             }
-            Err(_) => return None,
         }
     }
+}
+
+fn drain(
+    mut pipe: impl std::io::Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<Option<Vec<u8>>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // PipeWire listings can exceed a pipe buffer; drain while the child runs.
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let output = pipe.read_to_end(&mut bytes).ok().map(|_| bytes);
+        let _ = sender.send(output);
+    });
+    receiver
 }
 
 /// Whether the user unit is enabled, or `None` when systemd cannot answer -
@@ -490,6 +512,22 @@ mod tests {
             "a launch probe outlived its deadline by too much"
         );
         assert!(STARTUP_BUDGET < BUDGET);
+    }
+
+    #[test]
+    fn command_output_can_exceed_pipe_capacity() {
+        let output = run_for(
+            "sh",
+            &[
+                "-c",
+                "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2",
+            ],
+            Duration::from_secs(2),
+        )
+        .expect("both output pipes must drain before the deadline");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 131072);
+        assert_eq!(output.stderr.len(), 131072);
     }
 
     /// Stop signals whatever the pid file names, so the one thing standing

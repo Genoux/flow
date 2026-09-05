@@ -37,7 +37,7 @@ pub fn save(terms: &[String]) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = crate::storage::read(&path)?;
     let mut out = String::new();
     for line in leading_comment(&existing) {
         out.push_str(line);
@@ -50,7 +50,7 @@ pub fn save(terms: &[String]) -> std::io::Result<()> {
         out.push_str(term);
         out.push('\n');
     }
-    std::fs::write(&path, out)
+    crate::storage::write(&path, &out)
 }
 
 /// The comment block at the top of the file, up to the first term. Comments
@@ -123,5 +123,31 @@ mod tests {
         // Case-insensitive, because the recogniser does not care either.
         assert!(validate("hyprland", &existing).is_err());
         assert_eq!(validate("  PipeWire  ", &existing).unwrap(), "PipeWire");
+    }
+}
+
+pub fn matching(terms: &[String], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    let mut matches: Vec<_> = terms
+        .iter()
+        .enumerate()
+        .filter(|(_, term)| term.to_lowercase().contains(&query))
+        .map(|(index, _)| index)
+        .collect();
+    matches.sort_by_cached_key(|&index| terms[index].to_lowercase());
+    matches
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn sorting_and_filtering_keep_the_original_removal_index() {
+        let terms = ["Zürich", "Ada", "Hyprland", "Flow"].map(str::to_owned);
+        assert_eq!(matching(&terms, ""), vec![1, 3, 2, 0]);
+        assert_eq!(matching(&terms, " HYPR "), vec![2]);
+        assert_eq!(matching(&terms, "ZÜR"), vec![0]);
+        assert!(matching(&terms, "missing").is_empty());
     }
 }

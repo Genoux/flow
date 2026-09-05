@@ -1,89 +1,177 @@
-//! Words the speech model would otherwise get wrong.
-
 use crate::*;
-use iced::widget::{column, container, row, text, Space};
+use iced::widget::{button, column, container, responsive, row, text, text_input, tooltip, Space};
 use iced::{Background, Border, Element, Fill};
 
 impl Console {
-    /// The vocabulary, edited here rather than in a text editor. The file is
-    /// the daemon's interface; it should not have to be the user's.
     pub(super) fn vocabulary_section(&self) -> Element<'_, Message> {
-        let mut list = column![];
-        if self.terms.is_empty() {
-            list = list.push(
-                // Sits where the first term would, so the line reads as the
-                // list's own state rather than as a third paragraph of help.
-                container(text("No words yet.").size(13).color(FAINT)).padding([ROW_PAD, 0.0]),
-            );
-        } else {
-            for (index, term) in self.terms.iter().enumerate() {
+        responsive(move |size| {
+            let wide = size.width - CONTENT_RIGHT >= 650.0;
+            let entries = vocabulary::matching(&self.terms, &self.term_query);
+            let count = if self.term_query.trim().is_empty() {
+                plural(self.terms.len() as u32, "word")
+            } else {
+                format!("{} of {}", entries.len(), self.terms.len())
+            };
+            let search = crate::interaction::field(|amount| {
+                text_input("Find a word…", &self.term_query)
+                    .on_input(Message::FilterTerms)
+                    .size(12)
+                    .padding([8, 12])
+                    .width(if wide { 230 } else { 160 })
+                    .style(move |theme, status| {
+                        super::editorial::input_style(theme, status, amount.get())
+                    })
+                    .into()
+            });
+            let header = row![
+                column![
+                    text("Your vocabulary").size(15).color(FG),
+                    text(count).size(12).color(MUTED)
+                ]
+                .spacing(4),
+                Space::new().width(Fill),
+                search,
+            ]
+            .align_y(iced::Center);
+
+            let mut list = column![].spacing(8);
+            if entries.is_empty() {
+                let (title, detail) = if self.terms.is_empty() {
+                    (
+                        "Make room for your words.",
+                        "Add names, brands, or specialist terms you use often.",
+                    )
+                } else {
+                    (
+                        "No matching words.",
+                        "Try a different spelling or a shorter search.",
+                    )
+                };
                 list = list.push(
                     container(
-                        row![
-                            text(term.clone()).size(13).color(FG),
-                            Space::new().width(Fill),
-                            action_msg("Remove", false, Message::RemoveTerm(index)),
+                        column![
+                            text(title)
+                                .size(19)
+                                .font(iced::Font::with_name("Noto Serif Display"))
+                                .color(FG),
+                            text(detail).size(12).color(MUTED),
                         ]
-                        .align_y(iced::Center),
+                        .spacing(8),
                     )
-                    // The same air as any other row in this console, on both
-                    // sides of every hairline. At 6 the terms read as a
-                    // cramped table dropped into a page whose every other
-                    // list breathes.
-                    .padding([ROW_PAD, 0.0]),
+                    .padding([24, 0]),
                 );
-                if index + 1 < self.terms.len() {
-                    list = list.push(hairline());
+            } else {
+                for group in entries.chunks(if wide { 2 } else { 1 }) {
+                    let mut line = row![].spacing(8);
+                    for &index in group {
+                        line = line.push(self.vocabulary_word(index));
+                    }
+                    if wide && group.len() == 1 {
+                        line = line.push(Space::new().width(Fill));
+                    }
+                    list = list.push(line);
                 }
             }
-        }
 
-        let entry = row![
-            iced::widget::text_input("Hyprland", &self.typing)
-                .on_input(Message::TypingTerm)
-                .on_submit(Message::AddTerm)
-                .size(13)
-                .padding([8, 10])
-                .style(|_theme, _status| iced::widget::text_input::Style {
-                    background: Background::Color(BG),
-                    border: Border {
-                        color: LINE,
-                        width: HAIRLINE,
-                        radius: RADIUS.into()
-                    },
-                    icon: FAINT,
-                    placeholder: FAINT,
-                    value: FG,
-                    selection: ACCENT,
-                }),
-            Space::new().width(8),
-            action_msg("Add", true, Message::AddTerm),
-        ]
-        .align_y(iced::Center);
+            let error = self.term_error.as_deref();
+            let note = error.unwrap_or(
+                "For example, “hyper land” can become “Hyprland” when the sounds are close.",
+            );
+            let editor = column![
+                text("Add a word or phrase").size(14).color(FG),
+                Space::new().height(10),
+                row![
+                    crate::interaction::field(|amount| text_input(
+                        "e.g. a name, brand, or technical term",
+                        &self.typing
+                    )
+                    .on_input(Message::TypingTerm)
+                    .on_submit(Message::AddTerm)
+                    .id("vocabulary-entry")
+                    .size(13)
+                    .padding([10, 12])
+                    .style(move |theme, status| super::editorial::input_style(
+                        theme,
+                        status,
+                        amount.get()
+                    ))
+                    .into()),
+                    crate::control::action_padded(
+                        "Add word",
+                        true,
+                        1.0,
+                        [10.0, 14.0],
+                        (!self.typing.trim().is_empty()).then_some(Message::AddTerm)
+                    ),
+                ]
+                .spacing(10)
+                .align_y(iced::Center),
+                Space::new().height(8),
+                container(
+                    text(note)
+                        .size(12)
+                        .line_height(1.5)
+                        .color(if error.is_some() { ERR } else { MUTED })
+                )
+                .height(40),
+            ];
 
-        let note: Element<Message> = match &self.term_error {
-            Some(why) => text(why.clone()).size(12).color(ERR).into(),
-            None => text("Works when the word sounds close: \"hyper land\" becomes Hyprland.")
-                .size(12)
-                .color(FAINT)
-                .into(),
-        };
+            scroll(column![
+                heading("Vocabulary", ""),
+                super::editorial::banner(
+                    "Words that are yours.",
+                    "Names, places, and specialist terms.\nHelp Flow get the spelling right.",
+                    wide,
+                    true,
+                    super::editorial::Photo::Portrait,
+                ),
+                Space::new().height(24),
+                editor,
+                Space::new().height(12),
+                header,
+                Space::new().height(14),
+                list,
+            ])
+        })
+        .into()
+    }
 
-        scroll(column![
-            // Not "one per line": that is the rule for the file behind this
-            // screen, and this screen has an add field.
-            heading(
-                "Vocabulary",
-                "Words Flow mishears, spelled the way you want them.",
-            ),
-            entry,
-            // Tight to the field it explains, then a real gap before the
-            // list - the two spaces have to differ or the field, its note
-            // and the terms read as three unrelated things equally spaced.
-            Space::new().height(8),
-            note,
-            Space::new().height(GAP),
-            list,
-        ])
+    fn vocabulary_word(&self, index: usize) -> Element<'_, Message> {
+        let remove = crate::interaction::hover(move |amount| {
+            button(text("×").size(20))
+                .padding([2, 8])
+                .on_press(Message::RemoveTerm(index))
+                .style(move |_, _| button::Style {
+                    text_color: mix(MUTED, FG, amount.get()),
+                    background: None,
+                    ..Default::default()
+                })
+                .into()
+        });
+        container(
+            row![
+                text(&self.terms[index]).size(14).color(FG).width(Fill),
+                tooltip(
+                    remove,
+                    container(text("Remove word").size(12))
+                        .padding(8)
+                        .style(container::dark),
+                    tooltip::Position::Top
+                ),
+            ]
+            .spacing(12)
+            .align_y(iced::Center),
+        )
+        .padding([12, 14])
+        .width(Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(mix(BG, theme::RAISED, 0.65))),
+            border: Border {
+                radius: CARD_RADIUS.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
     }
 }

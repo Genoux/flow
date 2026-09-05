@@ -7,14 +7,19 @@
 
 use crate::*;
 use iced::widget::{column, container, row, stack, text, Space};
-use iced::{Element, Fill, Font, Length};
+use iced::{Element, Fill, Length};
 
 mod about;
+mod editorial;
 mod history;
 mod overview;
 mod preferences;
 mod style;
 mod vocabulary;
+
+pub(crate) fn preload_images() -> Task<Message> {
+    editorial::preload_images()
+}
 
 impl Console {
     pub(crate) fn view(&self) -> Element<'_, Message> {
@@ -58,11 +63,7 @@ impl Console {
 
         for section in Section::ALL {
             let selected = section == self.section;
-            let warmth = if self.hovered == Some(section) {
-                progress(self.hover_at, self.now, FADE)
-            } else {
-                0.0
-            };
+            let warmth = self.nav_motion[section as usize].value(self.now);
             let enabled = !self.incomplete() || section.works_without_models();
             items = items.push(nav(section, selected, warmth, enabled));
         }
@@ -74,13 +75,9 @@ impl Console {
                 // A debug build says so, and says when it was made. See
                 // `update::dev_note`.
                 container(column![
-                    text(update::running())
-                        .size(11)
-                        .font(Font::MONOSPACE)
-                        .color(FAINT),
+                    text(update::running()).size(11).color(FAINT),
                     text(update::dev_note().unwrap_or_default())
                         .size(10)
-                        .font(Font::MONOSPACE)
                         .color(FAINT),
                 ])
                 .padding([0, 9]),
@@ -115,23 +112,33 @@ impl Console {
             Section::About => self.about_section(),
         };
 
-        // Switching sections is deliberately instant. Motion here read as the
-        // page arriving late rather than as polish - navigation should feel
-        // like the content was already there.
-        //
         // Left only, not both sides: a right pad here would sit outside the
         // scrollable and push its whole viewport away from the window edge,
         // floating the scrollbar in a dead gutter instead of letting it run
         // where every other app puts one - flush against the edge it scrolls.
         // `scroll_pad` owns the right side, on the content, so the bar can
         // sit at the edge while the text keeps its own margin from it.
-        let left = if matches!(self.section, Section::History | Section::Style) {
+        let left = if matches!(self.section, Section::History) {
             PANE_INSET - ENTRY_INSET
         } else {
             PANE_INSET
         };
 
-        container(content)
+        let opacity = 1.0 - self.page_motion.value();
+        let mut layers = stack![content];
+        if opacity > 0.0 {
+            let veil = container(Space::new().width(Fill).height(Fill))
+                .width(Fill)
+                .height(Fill)
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Color(iced::Color { a: opacity, ..BG })),
+                    ..Default::default()
+                });
+
+            layers = layers.push(veil);
+        }
+
+        container(layers)
             .width(Fill)
             .height(Fill)
             .padding(iced::Padding::default().left(left))

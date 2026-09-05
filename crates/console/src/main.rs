@@ -32,39 +32,44 @@ mod daemon;
 mod dispatch;
 mod format;
 mod history;
+mod interaction;
 mod layout;
+mod motion;
 mod screen;
 mod settings;
 mod setup;
+mod smooth_scroll;
+mod storage;
 mod system;
 mod theme;
 mod update;
 mod vocabulary;
 
 use crate::calendar::{calendar_card, current_streak, longest_streak};
-use crate::card::{fact, panel, stat_tile};
-use crate::control::{
-    action_msg, card_rule, hairline, pip, toggle, value_slider, vertical_hairline,
-};
-use crate::format::{clip, commas, plural, trend};
+use crate::card::stat_tile;
+use crate::control::{action_msg, card_rule, pip, toggle, value_slider, vertical_hairline};
+use crate::format::{commas, plural, trend};
 use crate::layout::{
     entry_list, entry_row, fact_path, fact_row, group, heading, inert, nav, page_shell, scroll,
     scroll_inset, section_shell, setting,
 };
 use crate::theme::{
     mix, progress, ACCENT, BG, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR,
-    FADE, FAINT, FG, GAP, HAIRLINE, KNOB, LABEL_GAP, LINE, MUTED, OK, PAGE_TOP, PANE_INSET, RADIUS,
-    RAIL_WIDTH, ROW_PAD, SCROLL_PAD, STARTING, WARN,
+    FADE, FAINT, FG, GAP, HAIRLINE, LABEL_GAP, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH,
+    ROW_PAD, STARTING, WARN,
 };
 use iced::{Color, Subscription, Task, Theme};
 
 fn main() -> iced::Result {
     iced::application(Console::new, Console::update, Console::view)
         .title("Flow")
+        .antialiasing(true)
+        .font(include_bytes!("../../../assets/NotoSerifDisplay-Regular.ttf").as_slice())
         .theme(theme)
         .subscription(subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(1060.0, 694.0),
+            exit_on_close_request: false,
             position: iced::window::Position::Centered,
             // Not scaled with the opening size, and deliberately: this is not a
             // matter of taste like the line above it, it is the point below
@@ -104,7 +109,10 @@ fn style(_state: &Console, _theme: &Theme) -> iced::theme::Style {
 fn subscription(state: &Console) -> Subscription<Message> {
     let daemon =
         Subscription::run(|| iced::futures::StreamExt::map(daemon::stream(), Message::Daemon));
-    let mut subs = vec![daemon];
+    let mut subs = vec![
+        daemon,
+        iced::window::close_requests().map(Message::CloseRequested),
+    ];
 
     // Escape shuts the dialog. A modal you can only leave with the pointer is
     // a modal somebody gets stuck in, and the listener costs nothing while
@@ -267,7 +275,10 @@ impl Picker {
 #[derive(Debug, Clone)]
 enum Message {
     Select(Section),
+    BannersAllocated(Vec<Result<iced::advanced::image::Allocation, iced::advanced::image::Error>>),
     PushToTalk(bool),
+    SettingsSaved(Result<(), String>),
+    CloseRequested(iced::window::Id),
     /// A cleanup card on the Style screen. Picking a level is the whole of that
     /// screen, so it saves immediately rather than behind a confirm.
     SetCleanup(settings::Cleanup),
@@ -285,6 +296,10 @@ enum Message {
     ShowTray(bool),
     TrayStarted(Result<(), String>),
     Autostart(bool),
+    AutostartFinished(Result<Option<bool>, String>),
+    InstallChecked(Option<usize>),
+    PathOpened(Result<(), String>),
+    HistoryLoaded(Vec<history::Entry>, Vec<history::Day>),
     Duck(u32),
     OpenConfig,
     /// Reveal a path in the file manager. About's config and history rows.
@@ -303,8 +318,9 @@ enum Message {
     CancelCapture,
     /// Put the chord back to what a fresh install uses.
     ResetChord,
-    /// Delete the `.part` files a stopped install left behind.
     TypingTerm(String),
+    FilterTerms(String),
+    HoverCleanup(Option<settings::Cleanup>),
     AddTerm,
     RemoveTerm(usize),
     Daemon(daemon::Event),
@@ -352,8 +368,14 @@ impl Peripherals {
 
 struct Console {
     section: Section,
+    banner_allocations: Vec<iced::advanced::image::Allocation>,
+    banners_ready: bool,
+    page_motion: motion::PageTransition,
     daemon: daemon::State,
     settings: settings::Settings,
+    save_pending: bool,
+    save_dirty: bool,
+    closing_window: Option<iced::window::Id>,
     /// Set when a save fails, so a read-only config or a full disk is visible
     /// rather than a control that silently springs back.
     save_error: Option<String>,
@@ -366,6 +388,10 @@ struct Console {
     /// None when systemd cannot answer - the control is hidden rather than
     /// shown in a state we cannot vouch for.
     autostart: Option<bool>,
+    autostart_pending: bool,
+    peripherals_pending: bool,
+    history_pending: bool,
+    history_dirty: bool,
     /// The description of the system default source, which is what Auto-detect
     /// resolves to.
     input: Option<String>,
@@ -403,6 +429,7 @@ struct Console {
     session: String,
     terms: Vec<String>,
     typing: String,
+    term_query: String,
     term_error: Option<String>,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
@@ -412,21 +439,13 @@ struct Console {
     /// Why the last attempted chord was rejected, shown in place of the hint.
     chord_error: Option<String>,
 
-    // Motion. Times rather than tweens: what a frame needs to know is how long
-    // ago something changed, and everything here derives from that.
     now: std::time::Instant,
-    hovered: Option<Section>,
-    /// Transcript under the pointer, if any. Independent of the rail so a
-    /// History hover cannot light a nav item, and the other way around.
-    hovered_entry: Option<usize>,
-    hover_at: std::time::Instant,
-    /// This row's own clock, separate from the rail's `hover_at`: sharing one
-    /// clock meant moving from a nav item onto a row (or back) restarted the
-    /// row's fade from whatever point the nav's hover had reached, so the
-    /// highlight sometimes never finished settling.
-    entry_hover_at: std::time::Instant,
+    nav_motion: [motion::Transition; 6],
+    cleanup_selection: [motion::Transition; 3],
+    cleanup_hover: [motion::Transition; 3],
+    entry_motion: std::collections::HashMap<usize, motion::Transition>,
     /// When each toggle last flipped, so its knob can travel rather than jump.
-    toggled_at: std::collections::HashMap<&'static str, std::time::Instant>,
+    toggle_motion: std::collections::HashMap<&'static str, motion::Transition>,
 }
 
 impl Console {
@@ -438,16 +457,29 @@ impl Console {
         let first_run = setup::needed();
 
         let settings = settings::Settings::load();
+        let cleanup_selection = settings::Cleanup::ALL.map(|level| {
+            motion::Transition::new(if settings.cleanup == level { 1.0 } else { 0.0 })
+        });
 
         (
             Self {
                 section: Section::initial(),
+                banner_allocations: Vec::new(),
+                banners_ready: false,
+                page_motion: motion::PageTransition::default(),
                 daemon: daemon::State::default(),
                 settings,
+                save_pending: false,
+                save_dirty: false,
+                closing_window: None,
                 save_error: None,
                 service_error: None,
                 service_pending: None,
                 autostart: system::startup_autostart_enabled(),
+                autostart_pending: false,
+                peripherals_pending: true,
+                history_pending: false,
+                history_dirty: false,
                 input: None,
                 sources: Vec::new(),
                 picking_input: None,
@@ -468,22 +500,24 @@ impl Console {
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
+                term_query: String::new(),
                 term_error: None,
                 capturing: false,
                 can_capture: false,
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
                 now: std::time::Instant::now(),
-                hovered: None,
-                hovered_entry: None,
-                hover_at: std::time::Instant::now(),
-                entry_hover_at: std::time::Instant::now(),
-                toggled_at: std::collections::HashMap::new(),
+                nav_motion: Section::ALL.map(|_| motion::Transition::new(0.0)),
+                cleanup_selection,
+                cleanup_hover: settings::Cleanup::ALL.map(|_| motion::Transition::new(0.0)),
+                entry_motion: std::collections::HashMap::new(),
+                toggle_motion: std::collections::HashMap::new(),
             },
             // Setup starts itself. Launching Flow with nothing installed is
             // already the request; a Begin button in front of it would only be
             // asking the same question twice.
             Task::batch([
+                screen::preload_images(),
                 // PipeWire can stall while devices are being relinked (remote
                 // desktop connections do exactly that), and closing even one
                 // evdev descriptor can wait on the kernel. Neither answer is
@@ -517,13 +551,32 @@ impl Console {
         )
     }
 
-    /// How far this toggle is through its travel, 0 to 1. A toggle that has
-    /// never moved is already home.
+    fn animate_toggle(&mut self, key: &'static str, previous: bool, target: bool) {
+        self.toggle_motion
+            .entry(key)
+            .or_insert_with(|| motion::Transition::new(u8::from(previous) as f32))
+            .set(u8::from(target) as f32, std::time::Instant::now());
+    }
+
     fn travel(&self, key: &str) -> f32 {
-        self.toggled_at
+        let on = match key {
+            "push_to_talk" => self.settings.push_to_talk,
+            "denoise" => self.settings.denoise,
+            "sound" => self.settings.sound,
+            "show_tray" => self.settings.show_tray,
+            "autostart" => self.autostart.unwrap_or(false),
+            _ => return 1.0,
+        };
+        let position = self
+            .toggle_motion
             .get(key)
-            .map(|at| progress(*at, self.now, KNOB))
-            .unwrap_or(1.0)
+            .map(|motion| motion.value(self.now))
+            .unwrap_or(u8::from(on) as f32);
+        if on {
+            position
+        } else {
+            1.0 - position
+        }
     }
 
     /// True while any motion is still running, which is what decides whether
@@ -532,10 +585,11 @@ impl Console {
         let running = |since: std::time::Instant, ms: u64| {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
-        running(self.hover_at, FADE)
-            || running(self.entry_hover_at, FADE)
+        self.nav_motion.iter().chain(&self.cleanup_selection).chain(&self.cleanup_hover).any(|motion| motion.moving(self.now))
+            || self.page_motion.moving()
+            || self.entry_motion.values().any(|motion| motion.moving(self.now))
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
-            || self.toggled_at.values().any(|at| running(*at, KNOB))
+            || self.toggle_motion.values().any(|motion| motion.moving(self.now))
             || self
                 .picking_input
                 .is_some_and(|picker| running(picker.since(), FADE))
@@ -556,22 +610,23 @@ impl Console {
     /// 0 to 1, how far this transcript's hover has settled. Same easing and
     /// duration as the rail (`progress`, `FADE`), just its own clock.
     fn entry_warmth(&self, index: usize) -> f32 {
-        if self.hovered_entry == Some(index) {
-            progress(self.entry_hover_at, self.now, FADE)
-        } else {
-            0.0
-        }
+        self.entry_motion
+            .get(&index)
+            .map(|motion| motion.value(self.now))
+            .unwrap_or(0.0)
     }
 
-    /// Write after every change. There is no Save button on purpose: a settings
-    /// window with an unsaved state is a window that can lose your settings.
-    fn persist(&mut self) {
-        match self.settings.save() {
-            Ok(()) => {
-                self.save_error = None;
-            }
-            Err(err) => self.save_error = Some(err.to_string()),
+    fn persist(&mut self) -> Task<Message> {
+        if self.save_pending {
+            self.save_dirty = true;
+            return Task::none();
         }
+        self.save_pending = true;
+        let settings = self.settings.clone();
+        Task::perform(
+            async move { settings.save().map_err(|error| error.to_string()) },
+            Message::SettingsSaved,
+        )
     }
 
     fn start_setup_daemon(&mut self) -> Task<Message> {
@@ -685,16 +740,21 @@ impl Console {
     }
 
     /// Setup is over: the window becomes the console it was standing in for.
-    fn leave_setup(&mut self) {
+    fn leave_setup(&mut self) -> Task<Message> {
         self.showing_setup = false;
         self.fading = None;
         self.download = None;
         self.models = system::models();
-        self.damage = system::damage();
-        self.input = system::default_input();
-        self.sources = system::input_sources();
-        self.entries = history::recent();
-        self.autostart = system::autostart_enabled();
+        self.autostart_pending = true;
+        Task::batch([
+            self.refresh_peripherals(),
+            self.refresh_history(),
+            Task::perform(async { system::damage() }, Message::InstallChecked),
+            Task::perform(
+                async { Ok(system::autostart_enabled()) },
+                Message::AutostartFinished,
+            ),
+        ])
     }
 }
 
@@ -808,6 +868,24 @@ mod tests {
     };
     use crate::daemon;
     use crate::theme::STARTING;
+
+    #[test]
+    fn closing_waits_for_the_latest_settings_save() {
+        use super::{Console, Message};
+        let (mut console, _) = Console::new();
+        let first = console.update(Message::Duck(10));
+        assert!(first.units() > 0);
+        assert_eq!(console.update(Message::Duck(20)).units(), 0);
+        let window = iced::window::Id::unique();
+        assert_eq!(console.update(Message::CloseRequested(window)).units(), 0);
+        assert!(console.update(Message::SettingsSaved(Ok(()))).units() > 0);
+        assert!(console.save_pending);
+        assert_eq!(console.closing_window, Some(window));
+        assert_eq!(console.settings.duck, 20);
+        assert!(console.update(Message::SettingsSaved(Ok(()))).units() > 0);
+        assert!(!console.save_pending);
+        assert!(console.closing_window.is_none());
+    }
 
     /// Running and Stopped are states of a product that is installed. Neither
     /// may be reported while a model is missing - a daemon left over from

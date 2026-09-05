@@ -45,6 +45,17 @@ pub fn recent() -> Vec<Entry> {
     entries
 }
 
+pub fn period(at: u64, now: u64) -> &'static str {
+    if at == 0 || at > now {
+        return "Undated";
+    }
+    match now - at {
+        0..86_400 => "Past 24 hours",
+        86_400..604_800 => "Past 7 days",
+        _ => "Earlier",
+    }
+}
+
 /// How long ago, in the roughest terms that are still true. Deliberately not
 /// a clock time: the useful question about a dictation is "was that the one I
 /// just did", not what o'clock it happened.
@@ -177,6 +188,17 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_groups_use_elapsed_time_instead_of_local_midnight() {
+        let now = 1_000_000;
+        assert_eq!(period(now, now), "Past 24 hours");
+        assert_eq!(period(now - 86_399, now), "Past 24 hours");
+        assert_eq!(period(now - 86_400, now), "Past 7 days");
+        assert_eq!(period(now - 604_800, now), "Earlier");
+        assert_eq!(period(0, now), "Undated");
+        assert_eq!(period(now + 1, now), "Undated");
+    }
 
     #[test]
     fn elapsed_time_reads_in_the_roughest_true_terms() {

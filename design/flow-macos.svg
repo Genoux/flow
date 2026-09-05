@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#292a2d"/><stop offset=".48" stop-color="#0b0b0d"/><stop offset="1" stop-color="#202124"/>
+    </linearGradient>
+    <radialGradient id="light" cx=".1" cy=".05" r="1">
+      <stop stop-color="#ffffff" stop-opacity=".12"/><stop offset=".75" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2=".8" y2="1">
+      <stop stop-color="#ffffff" stop-opacity=".65"/><stop offset=".35" stop-color="#ffffff" stop-opacity=".12"/><stop offset=".65" stop-color="#ffffff" stop-opacity=".04"/><stop offset="1" stop-color="#ffffff" stop-opacity=".3"/>
+    </linearGradient>
+    <path id="tile" d="M160 1H352C408 1 445 12 473 40S511 105 511 160V352C511 408 500 445 472 473S407 511 352 511H160C104 511 67 500 39 472S1 407 1 352V160C1 104 12 67 40 39S105 1 160 1Z"/>
+    <filter id="shadow" x="-.1" y="-.1" width="1.2" height="1.2" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity=".35"/>
+    </filter>
+  </defs>
+  <use href="#tile" fill="url(#base)"/>
+  <use href="#tile" fill="url(#light)"/>
+  <use href="#tile" fill="none" stroke="url(#rim)" stroke-width="1.5"/>
+  <g filter="url(#shadow)"><g transform="translate(0.000000,512.000000) scale(0.100000,-0.100000)"
+fill="#ffffff" stroke="none">
+<path d="M1925 3973 c-24 -323 -114 -581 -301 -863 -113 -171 -244 -315 -541
+-592 -109 -101 -163 -226 -163 -380 0 -94 16 -160 60 -253 48 -101 116 -172
+207 -217 l68 -33 627 -3 628 -3 0 271 0 270 -498 0 -498 0 171 173 c95 94 206
+215 248 267 309 388 486 809 526 1250 6 63 11 134 11 158 l0 42 -269 0 -269 0
+-7 -87z"/>
+<path d="M2620 3160 l0 -270 466 0 466 0 -104 -102 c-258 -255 -437 -499 -574
+-783 -132 -273 -195 -519 -219 -858 l-7 -87 275 0 274 0 6 118 c25 453 275
+907 724 1313 167 151 187 173 222 244 38 77 51 132 51 225 0 94 -13 148 -52
+228 -42 84 -120 162 -204 203 l-69 34 -627 3 -628 3 0 -271z"/>
+</g></g>
+</svg>

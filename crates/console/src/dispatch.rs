@@ -18,15 +18,54 @@ impl Console {
         }
     }
 
+    pub(crate) fn refresh_peripherals(&mut self) -> Task<Message> {
+        if self.peripherals_pending {
+            return Task::none();
+        }
+        self.peripherals_pending = true;
+        Task::perform(async { Peripherals::read() }, Message::PeripheralsLoaded)
+    }
+
+    pub(crate) fn refresh_history(&mut self) -> Task<Message> {
+        if self.history_pending {
+            self.history_dirty = true;
+            return Task::none();
+        }
+        self.history_pending = true;
+        Task::perform(
+            async { (history::recent(), history::daily(CALENDAR_DAYS)) },
+            |(entries, days)| Message::HistoryLoaded(entries, days),
+        )
+    }
+
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::BannersAllocated(results) => {
+                self.banners_ready = true;
+                for result in results {
+                    match result {
+                        Ok(allocation) => self.banner_allocations.push(allocation),
+                        Err(error) => eprintln!("could not preload banner: {error}"),
+                    }
+                }
+                self.now = std::time::Instant::now();
+                self.page_motion.reveal();
+            }
             Message::Select(section) => {
+                if self.section != section && self.banners_ready {
+                    self.now = std::time::Instant::now();
+                    self.page_motion.reveal();
+                }
                 self.section = section;
-                // Re-read on arrival, so a microphone plugged in while the
-                // window was open is on the list by the time it is looked at.
+                let now = std::time::Instant::now();
+                for hover in &mut self.cleanup_hover {
+                    hover.set(0.0, now);
+                }
+                for hover in self.entry_motion.values_mut() {
+                    hover.set(0.0, now);
+                }
                 if section == Section::Settings {
-                    self.sources = system::input_sources();
-                    self.input = system::default_input();
+                    return self.refresh_peripherals();
                 }
             }
             Message::Tick(now) => {
@@ -44,6 +83,7 @@ impl Console {
                     .as_secs_f32()
                     .min(FRAME_CAP);
                 self.now = now;
+                self.page_motion.advance(elapsed);
                 if let Some(state) = self.download.as_mut() {
                     state.advance(elapsed);
                 }
@@ -54,55 +94,101 @@ impl Console {
                 if self.picking_input.is_some_and(|picker| picker.spent(now)) {
                     self.picking_input = None;
                 }
+                let mut finished = Task::none();
                 if let Some(fading) = self.fading.as_mut() {
                     *fading += elapsed;
                     if *fading >= setup::FADE {
-                        self.leave_setup();
+                        finished = self.leave_setup();
                     }
                 }
-                return Task::batch([self.launch_install(), self.setup_usable()]);
+                return Task::batch([finished, self.launch_install(), self.setup_usable()]);
             }
             Message::Hover(section) => {
-                if self.hovered != section {
-                    self.hovered = section;
-                    self.hover_at = std::time::Instant::now();
+                let now = std::time::Instant::now();
+                for (index, item) in Section::ALL.into_iter().enumerate() {
+                    self.nav_motion[index].set(if section == Some(item) { 1.0 } else { 0.0 }, now);
+                }
+            }
+            Message::HoverCleanup(level) => {
+                let now = std::time::Instant::now();
+                for (index, item) in settings::Cleanup::ALL.into_iter().enumerate() {
+                    self.cleanup_hover[index].set(
+                        if level == Some(item) && self.settings.cleanup != item {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        now,
+                    );
                 }
             }
             Message::HoverEntry(index) => {
-                if self.hovered_entry != index {
-                    self.hovered_entry = index;
-                    self.entry_hover_at = std::time::Instant::now();
+                let now = std::time::Instant::now();
+                for (item, transition) in &mut self.entry_motion {
+                    transition.set(if Some(*item) == index { 1.0 } else { 0.0 }, now);
+                }
+                if let Some(index) = index {
+                    self.entry_motion
+                        .entry(index)
+                        .or_insert_with(|| motion::Transition::new(0.0))
+                        .set(1.0, now);
+                }
+            }
+            Message::SettingsSaved(result) => {
+                self.save_pending = false;
+                self.save_error = result.err();
+                if std::mem::take(&mut self.save_dirty) {
+                    return self.persist();
+                }
+                if let Some(window) = self.closing_window.take() {
+                    if self.save_error.is_none() {
+                        return iced::window::close(window);
+                    }
+                }
+            }
+            Message::CloseRequested(window) => {
+                if self.save_pending {
+                    self.closing_window = Some(window);
+                } else {
+                    return iced::window::close(window);
                 }
             }
             Message::PushToTalk(on) => {
+                self.animate_toggle("push_to_talk", self.settings.push_to_talk, on);
                 self.settings.push_to_talk = on;
-                self.toggled_at
-                    .insert("push_to_talk", std::time::Instant::now());
-                self.persist();
+                return self.persist();
             }
             Message::SetCleanup(level) => {
                 self.settings.cleanup = level;
-                self.toggled_at.insert("cleanup", std::time::Instant::now());
-                self.persist();
+                let now = std::time::Instant::now();
+                for (index, item) in settings::Cleanup::ALL.into_iter().enumerate() {
+                    self.cleanup_selection[index].set(if level == item { 1.0 } else { 0.0 }, now);
+                    self.cleanup_hover[index].set(0.0, now);
+                }
+                return self.persist();
             }
             Message::Denoise(on) => {
+                self.animate_toggle("denoise", self.settings.denoise, on);
                 self.settings.denoise = on;
-                self.toggled_at.insert("denoise", std::time::Instant::now());
-                self.persist();
+                return self.persist();
             }
             Message::Sound(on) => {
+                self.animate_toggle("sound", self.settings.sound, on);
                 self.settings.sound = on;
-                self.toggled_at.insert("sound", std::time::Instant::now());
-                self.persist();
+                return self.persist();
             }
             Message::ShowTray(on) => {
+                self.animate_toggle("show_tray", self.settings.show_tray, on);
                 self.settings.show_tray = on;
-                self.toggled_at
-                    .insert("show_tray", std::time::Instant::now());
-                self.persist();
-                if on {
-                    return Task::perform(async { system::start_tray() }, Message::TrayStarted);
-                }
+                let saved = self.persist();
+                return if on {
+                    Task::batch([
+                        saved,
+                        Task::perform(async { system::start_tray() }, Message::TrayStarted),
+                    ])
+                } else {
+                    saved
+                };
             }
             Message::TrayStarted(result) => {
                 if let Err(err) = result {
@@ -111,7 +197,7 @@ impl Console {
             }
             Message::Duck(value) => {
                 self.settings.duck = value;
-                self.persist();
+                return self.persist();
             }
             Message::InputDevice(name) => {
                 self.settings.input_device = name;
@@ -119,25 +205,36 @@ impl Console {
                 // same frame, so the dialog leaving is what shows the choice
                 // landing instead of hiding it.
                 self.close_picker();
-                self.persist();
+                return self.persist();
             }
             Message::PickInput => {
-                // Re-read on the way in, the same rule as arriving at the
-                // screen: the list a dialog shows should be the list as of the
-                // moment it was asked for.
-                self.sources = system::input_sources();
-                self.input = system::default_input();
                 self.picking_input = Some(Picker::Opening(std::time::Instant::now()));
+                return self.refresh_peripherals();
             }
             Message::ClosePicker => self.close_picker(),
             Message::Autostart(on) => {
-                self.toggled_at
-                    .insert("autostart", std::time::Instant::now());
-                match system::set_autostart(on) {
-                    // Re-read rather than assume: systemd is the authority on
-                    // whether that worked, not our optimism.
-                    Ok(()) => {
-                        self.autostart = system::autostart_enabled();
+                if self.autostart_pending {
+                    return Task::none();
+                }
+                self.autostart_pending = true;
+                return Task::perform(
+                    async move {
+                        system::set_autostart(on)?;
+                        Ok(system::autostart_enabled())
+                    },
+                    Message::AutostartFinished,
+                );
+            }
+            Message::AutostartFinished(result) => {
+                self.autostart_pending = false;
+                match result {
+                    Ok(enabled) => {
+                        self.animate_toggle(
+                            "autostart",
+                            self.autostart.unwrap_or(false),
+                            enabled.unwrap_or(false),
+                        );
+                        self.autostart = enabled;
                         self.save_error = None;
                     }
                     Err(err) => self.save_error = Some(err),
@@ -150,8 +247,7 @@ impl Console {
                 // file is what this window shows, and it is the thing that
                 // outlives the daemon.
                 if self.daemon.words != before {
-                    self.entries = history::recent();
-                    self.days = history::daily(CALENDAR_DAYS);
+                    return self.refresh_history();
                 }
             }
             Message::Copy(index) => {
@@ -169,22 +265,34 @@ impl Console {
                 self.typing = text;
                 self.term_error = None;
             }
+            Message::FilterTerms(query) => self.term_query = query,
             Message::AddTerm => match vocabulary::validate(&self.typing, &self.terms) {
                 Ok(term) => {
-                    self.terms.push(term);
-                    self.typing.clear();
-                    self.term_error = None;
-                    if let Err(err) = vocabulary::save(&self.terms) {
-                        self.term_error = Some(err.to_string());
+                    let mut terms = self.terms.clone();
+                    terms.push(term);
+                    match vocabulary::save(&terms) {
+                        Ok(()) => {
+                            self.terms = terms;
+                            self.typing.clear();
+                            self.term_query.clear();
+                            self.term_error = None;
+                            return iced::widget::operation::focus("vocabulary-entry");
+                        }
+                        Err(err) => self.term_error = Some(err.to_string()),
                     }
                 }
                 Err(why) => self.term_error = Some(why),
             },
             Message::RemoveTerm(index) => {
                 if index < self.terms.len() {
-                    self.terms.remove(index);
-                    if let Err(err) = vocabulary::save(&self.terms) {
-                        self.term_error = Some(err.to_string());
+                    let mut terms = self.terms.clone();
+                    terms.remove(index);
+                    match vocabulary::save(&terms) {
+                        Ok(()) => {
+                            self.terms = terms;
+                            self.term_error = None;
+                        }
+                        Err(err) => self.term_error = Some(err.to_string()),
                     }
                 }
             }
@@ -203,7 +311,7 @@ impl Console {
             Message::ResetChord => {
                 self.settings.hotkey = settings::DEFAULT_HOTKEY.to_string();
                 self.chord_error = None;
-                self.persist();
+                return self.persist();
             }
             Message::CancelCapture => {
                 self.capturing = false;
@@ -216,7 +324,7 @@ impl Console {
                 // hidden in the second case, so it is nearly always the first.
                 if let Some(chord) = captured {
                     self.settings.hotkey = chord;
-                    self.persist();
+                    return self.persist();
                 }
             }
             Message::Service(verb) => {
@@ -249,18 +357,34 @@ impl Console {
                     }
                 }
             }
+            Message::InstallChecked(damage) => self.damage = damage,
+            Message::HistoryLoaded(entries, days) => {
+                self.history_pending = false;
+                self.entries = entries;
+                self.days = days;
+                self.copied = None;
+                self.entry_motion.clear();
+                if std::mem::take(&mut self.history_dirty) {
+                    return self.refresh_history();
+                }
+            }
             Message::PeripheralsLoaded(peripherals) => {
+                self.peripherals_pending = false;
                 self.input = peripherals.input;
                 self.sources = peripherals.sources;
                 self.can_capture = peripherals.can_capture;
             }
             Message::OpenConfig => {
-                if let Err(err) = system::open(&settings::config_path()) {
-                    self.save_error = Some(err);
-                }
+                return Task::perform(
+                    async { system::open(&settings::config_path()) },
+                    Message::PathOpened,
+                );
             }
             Message::OpenPath(path) => {
-                if let Err(err) = system::reveal(&path) {
+                return Task::perform(async move { system::reveal(&path) }, Message::PathOpened);
+            }
+            Message::PathOpened(result) => {
+                if let Err(err) = result {
                     self.save_error = Some(err);
                 }
             }
@@ -310,7 +434,7 @@ impl Console {
                     // fetched this run either - and a part file here belongs to
                     // an earlier one, which is exactly what a resume is for.
                     if !state.spawned {
-                        self.leave_setup();
+                        return self.leave_setup();
                     }
                 }
             }
@@ -343,8 +467,7 @@ impl Console {
                 // failure would put a Try again in front of the one person who
                 // has already said no.
                 if stopped {
-                    self.leave_setup();
-                    return Task::none();
+                    return self.leave_setup();
                 }
 
                 // Setup keeps its state until it has faded out; anything else

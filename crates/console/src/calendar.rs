@@ -177,15 +177,7 @@ pub(crate) fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
         let columns = (((size.width - WEEKDAY_GUTTER + CELL_GAP) / pitch).floor() as usize)
             .clamp(8, CALENDAR_WEEKS);
 
-        // The grid ends on today, so the last column is a partial week and
-        // every column before it is a full Sunday-to-Saturday one.
-        // 0 = Sunday, matching `history::daily`'s UTC day boundaries.
-        let last_weekday = ((today + 4) % 7) as usize;
-        // Saturating because the grid reaches two years back and this is
-        // day-since-epoch arithmetic: a clock set before 1972 makes the
-        // subtraction negative and panics the window on open, which is a
-        // worse answer to a wrong clock than drawing the grid from day zero.
-        let first_day = (today + last_weekday as u64 + 1).saturating_sub(columns as u64 * 7);
+        let first_day = first_visible_day(today, columns);
 
         let mut weeks = row![].spacing(CELL_GAP);
         for column in 0..columns {
@@ -327,6 +319,11 @@ fn latest_day(days: &[history::Day], today: u64) -> u64 {
         .unwrap_or(today)
 }
 
+fn first_visible_day(today: u64, columns: usize) -> u64 {
+    let weekday = (today + 4) % 7;
+    today.saturating_sub(weekday + columns.saturating_sub(1) as u64 * 7)
+}
+
 fn month_name(month: u32) -> &'static str {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -336,7 +333,20 @@ fn month_name(month: u32) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{current_streak, heat_ceiling};
+    use super::{current_streak, first_visible_day, heat_ceiling};
+
+    #[test]
+    fn calendar_columns_start_on_sunday_and_include_today() {
+        for today in 20_000..20_007 {
+            for columns in [8, 52, 104] {
+                let first = first_visible_day(today, columns);
+                assert_eq!((first + 4) % 7, 0);
+                assert_eq!((today - first) / 7, columns as u64 - 1);
+                assert_eq!((today - first) % 7, (today + 4) % 7);
+            }
+        }
+        assert_eq!(first_visible_day(0, 104), 0);
+    }
 
     fn days(words: &[u32]) -> Vec<crate::history::Day> {
         words

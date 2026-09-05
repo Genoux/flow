@@ -18,14 +18,13 @@ use ksni::{Icon, MenuItem, ToolTip, Tray};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-/// A 64px copy of the launcher icon rather than the installed 512px one.
-///
 /// Sent inline over D-Bus to every host that connects and drawn at bar height,
 /// so the large one would be a quarter-megabyte of pixels to produce a 20px
 /// square. Regenerate with:
 ///
 /// ```sh
-/// magick packaging/flow-console.png -resize 64x64 -strip PNG32:assets/tray.png
+/// rsvg-convert -o assets/tray.png assets/tray.svg
+/// magick assets/tray.png -strip PNG32:assets/tray.png
 /// ```
 const ICON: &[u8] = include_bytes!("../assets/tray.png");
 
