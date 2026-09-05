@@ -49,18 +49,12 @@ impl Console {
                     }
                 }
                 self.now = std::time::Instant::now();
-                self.page_motion.set(1.0, self.now);
+                self.page_motion.reveal();
             }
             Message::Select(section) => {
                 if self.section != section && self.banners_ready {
                     self.now = std::time::Instant::now();
-                    let visible = if self.page_motion.moving(self.now) {
-                        self.page_motion.value(self.now)
-                    } else {
-                        0.0
-                    };
-                    self.page_motion = motion::Transition::new(visible);
-                    self.page_motion.set(1.0, self.now);
+                    self.page_motion.reveal();
                 }
                 self.section = section;
                 let now = std::time::Instant::now();
@@ -89,6 +83,7 @@ impl Console {
                     .as_secs_f32()
                     .min(FRAME_CAP);
                 self.now = now;
+                self.page_motion.advance(elapsed);
                 if let Some(state) = self.download.as_mut() {
                     state.advance(elapsed);
                 }

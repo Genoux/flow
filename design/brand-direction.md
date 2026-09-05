@@ -30,6 +30,9 @@ page an editorial voice while preserving everyday readability.
 ## Interface decisions
 
 - Keep the existing near-black ground, quiet surfaces, and off-white text.
+- Prefer surface changes to outlines. Input and secondary-button borders are
+  barely visible at rest and ease into a restrained neutral edge on interaction.
+  Disabled buttons use a flat gray surface; selection markers stay distinct.
 - Use photography for warmth; keep green for active and selected controls.
 - Integrate the photograph into one banner, with restrained corners and no
   decorative outline. Use antialiased continuous corners for photographic
@@ -37,6 +40,9 @@ page an editorial voice while preserving everyday readability.
 - Keep the three style choices simple, readable, and directly selectable.
 - Show selection through the radio and subtle tint. Active cards rest on hover.
 - Use plain language that emphasizes the user's authorship and control.
+- Mouse-wheel steps ease over 120 ms across the app. Preserve wheel distance,
+  stop at the content edges, and reverse immediately. Trackpad pixel input
+  stays native; scrolling requests no frames once settled.
 - Static photography establishes the identity; animation is reserved for
   meaningful interaction feedback. Buttons, navigation, style cards, history
   rows, field focus, sliders, and toggles share a 200 ms duration
@@ -67,3 +73,13 @@ with shared continuous corners. Keep the Overview banner at 180 px high. Use the
 composition to pull the subject back, with quiet negative space behind the word count. Keep transcript previews, shortcuts,
 microphone details, and model counts on their dedicated pages. Service controls
 and actionable problems remain available.
+
+## History
+
+Treat History as a compact journal: one quiet metadata line sits above each
+transcript, with elapsed time first and duration and word count secondary.
+Use 13 px sans-serif text with relaxed line spacing. Group by elapsed time,
+omit search and horizontal rules, and let the row hover be the only surface
+treatment. Copy controls keep a fixed slot at the right of the metadata line.
+Page fades advance on rendered frames so a long initial text layout cannot
+consume the entire transition.

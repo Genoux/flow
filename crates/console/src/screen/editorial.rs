@@ -149,11 +149,11 @@ pub(super) fn input_style(
 ) -> text_input::Style {
     use crate::theme::*;
     text_input::Style {
-        background: Background::Color(mix(BG, RAISED, 0.65)),
+        background: Background::Color(mix(BG, RAISED, 0.7 + amount * 0.3)),
         border: Border {
             radius: RADIUS.into(),
             width: HAIRLINE,
-            color: mix(EDGE, FG, amount * 0.3),
+            color: mix(mix(BG, EDGE, 0.35), mix(EDGE, FG, 0.16), amount),
         },
         icon: MUTED,
         placeholder: MUTED,

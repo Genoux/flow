@@ -38,6 +38,7 @@ mod motion;
 mod screen;
 mod settings;
 mod setup;
+mod smooth_scroll;
 mod storage;
 mod system;
 mod theme;
@@ -369,7 +370,7 @@ struct Console {
     section: Section,
     banner_allocations: Vec<iced::advanced::image::Allocation>,
     banners_ready: bool,
-    page_motion: motion::Transition,
+    page_motion: motion::PageTransition,
     daemon: daemon::State,
     settings: settings::Settings,
     save_pending: bool,
@@ -465,7 +466,7 @@ impl Console {
                 section: Section::initial(),
                 banner_allocations: Vec::new(),
                 banners_ready: false,
-                page_motion: motion::Transition::new(0.0),
+                page_motion: motion::PageTransition::default(),
                 daemon: daemon::State::default(),
                 settings,
                 save_pending: false,
@@ -585,7 +586,7 @@ impl Console {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
         self.nav_motion.iter().chain(&self.cleanup_selection).chain(&self.cleanup_hover).any(|motion| motion.moving(self.now))
-            || self.page_motion.moving(self.now)
+            || self.page_motion.moving()
             || self.entry_motion.values().any(|motion| motion.moving(self.now))
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
             || self.toggle_motion.values().any(|motion| motion.moving(self.now))

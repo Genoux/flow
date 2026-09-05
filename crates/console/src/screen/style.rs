@@ -66,7 +66,10 @@ impl Console {
         let tone = mix(MUTED, ACCENT, selected);
         let indicator = container(container(Space::new().width(6).height(6)).style(move |_| {
             container::Style {
-                background: Some(Background::Color(mix(surface, tone, selected))),
+                background: Some(Background::Color(iced::Color {
+                    a: selected,
+                    ..tone
+                })),
                 border: Border {
                     radius: 3.0.into(),
                     ..Default::default()
@@ -107,8 +110,14 @@ impl Console {
                 .padding(0)
                 .width(Fill)
                 .on_press_maybe((!chosen).then_some(Message::SetCleanup(level)))
-                .style(move |_, _| button::Style {
-                    background: Some(Background::Color(surface)),
+                .style(move |_, status| button::Style {
+                    background: Some(Background::Color(
+                        if chosen || status == button::Status::Pressed {
+                            mix(mix(BG, theme::RAISED, 0.6), ACCENT, 0.035)
+                        } else {
+                            surface
+                        },
+                    )),
                     border: Border {
                         radius: CARD_RADIUS.into(),
                         ..Default::default()

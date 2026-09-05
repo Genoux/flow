@@ -124,7 +124,7 @@ impl Console {
             PANE_INSET
         };
 
-        let opacity = 1.0 - self.page_motion.value(self.now);
+        let opacity = 1.0 - self.page_motion.value();
         let mut layers = stack![content];
         if opacity > 0.0 {
             let veil = container(Space::new().width(Fill).height(Fill))

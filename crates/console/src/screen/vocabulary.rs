@@ -96,9 +96,11 @@ impl Console {
                         amount.get()
                     ))
                     .into()),
-                    action_msg(
+                    crate::control::action_padded(
                         "Add word",
                         true,
+                        1.0,
+                        [10.0, 14.0],
                         (!self.typing.trim().is_empty()).then_some(Message::AddTerm)
                     ),
                 ]

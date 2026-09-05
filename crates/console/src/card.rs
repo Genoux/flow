@@ -1,6 +1,6 @@
 //! Shared surfaces and editorial data blocks.
 
-use crate::theme::{dissolve, EDGE, FG, HAIRLINE, MUTED, RAISED};
+use crate::theme::{dissolve, mix, EDGE, FG, HAIRLINE, MUTED, RAISED};
 use crate::Message;
 use iced::widget::{column, container, text, Space};
 use iced::{Background, Border, Color, Element, Fill};
@@ -25,7 +25,7 @@ pub(crate) fn panel_at<'a>(fade: f32, content: Element<'a, Message>) -> Element<
         .style(move |_theme| container::Style {
             background: Some(Background::Color(dissolve(RAISED, fade))),
             border: Border {
-                color: dissolve(EDGE, fade),
+                color: dissolve(mix(RAISED, EDGE, 0.5), fade),
                 width: HAIRLINE,
                 radius: 10.0.into(),
             },

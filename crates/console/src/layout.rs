@@ -15,79 +15,56 @@ use crate::{history, Message, Section};
 use iced::widget::{button, column, container, responsive, row, scrollable, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Length};
 
-/// One transcript and what it cost: the line itself, then how long it took to
-/// say and how long ago that was. Shared so the Overview's excerpt and the
-/// History log are the same row rather than two rows that look alike.
-///
-/// Copy is an icon on the row, not a label and not a hidden editor. iced draws
-/// a caret in the text colour on any focused `text_editor`, and there is no
-/// way to style it off - so a click that was meant to select a sentence parked
-/// a blinking cursor in the middle of a settings window.
-///
-/// The icon's slot is always in the layout, at a fixed size, and only its
-/// opacity moves with the hover - it never appears or disappears as an
-/// element. Swapping a `Space` in for it while hidden (the first version of
-/// this) changed the row's height between the two states, which under a
-/// stationary pointer flips which row it is over and made the highlight
-/// flicker between rows rather than hold still on one.
-///
-/// The transparent gap lives inside the hover target so moving between rows
-/// cannot drop the highlight.
-///
-/// Rows only *set* the hovered index. Clearing it is `entry_list`'s job: a
-/// nested copy control used to capture the event iced's `mouse_area` needs
-/// to see, so `on_exit` fired while the pointer was still on the row, and
-/// crossing from one row onto the next went through `None` and dropped the
-/// highlight.
+// The copy slot remains in layout while its emphasis changes. List-level exit
+// tracking avoids flicker when the pointer crosses a nested copy control.
 pub(crate) fn entry_row<'a>(
     entry: &'a history::Entry,
     index: usize,
     now: u64,
     copied: bool,
     warmth: f32,
-    separated: bool,
 ) -> Element<'a, Message> {
     let when = history::ago(entry.at, now);
-    let body = container(
+    let when = if when.is_empty() {
+        "Undated".to_owned()
+    } else {
+        when
+    };
+    let duration = history::duration(entry.spoken);
+    let words = crate::format::plural(entry.text.split_whitespace().count() as u32, "word");
+    let copy = copy_btn(index, copied, 0.65 + warmth * 0.35);
+    let transcript = text(&entry.text).size(13).line_height(1.65).color(FG);
+    let content = column![
         row![
-            column![
-                text(&entry.text).size(13).color(FG),
-                Space::new().height(4),
-                text(if when.is_empty() {
-                    format!("{:.1}s", entry.spoken)
-                } else {
-                    format!("{:.1}s  ·  {when}", entry.spoken)
-                })
+            text(when).size(11).color(MUTED),
+            text(format!("· {duration} · {words}"))
                 .size(11)
-                .font(Font::MONOSPACE)
                 .color(FAINT),
-            ]
-            .width(Fill),
-            copy_btn(index, copied, warmth),
+            Space::new().width(Fill),
+            copy,
         ]
+        .spacing(6)
         .align_y(iced::Center),
-    )
-    .padding([10.0, ENTRY_INSET])
-    .width(Fill)
-    .style(move |_theme| container::Style {
-        background: Some(Background::Color(mix(
-            Color::TRANSPARENT,
-            RAIL_ON,
-            warmth * 0.7,
-        ))),
-        border: Border {
-            radius: RADIUS.into(),
+        Space::new().height(7),
+        transcript,
+    ];
+    let body = container(content)
+        .padding([14.0, ENTRY_INSET])
+        .width(Fill)
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(mix(
+                Color::TRANSPARENT,
+                RAIL_ON,
+                warmth * 0.45,
+            ))),
+            border: Border {
+                radius: RADIUS.into(),
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    });
+        });
 
-    let mut stack = column![body].width(Fill);
-    if separated {
-        stack = stack.push(Space::new().height(2));
-    }
-
-    iced::widget::mouse_area(stack)
+    iced::widget::mouse_area(body)
         .on_enter(Message::HoverEntry(Some(index)))
         .into()
 }
@@ -131,22 +108,23 @@ pub(crate) fn scroll_inset<'a>(
     bottom: f32,
     right: f32,
 ) -> Element<'a, Message> {
-    scrollable(
-        container(content).padding(
-            iced::Padding::default()
-                .top(PAGE_TOP)
-                .bottom(bottom)
-                .right(right),
-        ),
+    crate::smooth_scroll::vertical(
+        scrollable(
+            container(content).padding(
+                iced::Padding::default()
+                    .top(PAGE_TOP)
+                    .bottom(bottom)
+                    .right(right),
+            ),
+        )
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new()
+                .width(0)
+                .margin(0)
+                .scroller_width(0),
+        ))
+        .height(Fill),
     )
-    .direction(scrollable::Direction::Vertical(
-        scrollable::Scrollbar::new()
-            .width(0)
-            .margin(0)
-            .scroller_width(0),
-    ))
-    .height(Fill)
-    .into()
 }
 
 /// A page's heading. Lives in the scroll with the rest of the page, so a
