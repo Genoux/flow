@@ -41,6 +41,15 @@ args=("$@")
 watched=("$repo/src" "$repo/Cargo.toml" "$repo/assets")
 [ $console = 1 ] && watched+=("$repo/crates/console/src")
 
+# Not "$repo/target": ~/.cargo/config.toml points target-dir at a shared cache,
+# so the binaries cargo just built are never under the checkout. Asking cargo
+# where they went is the only answer that survives that setting changing.
+where() {
+  cargo metadata --format-version 1 --no-deps --manifest-path "$1" | jq -r .target_directory
+}
+daemon_bin="$(where "$repo/Cargo.toml")/debug/flow"
+console_bin="$(where "$repo/crates/console/Cargo.toml")/debug/flow-console"
+
 installed_was_running=0
 if systemctl --user is-active --quiet flow.service; then
   installed_was_running=1
@@ -76,7 +85,7 @@ trap restore EXIT
 build_and_run() {
   printf '\n\033[2m── flow %s ──\033[0m\n' "${args[*]}"
   cargo build -q --manifest-path "$repo/Cargo.toml" || return 1
-  "$repo/target/debug/flow" "${args[@]}" &
+  "$daemon_bin" "${args[@]}" &
   running=$!
 
   [ $console = 0 ] && return 0
@@ -85,8 +94,8 @@ build_and_run() {
   # The console runs `flow` by name, so without this the window drives whatever
   # release is sitting in ~/.local/bin instead of the binary just built - which
   # looks like a console bug and never is.
-  PATH="$repo/target/debug:$PATH" \
-    "$repo/crates/console/target/debug/flow-console" &
+  PATH="$(dirname "$daemon_bin"):$PATH" \
+    "$console_bin" &
   console_running=$!
 }
 
