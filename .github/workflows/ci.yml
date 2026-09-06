@@ -46,6 +46,14 @@ jobs:
           workspaces: |
             .
             crates/console
+          # Named rather than keyed off the job, so the release workflow can ask
+          # for the same cache. Without this the two jobs write under `check`
+          # and `release` and neither can ever read the other's.
+          shared-key: build
+          # Only main's caches are readable from another ref, so a cache saved
+          # on a pull request or a tag can be read by nothing but the run that
+          # wrote it. Save on main, restore everywhere.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # --all-targets is the point of this job. tests/chord_live.rs stopped
       # compiling at 6dfbdba and went unnoticed for six commits, because one
@@ -75,6 +83,16 @@ jobs:
       - name: Clippy (console)
         working-directory: crates/console
         run: cargo clippy --all-targets -- -D warnings
+
+      # llama.cpp takes twelve minutes to compile and the release profile builds
+      # it again from scratch, so main pays that once and every tag restores it.
+      # Cutting a release used to repeat the whole build because a tag ref can
+      # read no cache but its own.
+      - name: Warm the release cache
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cargo build --release
+          cargo build --release --manifest-path crates/console/Cargo.toml
 
       # The desktop entry is product surface and nothing else compiles it. It
       # already shipped with three main categories, which put Flow in three
