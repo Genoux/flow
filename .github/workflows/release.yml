@@ -46,6 +46,12 @@ jobs:
           workspaces: |
             .
             crates/console
+          # The same cache CI fills on main. A tag ref can read main's caches
+          # and nothing else, so this restores; saving would write 700MB under
+          # a tag that is never built from again, which is what the four dead
+          # caches sitting in this repo already are.
+          shared-key: build
+          save-if: false
 
       # The daemon and the console are separate workspace roots that ship as
       # one tarball, so a release where they disagree is a release that reports
