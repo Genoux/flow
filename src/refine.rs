@@ -666,16 +666,55 @@ pub fn vocabulary() -> Vec<String> {
         .collect()
 }
 
-pub struct Refiner {
-    model: LlamaModel,
+/// Everything that shapes what the model writes, as one value read fresh for
+/// each dictation.
+///
+/// One type rather than a level here and a word list there, because the split
+/// is what let them drift: the level was read live, once per dictation, while
+/// the vocabulary was read once at startup and moved into [`Refiner`]. Adding a
+/// word in the console wrote the file, showed the word in the list, and changed
+/// nothing about the next dictation until the daemon was restarted - the
+/// setting looked applied and was inert, which is the worst version of a
+/// setting. Anything else that steers the model belongs in here for the same
+/// reason.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Style {
+    pub level: Cleanup,
     /// Terms the recogniser tends to mangle - product names, jargon. Fed to the
     /// model as context rather than string-replaced, because "Flow" and "flow"
     /// are both real words and only the sentence says which was meant.
-    vocabulary: Vec<String>,
+    pub vocabulary: Vec<String>,
+}
+
+impl Style {
+    /// The level alone, with nothing of this machine's in it. What the prompt
+    /// suite grades against, so a term in the developer's own file cannot move
+    /// a regression test.
+    pub fn new(level: Cleanup) -> Self {
+        Self {
+            level,
+            vocabulary: Vec::new(),
+        }
+    }
+
+    pub fn with_vocabulary(mut self, vocabulary: Vec<String>) -> Self {
+        self.vocabulary = vocabulary;
+        self
+    }
+
+    /// What this machine's files say right now. Read per dictation: the files
+    /// are a few hundred bytes and the alternative is the staleness above.
+    pub fn current(level: Cleanup) -> Self {
+        Self::new(level).with_vocabulary(vocabulary())
+    }
+}
+
+pub struct Refiner {
+    model: LlamaModel,
 }
 
 impl Refiner {
-    pub fn load(path: &Path, vocabulary: Vec<String>, gpu: Option<usize>) -> Result<Self> {
+    pub fn load(path: &Path, gpu: Option<usize>) -> Result<Self> {
         let started = Instant::now();
         let backend = backend()?;
 
@@ -717,7 +756,7 @@ impl Refiner {
             .with_context(|| format!("loading {}", path.display()))?;
 
         eprintln!("refining model loaded in {:?}", started.elapsed());
-        Ok(Self { model, vocabulary })
+        Ok(Self { model })
     }
 
     /// The first inference builds compute graphs and takes seconds; every one
@@ -725,13 +764,13 @@ impl Refiner {
     /// first dictation.
     pub fn warm_up(&self) {
         let started = Instant::now();
-        if self.refine("um hello", Cleanup::default()).is_ok() {
+        if self.refine("um hello", &Style::default()).is_ok() {
             eprintln!("refining warmed up in {:?}", started.elapsed());
         }
     }
 
-    fn system_prompt(&self, raw: &str, level: Cleanup) -> String {
-        let mut prompt = format!("{PREAMBLE}\n\n{}", level.rules());
+    fn system_prompt(&self, raw: &str, style: &Style) -> String {
+        let mut prompt = format!("{PREAMBLE}\n\n{}", style.level.rules());
 
         // Naming the one language this input is in, which is the opposite of what
         // commit 03085c6 found harmful: listing example languages in the static
@@ -742,11 +781,11 @@ impl Refiner {
             prompt.push_str(&format!("\n\nThis input is in {name}. Reply in {name}."));
         }
 
-        if !self.vocabulary.is_empty() {
+        if !style.vocabulary.is_empty() {
             prompt.push_str(&format!(
                 "\n\nNames that are often mis-recognised, spelled exactly like \
                  this: {}.",
-                self.vocabulary.join(", ")
+                style.vocabulary.join(", ")
             ));
         }
         prompt
@@ -755,17 +794,17 @@ impl Refiner {
     /// Refines within the shipping budget. The prompt's behaviour is tested
     /// through [`Refiner::refine_within`] instead, so the regression suite measures
     /// what the model writes rather than how fast this machine's GPU is.
-    pub fn refine(&self, raw: &str, level: Cleanup) -> Result<String> {
-        self.refine_within(raw, budget_for(raw), level)
+    pub fn refine(&self, raw: &str, style: &Style) -> Result<String> {
+        self.refine_within(raw, budget_for(raw), style)
     }
 
-    pub fn refine_within(&self, raw: &str, budget_for: Duration, level: Cleanup) -> Result<String> {
+    pub fn refine_within(&self, raw: &str, budget_for: Duration, style: &Style) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
         // Checked here rather than only at the call site so that a caller which
         // has a loaded model but a `None` level still pastes the raw transcript.
-        if !level.wants_model() {
+        if !style.level.wants_model() {
             return Ok(raw.trim().to_string());
         }
         // Inside `refine` rather than at the call site so every caller gets it,
@@ -785,7 +824,7 @@ impl Refiner {
 
         let template = self.model.chat_template(None)?;
         let chat = [
-            LlamaChatMessage::new("system".into(), self.system_prompt(raw, level))?,
+            LlamaChatMessage::new("system".into(), self.system_prompt(raw, style))?,
             LlamaChatMessage::new("user".into(), raw.into())?,
         ];
         let prompt = self.model.apply_chat_template(&template, &chat, true)?;
@@ -875,7 +914,7 @@ impl Refiner {
         if changed_question_to_answer(&cleaned, raw) {
             bail!("the model answered {cleaned:?} instead of preserving the question");
         }
-        if lost_the_dictation(&cleaned, raw, level) {
+        if lost_the_dictation(&cleaned, raw, style.level) {
             bail!(
                 "refining kept {} words of {} spoken - that is not this dictation: {cleaned:?}",
                 words(&cleaned).len(),

@@ -204,11 +204,7 @@ fn main() -> Result<()> {
             // and something else is wrong - a corrupt download, or a card that
             // cannot hold them. Dictation carries on at raw transcripts, which
             // is worth more than no dictation, and the notification says so.
-            let refiner = match refine::Refiner::load(
-                &refine::model_path(),
-                refine::vocabulary(),
-                settings.gpu,
-            ) {
+            let refiner = match refine::Refiner::load(&refine::model_path(), settings.gpu) {
                 Ok(refiner) => {
                     refiner.warm_up();
                     Some(refiner)
@@ -318,8 +314,8 @@ fn retry(
     if !cleanup.wants_model() {
         return Ok(());
     }
-    match refine::Refiner::load(&refine::model_path(), refine::vocabulary(), gpu) {
-        Ok(refiner) => match refiner.refine(&raw_text, cleanup) {
+    match refine::Refiner::load(&refine::model_path(), gpu) {
+        Ok(refiner) => match refiner.refine(&raw_text, &refine::Style::current(cleanup)) {
             Ok(refined) => println!("refined   {refined}"),
             Err(err) => eprintln!("refining failed: {err}"),
         },

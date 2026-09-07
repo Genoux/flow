@@ -741,12 +741,16 @@ fn handle(
     // A refining failure must never cost the user their words, so the raw
     // transcript stands in whenever the model errors or returns nothing.
     //
+    // The style is read here, per dictation, for the same reason `cleanup` is:
+    // a word added in the console has to reach the next dictation, not the next
+    // restart. See `refine::Style`.
+    //
     // `cleanup` is read live, so lowering it takes effect on the next dictation.
     // Raising it off `none` only works if the model was loaded at startup -
     // loading one here would stall the paste for several seconds, which is
     // exactly the trade this whole path refuses to make.
     let final_text = match refiner.filter(|_| cleanup.wants_model()) {
-        Some(refiner) => match refiner.refine(&text, cleanup) {
+        Some(refiner) => match refiner.refine(&text, &refine::Style::current(cleanup)) {
             Ok(refined) if !refined.trim().is_empty() => refined,
             Ok(_) => {
                 eprintln!("refining returned nothing, using raw transcript");

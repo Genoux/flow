@@ -3,7 +3,7 @@
 //! Run explicitly:
 //!   cargo test --release --test vocabulary -- --nocapture --ignored
 
-use flow::refine::Cleanup;
+use flow::refine::{Cleanup, Style};
 
 const MANGLED: &[&str] = &[
     // What Parakeet actually produced when the speaker said "Flow".
@@ -21,31 +21,26 @@ fn compare_with_and_without_vocabulary() {
         return;
     }
 
-    let bare = flow::refine::Refiner::load(&path, vec![], None).expect("load");
-    for raw in MANGLED {
-        eprintln!("\nraw:        {raw:?}");
-        eprintln!(
-            "no vocab:   {:?}",
-            bare.refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light)
-                .expect("refine")
-        );
-    }
-    drop(bare);
+    // One load for both halves of the comparison. Two concurrent loads on the
+    // same Vulkan device segfault, and the vocabulary is a property of the
+    // prompt rather than of the model, so there was never a reason for the
+    // list to be baked into the weights being loaded.
+    let refiner = flow::refine::Refiner::load(&path, None).expect("load");
+    let bare = Style::new(Cleanup::Light);
+    let informed = bare.clone().with_vocabulary(
+        ["Flow", "Hyprland", "Neovim", "PipeWire"]
+            .map(str::to_string)
+            .to_vec(),
+    );
 
-    let terms = vec![
-        "Flow".to_string(),
-        "Hyprland".to_string(),
-        "Neovim".to_string(),
-        "PipeWire".to_string(),
-    ];
-    let informed = flow::refine::Refiner::load(&path, terms, None).expect("load");
     for raw in MANGLED {
-        eprintln!("\nraw:        {raw:?}");
-        eprintln!(
-            "with vocab: {:?}",
-            informed
-                .refine_within(raw, std::time::Duration::from_secs(120), Cleanup::Light)
+        let refine = |style: &Style| {
+            refiner
+                .refine_within(raw, std::time::Duration::from_secs(120), style)
                 .expect("refine")
-        );
+        };
+        eprintln!("\nraw:        {raw:?}");
+        eprintln!("no vocab:   {:?}", refine(&bare));
+        eprintln!("with vocab: {:?}", refine(&informed));
     }
 }

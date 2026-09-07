@@ -4,7 +4,15 @@
 //! a model swap would break literal expectations, but "must not answer the
 //! question" has to hold for every model we ever ship.
 
-use flow::refine::Cleanup;
+use flow::refine::{Cleanup, Style};
+
+/// The level plus the two terms the cases lean on, and deliberately nothing
+/// read from this machine: `Style::current` would fold in whatever is in the
+/// developer's own `vocabulary.txt`, and a suite that grades the prompt has to
+/// grade the same prompt everywhere.
+fn style(level: Cleanup) -> Style {
+    Style::new(level).with_vocabulary(vec!["Flow".into(), "Hyprland".into()])
+}
 
 struct Case {
     name: &'static str,
@@ -229,10 +237,7 @@ fn load() -> Option<flow::refine::Refiner> {
         eprintln!("skipping: no refining model at {}", path.display());
         return None;
     }
-    Some(
-        flow::refine::Refiner::load(&path, vec!["Flow".into(), "Hyprland".into()], test_gpu())
-            .expect("load"),
-    )
+    Some(flow::refine::Refiner::load(&path, test_gpu()).expect("load"))
 }
 
 /// One test, not several: cargo runs tests as parallel threads, and two
@@ -246,7 +251,11 @@ fn refining_behaves() {
     for case in CASES {
         let started = std::time::Instant::now();
         let refined = refiner
-            .refine_within(case.raw, std::time::Duration::from_secs(120), case.level)
+            .refine_within(
+                case.raw,
+                std::time::Duration::from_secs(120),
+                &style(case.level),
+            )
             .expect("clean");
         let elapsed = started.elapsed();
         let lowered = refined.to_lowercase();
@@ -291,14 +300,14 @@ fn refining_behaves() {
         .refine_within(
             repeated,
             std::time::Duration::from_secs(120),
-            Cleanup::Light,
+            &style(Cleanup::Light),
         )
         .expect("clean");
     let second = refiner
         .refine_within(
             repeated,
             std::time::Duration::from_secs(120),
-            Cleanup::Light,
+            &style(Cleanup::Light),
         )
         .expect("clean");
     if first != second {
@@ -314,7 +323,7 @@ fn refining_behaves() {
         .refine_within(
             already_clean,
             std::time::Duration::from_secs(120),
-            Cleanup::Light,
+            &style(Cleanup::Light),
         )
         .expect("clean");
     let elapsed = started.elapsed();
@@ -336,7 +345,7 @@ fn refining_behaves() {
     match refiner.refine_within(
         quebecois,
         std::time::Duration::from_secs(120),
-        Cleanup::Light,
+        &style(Cleanup::Light),
     ) {
         Err(err) => eprintln!("\n[language] guard caught it: {err}"),
         Ok(text) => {
@@ -360,7 +369,7 @@ fn refining_behaves() {
         match refiner.refine_within(
             hesitation,
             std::time::Duration::from_secs(120),
-            Cleanup::Light,
+            &style(Cleanup::Light),
         ) {
             Err(err) => eprintln!("\n[filler] {hesitation:?} refused: {err}"),
             Ok(text) => {
@@ -388,7 +397,11 @@ fn refining_behaves() {
     // treats the error as "use the raw transcript", and a truncated refining would
     // be worse than the transcript it replaced.
     let long = "um so i pushed the change and then uh the build broke again";
-    match refiner.refine_within(long, std::time::Duration::from_millis(1), Cleanup::Light) {
+    match refiner.refine_within(
+        long,
+        std::time::Duration::from_millis(1),
+        &style(Cleanup::Light),
+    ) {
         Err(err) => eprintln!("\n[budget] refused as expected: {err}"),
         Ok(text) => failures.push(format!("a 1ms budget still produced {text:?}")),
     }
@@ -404,10 +417,10 @@ fn refining_behaves() {
     // A four-level dial shipped for a release cycle with its top two levels
     // indistinguishable. That is the failure this assertion exists to prevent.
     let light = refiner
-        .refine(ADVERTISED_INPUT, Cleanup::Light)
+        .refine(ADVERTISED_INPUT, &style(Cleanup::Light))
         .expect("light");
     let medium = refiner
-        .refine(ADVERTISED_INPUT, Cleanup::Medium)
+        .refine(ADVERTISED_INPUT, &style(Cleanup::Medium))
         .expect("medium");
     eprintln!("\n[levels] light  {light:?}");
     eprintln!("[levels] medium {medium:?}");

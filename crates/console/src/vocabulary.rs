@@ -72,8 +72,34 @@ fn leading_comment(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Longest a term can be. Past this it is a sentence, and a sentence in this
+/// file is a sentence in every system prompt from now on.
+const LONGEST: usize = 40;
+
+/// A term the model can only be misled by.
+///
+/// The list works by sounding close to what was said - "hyper land" recovers
+/// Hyprland - so a term with no sound to match recovers nothing. It is not free
+/// either: every term is pasted into every system prompt as a name this speaker
+/// uses, so a few stray keystrokes spend the model's attention on nonsense on
+/// every dictation from then on. A real `vocabulary.txt` had `wd`, `wdq` and
+/// `qwd` sitting in it, reaching the model on every dictation for weeks.
+///
+/// Only ASCII is judged, and an initialism is kept: `LLM` is spelled out when
+/// spoken, and a script that does not write its vowels must be left alone
+/// rather than guessed at.
+fn is_unpronounceable(term: &str) -> bool {
+    let letters = || term.chars().filter(|c| c.is_ascii_alphabetic());
+
+    term.is_ascii()
+        && letters().next().is_some()
+        && !letters().all(|c| c.is_ascii_uppercase())
+        && !term.to_lowercase().contains(['a', 'e', 'i', 'o', 'u', 'y'])
+}
+
 /// Reject what cannot help before it reaches the file: a blank, a duplicate,
-/// or something with a newline in it that would silently become two entries.
+/// something with a newline in it that would silently become two entries, or a
+/// term with no sound for the recogniser to have mangled.
 pub fn validate(candidate: &str, existing: &[String]) -> Result<String, String> {
     let term = candidate.trim();
     if term.is_empty() {
@@ -84,6 +110,15 @@ pub fn validate(candidate: &str, existing: &[String]) -> Result<String, String> 
     }
     if term.contains('\n') || term.contains('\r') {
         return Err("One term per entry.".into());
+    }
+    if term.chars().count() > LONGEST {
+        return Err("That is long for a term. Add the name on its own.".into());
+    }
+    if is_unpronounceable(term) {
+        return Err(format!(
+            "{term} has no sound to match. Flow fixes words that are heard wrong, \
+             so a term needs to be sayable."
+        ));
     }
     if existing.iter().any(|e| e.eq_ignore_ascii_case(term)) {
         return Err(format!("{term} is already in the list."));
@@ -123,6 +158,29 @@ mod tests {
         // Case-insensitive, because the recogniser does not care either.
         assert!(validate("hyprland", &existing).is_err());
         assert_eq!(validate("  PipeWire  ", &existing).unwrap(), "PipeWire");
+    }
+
+    /// The three that were found in a real config, reaching the model on every
+    /// dictation.
+    #[test]
+    fn a_term_with_no_sound_is_refused() {
+        for junk in ["wd", "wdq", "qwd"] {
+            assert!(validate(junk, &[]).is_err(), "{junk:?} was accepted");
+        }
+    }
+
+    /// An initialism is said out loud, and a script without written vowels is
+    /// not ours to judge.
+    #[test]
+    fn a_sayable_term_is_kept() {
+        for term in ["LLM", "AI", "Flow", "Hyprland", "Zürich", "北京", "GNOME"] {
+            assert!(validate(term, &[]).is_ok(), "{term:?} was refused");
+        }
+    }
+
+    #[test]
+    fn a_sentence_is_not_a_term() {
+        assert!(validate("the thing we built does not work on mobile", &[]).is_err());
     }
 }
 
