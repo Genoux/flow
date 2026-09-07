@@ -1,0 +1,12 @@
+# Standing instructions for the cleanup model, in your own words.
+# One per line. Lines starting with # are ignored.
+#
+# The Style screen decides how much your words are changed. These decide how
+# the result is written, which is the part no level can know:
+#   Use British spelling.
+#   Write numbers as digits.
+#   Keep code and file names exactly as I say them.
+#   I mix French and English - never translate either.
+#
+# Short and specific works. They apply to every dictation, so an instruction
+# that only suits one message is better typed by hand.

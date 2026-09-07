@@ -593,6 +593,10 @@ pub fn run_reported(want: Want, report: &mut dyn FnMut(Event)) -> Result<()> {
             flow_paths::vocabulary_file(),
             include_str!("../packaging/vocabulary.template.txt"),
         ),
+        (
+            flow_paths::instructions_file(),
+            include_str!("../packaging/instructions.template.txt"),
+        ),
     ] {
         let written = seed(&path, contents)?;
         report(Event::Seeded { path, written });

@@ -9,19 +9,31 @@
 //! of what the file is for, and someone who opens it by hand deserves to still
 //! find it there.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-pub fn path() -> PathBuf {
+/// A config list file beside `config.toml`. Both this file and
+/// `instructions.txt` are the same shape - a comment block, then one entry per
+/// line - and the daemon reads them with the same function, so the window has
+/// no business growing a second reader that could disagree with it.
+pub fn beside_config(name: &str) -> PathBuf {
     super::settings::config_path()
         .parent()
-        .map(|dir| dir.join("vocabulary.txt"))
+        .map(|dir| dir.join(name))
         .unwrap_or_default()
+}
+
+pub fn path() -> PathBuf {
+    beside_config("vocabulary.txt")
 }
 
 /// Terms in file order, read exactly the way the daemon reads them so the list
 /// shown is the list that reaches the model.
 pub fn load() -> Vec<String> {
-    std::fs::read_to_string(path())
+    load_from(&path())
+}
+
+pub fn load_from(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
         .map(str::trim)
@@ -32,12 +44,15 @@ pub fn load() -> Vec<String> {
 
 /// Write `terms` back, keeping whatever comment block the file opened with.
 pub fn save(terms: &[String]) -> std::io::Result<()> {
-    let path = path();
+    save_to(&path(), terms)
+}
+
+pub fn save_to(path: &Path, terms: &[String]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let existing = crate::storage::read(&path)?;
+    let existing = crate::storage::read(path)?;
     let mut out = String::new();
     for line in leading_comment(&existing) {
         out.push_str(line);
@@ -50,7 +65,7 @@ pub fn save(terms: &[String]) -> std::io::Result<()> {
         out.push_str(term);
         out.push('\n');
     }
-    crate::storage::write(&path, &out)
+    crate::storage::write(path, &out)
 }
 
 /// The comment block at the top of the file, up to the first term. Comments

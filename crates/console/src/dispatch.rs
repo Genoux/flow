@@ -296,6 +296,41 @@ impl Console {
                     }
                 }
             }
+            Message::TypingInstruction(text) => {
+                self.note_typing = text;
+                self.note_error = None;
+            }
+            Message::AddInstruction => {
+                match instructions::validate(&self.note_typing, &self.notes) {
+                    Ok(instruction) => {
+                        let mut notes = self.notes.clone();
+                        notes.push(instruction);
+                        match instructions::save(&notes) {
+                            Ok(()) => {
+                                self.notes = notes;
+                                self.note_typing.clear();
+                                self.note_error = None;
+                                return iced::widget::operation::focus("instruction-entry");
+                            }
+                            Err(err) => self.note_error = Some(err.to_string()),
+                        }
+                    }
+                    Err(why) => self.note_error = Some(why),
+                }
+            }
+            Message::RemoveInstruction(index) => {
+                if index < self.notes.len() {
+                    let mut notes = self.notes.clone();
+                    notes.remove(index);
+                    match instructions::save(&notes) {
+                        Ok(()) => {
+                            self.notes = notes;
+                            self.note_error = None;
+                        }
+                        Err(err) => self.note_error = Some(err.to_string()),
+                    }
+                }
+            }
             Message::CaptureChord => {
                 self.capturing = true;
                 self.chord_error = None;

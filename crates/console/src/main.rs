@@ -32,6 +32,7 @@ mod daemon;
 mod dispatch;
 mod format;
 mod history;
+mod instructions;
 mod interaction;
 mod layout;
 mod motion;
@@ -323,6 +324,9 @@ enum Message {
     HoverCleanup(Option<settings::Cleanup>),
     AddTerm,
     RemoveTerm(usize),
+    TypingInstruction(String),
+    AddInstruction,
+    RemoveInstruction(usize),
     Daemon(daemon::Event),
     /// A frame went by; only delivered while something is moving.
     Tick(std::time::Instant),
@@ -431,6 +435,10 @@ struct Console {
     typing: String,
     term_query: String,
     term_error: Option<String>,
+    /// Standing instructions for the cleanup model, edited on the Style screen.
+    notes: Vec<String>,
+    note_typing: String,
+    note_error: Option<String>,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
     /// False when /dev/input cannot be read, so the chord cannot be captured.
@@ -502,6 +510,9 @@ impl Console {
                 typing: String::new(),
                 term_query: String::new(),
                 term_error: None,
+                notes: instructions::load(),
+                note_typing: String::new(),
+                note_error: None,
                 capturing: false,
                 can_capture: false,
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

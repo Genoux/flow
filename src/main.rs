@@ -42,6 +42,7 @@ FLAGS
 
 Configuration    ~/.config/flow/config.toml
 Word fixes       ~/.config/flow/vocabulary.txt
+Instructions     ~/.config/flow/instructions.txt
 Verbose output   FLOW_DEBUG=1
 ";
 
