@@ -19,6 +19,54 @@ pub struct Entry {
     pub text: String,
     pub spoken: f32,
     pub at: u64,
+    /// Why cleanup left the text like this, when it is worth saying. `None`
+    /// for the ordinary cases and for every entry written before the daemon
+    /// recorded it, which is most of the file on any existing install.
+    pub cleanup: Option<Cleanup>,
+}
+
+/// The outcomes worth putting on screen. `applied` and `unchanged` are not
+/// among them: a row that says "cleanup worked" on almost every line is
+/// furniture, and the question somebody actually has when reading their words
+/// back is why *this* one still has the stumbles in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cleanup {
+    Off,
+    /// Cleanup ran and its answer was refused, so the raw transcript is what
+    /// was pasted. Carries the guard that refused it.
+    FellBack(String),
+}
+
+impl Cleanup {
+    /// What the row says. Short, because it sits in a line of small print
+    /// beside the time and the word count.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Off => "no cleanup",
+            Self::FellBack(_) => "cleanup skipped",
+        }
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::FellBack(why) => Some(why),
+            Self::Off => None,
+        }
+    }
+
+    fn read(value: &serde_json::Value) -> Option<Self> {
+        match value.get("cleanup")?.as_str()? {
+            "off" => Some(Self::Off),
+            "fell_back" => Some(Self::FellBack(
+                value
+                    .get("reason")
+                    .and_then(|reason| reason.as_str())
+                    .unwrap_or("the model's answer was refused")
+                    .to_owned(),
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// The most recent entries, newest first. A missing file is an empty history,
@@ -38,6 +86,7 @@ pub fn recent() -> Vec<Entry> {
                 text: value.get("text")?.as_str()?.to_owned(),
                 spoken: value.get("spoken").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32,
                 at: value.get("at").and_then(|a| a.as_u64()).unwrap_or(0),
+                cleanup: Cleanup::read(&value),
             })
         })
         .collect();

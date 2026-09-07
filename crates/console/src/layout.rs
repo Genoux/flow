@@ -34,15 +34,35 @@ pub(crate) fn entry_row<'a>(
     let words = crate::format::plural(entry.text.split_whitespace().count() as u32, "word");
     let copy = copy_btn(index, copied, 0.65 + warmth * 0.35);
     let transcript = text(&entry.text).size(13).line_height(1.65).color(FG);
+    // Same small print as the time and the word count, and in the same colour:
+    // this answers "why does this one still have my stumbles in it", which is a
+    // fact about the dictation rather than a fault to alarm anybody with.
+    let cleanup = entry.cleanup.as_ref().map(|cleanup| {
+        let label = text(format!("· {}", cleanup.label())).size(11).color(FAINT);
+        match cleanup.detail() {
+            // The guard that refused the model's answer, which is the whole
+            // reason this line exists: "cleanup skipped" on its own leaves the
+            // same question it was added to answer.
+            Some(why) => Element::from(iced::widget::tooltip(
+                label,
+                container(text(why).size(12))
+                    .padding(8)
+                    .style(container::dark),
+                iced::widget::tooltip::Position::Top,
+            )),
+            None => Element::from(label),
+        }
+    });
     let content = column![
         row![
             text(when).size(11).color(MUTED),
             text(format!("· {duration} · {words}"))
                 .size(11)
                 .color(FAINT),
-            Space::new().width(Fill),
-            copy,
         ]
+        .extend(cleanup)
+        .push(Space::new().width(Fill))
+        .push(copy)
         .spacing(6)
         .align_y(iced::Center),
         Space::new().height(7),

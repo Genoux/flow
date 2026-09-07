@@ -666,6 +666,49 @@ pub fn vocabulary() -> Vec<String> {
         .collect()
 }
 
+/// What refining did to one dictation, so the record can say.
+///
+/// The history file used to omit its `raw` key both when cleanup changed
+/// nothing and when cleanup failed and the raw transcript shipped in its place:
+/// 260 of 573 real entries sat in that one indistinguishable bucket. The two
+/// are nothing alike to somebody reading their own words back - one is nothing
+/// to explain, the other is the reason the stumbles are still in there - and a
+/// fallback nobody can see is what makes cleanup feel like a coin toss rather
+/// than a setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// No cleanup was attempted: `cleanup = none`, or no model to do it with.
+    /// One variant for both because that is what the user was told either way -
+    /// the daemon's own notification for a model that will not load says
+    /// "Cleanup is off".
+    Off,
+    /// The model ran and its answer is what was pasted.
+    Applied,
+    /// Nothing needed doing - already clean, or too short to be worth a pass.
+    Unchanged,
+    /// The model ran and its answer was thrown away, so the raw transcript was
+    /// pasted instead. Carries the guard that refused it.
+    FellBack(String),
+}
+
+impl Outcome {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Applied => "applied",
+            Self::Unchanged => "unchanged",
+            Self::FellBack(_) => "fell_back",
+        }
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::FellBack(why) => Some(why),
+            _ => None,
+        }
+    }
+}
+
 /// Everything that shapes what the model writes, as one value read fresh for
 /// each dictation.
 ///

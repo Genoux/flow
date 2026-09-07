@@ -749,19 +749,26 @@ fn handle(
     // Raising it off `none` only works if the model was loaded at startup -
     // loading one here would stall the paste for several seconds, which is
     // exactly the trade this whole path refuses to make.
-    let final_text = match refiner.filter(|_| cleanup.wants_model()) {
+    let (final_text, outcome) = match refiner.filter(|_| cleanup.wants_model()) {
         Some(refiner) => match refiner.refine(&text, &refine::Style::current(cleanup)) {
-            Ok(refined) if !refined.trim().is_empty() => refined,
-            Ok(_) => {
+            Ok(refined) if refined.trim().is_empty() => {
                 eprintln!("refining returned nothing, using raw transcript");
-                text.clone()
+                (
+                    text.clone(),
+                    refine::Outcome::FellBack("came back empty".into()),
+                )
             }
+            // The gates inside `refine` return the transcript untouched when
+            // there was nothing to do, which is a different thing to report
+            // than a pass that ran and changed nothing.
+            Ok(refined) if refined == text => (refined, refine::Outcome::Unchanged),
+            Ok(refined) => (refined, refine::Outcome::Applied),
             Err(err) => {
                 eprintln!("refining failed ({err}), using raw transcript");
-                text.clone()
+                (text.clone(), refine::Outcome::FellBack(format!("{err}")))
             }
         },
-        None => text.clone(),
+        None => (text.clone(), refine::Outcome::Off),
     };
     let refined_at = started.elapsed();
 
@@ -777,13 +784,14 @@ fn handle(
     });
     // On disk as well as in the reporter: the console reads history from the
     // file, so it is there before the daemon starts and survives it stopping.
-    history::append(
-        &final_text,
-        &text,
+    history::append(history::Record {
+        text: &final_text,
+        raw: &text,
         spoken,
-        injected.as_millis(),
-        history::now(),
-    );
+        paste_ms: injected.as_millis(),
+        at: history::now(),
+        outcome,
+    });
 
     if final_text == text {
         eprintln!(
