@@ -203,6 +203,7 @@ impl Config {
                     bail!("{at}: duck is a percentage, found {value}");
                 }
             }
+            "openrouter_key" => {}
             _ => bail!("{at}: unknown key {key:?}"),
         }
 

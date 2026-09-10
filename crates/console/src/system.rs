@@ -118,6 +118,122 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
     })
 }
 
+/// Which build the `flow` symlink currently points at.
+///
+/// The link is the setting. There is deliberately no `channel = ` line in the
+/// config: two sources for one fact drift, and a config that claimed
+/// experimental while the link pointed at stable would be lying about which
+/// binary is about to run. Reading the link cannot be wrong, and someone who
+/// repoints it by hand gets a window that agrees with them.
+pub fn channel() -> Channel {
+    channel_in(&bin_dir())
+}
+
+fn channel_in(dir: &std::path::Path) -> Channel {
+    let link = dir.join("flow");
+    match std::fs::read_link(&link) {
+        Ok(target) if target.to_string_lossy().ends_with("-experimental") => Channel::Experimental,
+        Ok(_) => Channel::Stable,
+        // No link at all is an install that predates channels, which is a
+        // stable one.
+        Err(_) => Channel::Stable,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Stable,
+    Experimental,
+}
+
+impl Channel {
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Channel::Stable => "stable",
+            Channel::Experimental => "experimental",
+        }
+    }
+}
+
+fn bin_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_BIN_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/bin")
+        })
+}
+
+/// Point `flow` and `flow-console` at the other build.
+///
+/// Takes effect on restart, not now: the running daemon is the old binary and
+/// this window is the old console. Switching is repointing two links, so going
+/// back is the same operation - which is the whole reason both builds stay on
+/// disk rather than one replacing the other.
+pub fn set_channel(channel: Channel) -> Result<(), String> {
+    set_channel_in(&bin_dir(), channel)
+}
+
+pub fn channel_installed(channel: Channel) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    ["flow", "flow-console"].iter().all(|name| {
+        bin_dir()
+            .join(format!("{name}-{}", channel.suffix()))
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
+}
+
+fn set_channel_in(dir: &std::path::Path, channel: Channel) -> Result<(), String> {
+    for name in ["flow", "flow-console"] {
+        let target = dir.join(format!("{name}-{}", channel.suffix()));
+        use std::os::unix::fs::PermissionsExt;
+        if !target
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        {
+            return Err(format!(
+                "{} is not installed or executable",
+                target.display()
+            ));
+        }
+    }
+    let stage = dir.join(".flow-channel-switch");
+    std::fs::create_dir(&stage).map_err(|e| format!("Preparing channel switch: {e}"))?;
+    let result = (|| -> std::io::Result<()> {
+        for name in ["flow", "flow-console"] {
+            let link = dir.join(name);
+            if link.symlink_metadata().is_ok() {
+                std::fs::hard_link(&link, stage.join(format!("{name}.old")))?;
+            }
+            std::os::unix::fs::symlink(format!("{name}-{}", channel.suffix()), stage.join(name))?;
+        }
+        std::fs::rename(stage.join("flow"), dir.join("flow"))?;
+        if let Err(error) = std::fs::rename(stage.join("flow-console"), dir.join("flow-console")) {
+            let backup = stage.join("flow.old");
+            if backup.symlink_metadata().is_ok() {
+                std::fs::rename(backup, dir.join("flow"))?;
+            } else {
+                std::fs::remove_file(dir.join("flow"))?;
+            }
+            return Err(error);
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(stage);
+    result.map_err(|e| format!("Switching release: {e}"))
+}
+
+pub fn restart_app() -> Result<(), String> {
+    let console = bin_dir().join("flow-console");
+    if !console.is_file() {
+        return Err("The selected console is missing. Install the release again.".into());
+    }
+    service("stop")?;
+    let _ = run("systemctl", &["--user", "try-restart", "flow-tray.service"]);
+    Command::new(console).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Start, stop or restart the daemon.
 ///
 /// The window is not how you dictate, but it is a reasonable place to turn the
@@ -492,6 +608,61 @@ const OPENER: &str = if cfg!(target_os = "macos") {
 
 #[cfg(test)]
 mod tests {
+    /// The link is the setting, so reading it back is the only check that
+    /// matters: a switch that reported success while the link stayed put would
+    /// be a window lying about which binary is about to run.
+    #[test]
+    fn switching_channels_repoints_both_links_and_is_reversible() {
+        let root = std::env::temp_dir().join(format!("flow-channel-{}", std::process::id()));
+        let bin = root.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in [
+            "flow-stable",
+            "flow-console-stable",
+            "flow-experimental",
+            "flow-console-experimental",
+        ] {
+            std::fs::write(bin.join(name), "").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        // A pre-channels install: a real file where the link belongs.
+        std::fs::write(bin.join("flow"), "").unwrap();
+
+        assert_eq!(channel_in(&bin), Channel::Stable, "no link reads as stable");
+
+        set_channel_in(&bin, Channel::Experimental).unwrap();
+        assert_eq!(channel_in(&bin), Channel::Experimental);
+        assert!(
+            bin.join("flow").is_symlink(),
+            "the regular file was replaced"
+        );
+        assert_eq!(
+            std::fs::read_link(bin.join("flow-console"))
+                .unwrap()
+                .to_string_lossy(),
+            "flow-console-experimental",
+            "the console link must move with the daemon link"
+        );
+
+        set_channel_in(&bin, Channel::Stable).unwrap();
+        assert_eq!(
+            channel_in(&bin),
+            Channel::Stable,
+            "switching back is the same click"
+        );
+
+        std::fs::remove_file(bin.join("flow-console-experimental")).unwrap();
+        assert!(set_channel_in(&bin, Channel::Experimental).is_err());
+        assert_eq!(channel_in(&bin), Channel::Stable);
+        assert_eq!(
+            std::fs::read_link(bin.join("flow-console")).unwrap(),
+            std::path::Path::new("flow-console-stable")
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     use super::*;
 
     /// A process that never answers is the failure behind the three-second

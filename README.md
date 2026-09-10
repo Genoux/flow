@@ -51,6 +51,17 @@ restarts the daemon onto the new build if it was already running.
 Removing it is `./packaging/uninstall.sh`. That leaves your config, history and
 the models alone, and prints how to delete those if you want them gone.
 
+## Release channels
+
+There are two release channels. **Stable** keeps Parakeet and Qwen running locally.
+**Experimental** uses MAI-Transcribe-2 and Gemini 3.1 Flash-Lite through OpenRouter.
+In stable v0.3.0 or later, enable **Settings → Build → Experimental build**.
+Flow downloads and verifies the experimental release; click **Restart Flow**,
+then add your OpenRouter key. Audio and text leave your device, and usage is billed
+to your OpenRouter account. Disable the toggle and restart to return to stable.
+Both builds, your local models, settings and history stay on disk. Updates follow
+the selected channel. A release installer refuses to install under the wrong channel.
+
 ## Daily use
 
 | | |

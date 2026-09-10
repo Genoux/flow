@@ -346,6 +346,10 @@ enum Message {
     SetupStarted(Result<(), String>),
     CheckUpdate,
     UpdateChecked(update::Status),
+    SetChannel(bool),
+    ChannelInstalled(Result<(), String>),
+    RestartApp,
+    AppRestarted(Result<(), String>),
     InstallUpdate,
     UpdateInstalled(Result<String, String>),
 }
@@ -415,6 +419,7 @@ struct Console {
     /// window should not put a network call in the path of flipping a switch.
     update: update::Status,
     /// True while the release tarball is downloading and installing.
+    channel: system::Channel,
     updating: bool,
     models: Vec<system::Model>,
     /// How many installed files are missing or the wrong length, asked of the
@@ -499,6 +504,7 @@ impl Console {
                 // yet" while a check was in flight and its button would fire a
                 // second one.
                 update: update::Status::Checking,
+                channel: system::channel(),
                 updating: false,
                 models: system::models(),
                 damage: system::startup_damage(),

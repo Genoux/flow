@@ -39,6 +39,7 @@ impl Console {
     pub(super) fn preferences_section(&self) -> Element<'_, Message> {
         let body = column![
             group("General", self.general_rows()),
+            group("Build", self.channel_rows()),
             group("Shortcut", self.shortcut_rows()),
             group("Microphone", self.microphone_rows()),
         ];
@@ -144,6 +145,36 @@ impl Console {
     /// Ducking belongs here rather than with the sounds Flow makes: it exists to
     /// keep your speakers out of the microphone, which is a fact about the
     /// input, not about the output.
+    fn channel_rows(&self) -> Vec<Element<'_, Message>> {
+        let on = self.channel == crate::system::Channel::Experimental;
+        let mut rows = vec![setting(
+            "Experimental build",
+            if self.updating {
+                "Downloading and verifying the release…"
+            } else if on {
+                "MAI + Flash-Lite. Audio and text go to OpenRouter; an API key and usage charges apply. Restart Flow to apply."
+            } else {
+                "Opt in to MAI + Flash-Lite through OpenRouter. Audio leaves your device and usage charges apply. You can return to local dictation."
+            },
+            toggle(on, self.travel("channel"), Message::SetChannel),
+        )];
+        let pending = matches!(self.update, update::Status::Installed(_));
+        rows.push(setting(
+            "Selected release",
+            if pending {
+                "Restart to use the selected build."
+            } else {
+                "Updates stay within your selected channel."
+            },
+            if pending {
+                action_msg("Restart Flow", true, Message::RestartApp)
+            } else {
+                iced::widget::Space::new().width(110).into()
+            },
+        ));
+        rows
+    }
+
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {
         vec![
             setting(

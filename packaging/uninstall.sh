@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Remove what install.sh put in place.
 #
-# Deliberately does NOT touch your config, vocabulary, history or the models.
+# Deliberately does NOT touch your config, vocabulary or history.
 # Those are yours and they survive a reinstall; deleting them is a separate
 # decision and this script prints how rather than making it for you.
 set -euo pipefail
@@ -19,6 +19,8 @@ systemctl --user disable --now flow-tray.service 2>/dev/null || true
 
 say "Removing binaries, service, desktop entry and icon"
 rm -fv "$bin_dir/flow" "$bin_dir/flow-console" \
+       "$bin_dir/flow-stable" "$bin_dir/flow-console-stable" \
+       "$bin_dir/flow-experimental" "$bin_dir/flow-console-experimental" \
        "$units/flow.service" \
        "$units/flow-tray.service" \
        "$data/applications/flow-console.desktop" \
@@ -32,7 +34,7 @@ cat <<EOF
 Kept, because they are yours:
 
   $config              config.toml and vocabulary.txt
-  $data/flow           models (~3 GB), history and recordings
+  $data/flow           history and recordings
 
 Remove those too with:
 

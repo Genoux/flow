@@ -346,3 +346,9 @@ fn a_whole_file_is_still_read_strictly() {
     // rather than guessing, which is what keeps a typo loud.
     assert!(Config::parse("from_a_newer_flow = 3\n").is_err());
 }
+
+#[test]
+fn experimental_key_does_not_prevent_local_rollback() {
+    let config = Config::parse("openrouter_key = sk-or-test\ncleanup = light\n").unwrap();
+    assert_eq!(config.cleanup, flow::refine::Cleanup::Light);
+}

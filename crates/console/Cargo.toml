@@ -1,6 +1,6 @@
 [package]
 name = "flow-console"
-version = "0.2.0-alpha.2"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Status and settings window for the Flow dictation daemon"
@@ -10,6 +10,7 @@ description = "Status and settings window for the Flow dictation daemon"
 [workspace]
 
 [dependencies]
+semver = "1"
 iced = { version = "0.14", features = ["canvas", "advanced", "image-without-codecs"] }
 # iced 0.14 gates its allocation re-export behind all image codecs.
 iced_runtime = "0.14"
