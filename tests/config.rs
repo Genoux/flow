@@ -362,3 +362,9 @@ fn a_blank_openrouter_key_is_no_key() {
     let parsed = Config::parse("openrouter_key =\n").expect("parse");
     assert_eq!(parsed.openrouter_key, None);
 }
+
+#[test]
+fn experimental_key_does_not_prevent_local_rollback() {
+    let config = Config::parse("openrouter_key = sk-or-test\ncleanup = light\n").unwrap();
+    assert_eq!(config.cleanup, flow::refine::Cleanup::Light);
+}
