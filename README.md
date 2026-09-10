@@ -50,15 +50,15 @@ a rejected key still transcribes, but a cleanup level above `none` will not run.
 Updating is the same script — `git pull && ./packaging/install.sh` — which
 restarts the daemon onto the new build if it was already running.
 
-There are two release channels. **Stable** keeps Parakeet and Qwen running locally,
-refining included. **Experimental** transcribes locally with Nemotron 3.5 ASR and
-sends only the transcript to Gemini 3.1 Flash-Lite for cleanup — nothing leaves your
-device at `cleanup = "none"`. In stable v0.3.0 or later, enable **Settings → Build →
-Experimental build**. Flow downloads and verifies the experimental release and its
-speech model; click **Restart Flow**, then add your OpenRouter key for cleanup
-above `none`. Disable the toggle and restart to return to stable. Both builds,
-your local models, settings and history stay on disk. Updates follow the selected
-channel. A release installer refuses to install under the wrong channel.
+There are two release channels. **Stable 0.3.1** transcribes locally with streaming
+Nemotron 3.5 ASR and sends only the transcript to Gemini 3.1 Flash-Lite for cleanup;
+nothing leaves your device at `cleanup = "none"`. **Experimental** currently uses
+MAI-Transcribe-2 and Flash-Lite through OpenRouter, sending audio and text to the
+service. Enable **Settings → Build → Experimental build** to switch. An OpenRouter
+key and usage charges apply to cloud features. Disable the toggle to return to
+stable. Flow downloads and verifies the selected release and restarts to apply it.
+Both builds, your models, settings and history stay on disk. Updates follow the
+selected channel. A release installer refuses to install under the wrong channel.
 
 Removing it is `./packaging/uninstall.sh`. That leaves your config and history
 alone, and prints how to delete those if you want them gone.

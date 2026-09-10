@@ -246,7 +246,7 @@ impl Console {
         } else if on {
             update::running().to_string()
         } else {
-            "Opt in to on-device speech with Flash-Lite cleanup. Audio stays on your machine; text leaves it above `cleanup = none`, and usage charges apply.".to_string()
+            "Opt in to MAI + Flash-Lite through OpenRouter. Audio and text leave your device; an API key and usage charges apply.".to_string()
         };
         vec![setting(
             "Experimental build",
