@@ -84,9 +84,6 @@ impl Console {
                     .min(FRAME_CAP);
                 self.now = now;
                 self.page_motion.advance(elapsed);
-                if let Some(state) = self.download.as_mut() {
-                    state.advance(elapsed);
-                }
                 // Off the tree already - `view` stopped drawing it when the
                 // fade ran out. This is only the state catching up, and it has
                 // to happen here because nothing else will ask again once
@@ -94,14 +91,7 @@ impl Console {
                 if self.picking_input.is_some_and(|picker| picker.spent(now)) {
                     self.picking_input = None;
                 }
-                let mut finished = Task::none();
-                if let Some(fading) = self.fading.as_mut() {
-                    *fading += elapsed;
-                    if *fading >= setup::FADE {
-                        finished = self.leave_setup();
-                    }
-                }
-                return Task::batch([finished, self.launch_install(), self.setup_usable()]);
+                return Task::none();
             }
             Message::Hover(section) => {
                 let now = std::time::Instant::now();
@@ -170,6 +160,43 @@ impl Console {
             Message::Denoise(on) => {
                 self.animate_toggle("denoise", self.settings.denoise, on);
                 self.settings.denoise = on;
+                return self.persist();
+            }
+            Message::HistoryLoaded(entries, days) => {
+                self.history_pending = false;
+                self.entries = entries;
+                self.days = days;
+                self.copied = None;
+                self.entry_motion.clear();
+                if std::mem::take(&mut self.history_dirty) {
+                    return self.refresh_history();
+                }
+            }
+            Message::SetChannel(experimental) => {
+                let wanted = if experimental {
+                    system::Channel::Experimental
+                } else {
+                    system::Channel::Stable
+                };
+                match system::set_channel(wanted) {
+                    // Read back rather than assumed: if the link did not move,
+                    // the switch must not claim it did.
+                    Ok(()) => self.channel = system::channel(),
+                    Err(error) => self.save_error = Some(error),
+                }
+                return Task::none();
+            }
+            // The banner's one action. There is nothing to install any more, so
+            // "finish setup" means "go and paste the key".
+            Message::BeginSetup => {
+                self.section = Section::Settings;
+                return Task::none();
+            }
+            Message::TypingKey(value) => self.typing_key = value,
+            Message::SaveKey => {
+                let typed = self.typing_key.trim();
+                self.settings.openrouter_key = (!typed.is_empty()).then(|| typed.to_owned());
+                self.typing_key.clear();
                 return self.persist();
             }
             Message::Sound(on) => {
@@ -392,17 +419,6 @@ impl Console {
                     }
                 }
             }
-            Message::InstallChecked(damage) => self.damage = damage,
-            Message::HistoryLoaded(entries, days) => {
-                self.history_pending = false;
-                self.entries = entries;
-                self.days = days;
-                self.copied = None;
-                self.entry_motion.clear();
-                if std::mem::take(&mut self.history_dirty) {
-                    return self.refresh_history();
-                }
-            }
             Message::PeripheralsLoaded(peripherals) => {
                 self.peripherals_pending = false;
                 self.input = peripherals.input;
@@ -446,102 +462,6 @@ impl Console {
                 match result {
                     Ok(tag) => self.update = update::Status::Installed(tag),
                     Err(err) => self.save_error = Some(err),
-                }
-            }
-            Message::BeginSetup => {
-                // Already on setup (a failed fetch, Try again): the veil is
-                // up, so skip the intro and start fetching.
-                let skip = self.showing_setup && self.download.is_some();
-                let mut state = setup::State::new(setup::Handle::default());
-                if skip {
-                    state.skip_intro();
-                }
-                self.download = Some(state);
-                self.showing_setup = true;
-                return Task::none();
-            }
-            Message::StopDownload => {
-                if let Some(state) = self.download.as_mut() {
-                    state.stopped = true;
-                    state.handle.stop();
-                    // Stopped before the installer was even spawned, so no
-                    // `Failed` line is coming to carry the handover. Nothing was
-                    // fetched this run either - and a part file here belongs to
-                    // an earlier one, which is exactly what a resume is for.
-                    if !state.spawned {
-                        return self.leave_setup();
-                    }
-                }
-            }
-            Message::SetupEvent(event) => {
-                if let Some(state) = self.download.as_mut() {
-                    state.apply(event);
-                }
-
-                let over = !self
-                    .download
-                    .as_ref()
-                    .is_some_and(setup::State::downloading);
-                let stopped = over && self.download.as_ref().is_some_and(|state| state.stopped);
-
-                // What was downloaded stays downloaded. Stopping used to delete
-                // the part file, on the reasoning that bytes of a model someone
-                // had decided against would sit there with nothing on screen
-                // ever mentioning them - but neither half of that is true any
-                // more. Flow needs both models, so there is no deciding against
-                // one; and Overview carries a banner saying setup is unfinished
-                // with the button that finishes it. The bytes are accounted for.
-                //
-                // What is left is a 2.4 GB download where Stop threw away
-                // everything already fetched. `curl -C -` resumes, so keeping
-                // the file makes Stop mean "not now" instead of "start again".
-                //
-                // It still hands the window over rather than holding them on a
-                // ring that failed: the console opens, incomplete, saying what
-                // is missing and offering to finish. Treating a stop as a
-                // failure would put a Try again in front of the one person who
-                // has already said no.
-                if stopped {
-                    return self.leave_setup();
-                }
-
-                // Setup keeps its state until it has faded out; anything else
-                // is done with the moment it stops, and what is on disk has
-                // just changed.
-                if over && !self.showing_setup {
-                    self.download = None;
-                    self.models = system::models();
-                }
-
-                return self.setup_usable();
-            }
-            Message::SetupStarted(result) => {
-                let started = result.is_ok();
-                if let Some(state) = self.download.as_mut() {
-                    state.starting_daemon = false;
-                    match result {
-                        Ok(()) => {
-                            state.daemon_started = true;
-                            state.start_error = None;
-                        }
-                        Err(err) => state.start_error = Some(err),
-                    }
-                }
-
-                if started {
-                    self.daemon.activity = daemon::Activity::Starting;
-                    // What the veil is about to reveal has to be true before it
-                    // starts moving, not after. `models` was refreshed only in
-                    // `leave_setup`, which runs when the fade ends - so Overview
-                    // spent the whole dissolve showing the "setup isn't
-                    // finished" banner for the setup that had just finished,
-                    // then dropped it as the veil landed.
-                    self.models = system::models();
-                    // Setup's whole job is done, so it dissolves rather than
-                    // waiting to be dismissed - after the beat its closing line
-                    // needs to be read. Negative, so the screen stands still
-                    // for `HOLD` and then runs the usual outro.
-                    self.fading = Some(-setup::HOLD);
                 }
             }
         }

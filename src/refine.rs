@@ -1,15 +1,6 @@
-use crate::debug;
-use anyhow::{Context, Result, anyhow, bail};
-use llama_cpp_2::context::params::LlamaContextParams;
-use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
-use llama_cpp_2::sampling::LlamaSampler;
-use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use anyhow::{Result, bail};
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cleanup {
@@ -258,26 +249,6 @@ every word would leave nothing, and nothing is not an answer you may fill with \
 a word of your own.
 - Never add facts, never summarise, never answer.
 - If the text is already clean and reads well, repeat it unchanged.";
-
-/// llama.cpp wants one process-wide backend, and a model borrows it only
-/// nominally, so a static keeps the model free of a lifetime parameter.
-fn backend() -> Result<&'static LlamaBackend> {
-    static BACKEND: OnceLock<Option<LlamaBackend>> = OnceLock::new();
-    BACKEND
-        .get_or_init(|| {
-            let mut backend = LlamaBackend::init().ok()?;
-            // llama.cpp writes every tensor name it loads straight to stderr,
-            // which under systemd is the journal `flow logs` reads: roughly
-            // 1800 lines per model load against 180 from Flow itself. Left on,
-            // `flow logs` shows a tensor dump instead of your dictations.
-            if !debug::enabled() {
-                backend.void_logs();
-            }
-            Some(backend)
-        })
-        .as_ref()
-        .ok_or_else(|| anyhow!("llama backend failed to initialise"))
-}
 
 /// How long refining may take on a short dictation before the raw transcript is
 /// shipped instead.
@@ -557,115 +528,6 @@ pub fn needs_refining(raw: &str) -> bool {
     })
 }
 
-/// A GPU the refining model could be offloaded to. Mirrors the fields of
-/// llama.cpp's device list that matter, so [`choose_device`] can be tested
-/// against real machine topologies without a GPU present.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    pub index: usize,
-    pub description: String,
-    pub discrete: bool,
-    pub free_bytes: u64,
-}
-
-/// Discrete before integrated, then whichever has the most room.
-///
-/// Ranking by free memory alone is wrong, and quietly so: an iGPU reports shared
-/// system RAM, so the machine this was written on offers 16.9GB on the iGPU
-/// against 4.4GB free on the RTX 3060 Ti beside it. The obvious heuristic picks
-/// the slower device every time.
-///
-/// `needed` filters first, because a card that cannot hold the model is not a
-/// candidate at all - that is the case that used to dump 2.4GB onto whatever
-/// happened to enumerate first.
-pub fn choose_device(candidates: &[Candidate], needed: u64) -> Option<&Candidate> {
-    candidates
-        .iter()
-        .filter(|candidate| candidate.free_bytes >= needed)
-        .max_by_key(|candidate| (candidate.discrete, candidate.free_bytes))
-}
-
-/// KV cache plus compute buffers on top of the model file. Measured on the 4B
-/// Q4_K_M at its 512-token context: 108MB KV, 302MB compute.
-const DEVICE_OVERHEAD: u64 = 512 * 1024 * 1024;
-
-/// Where refining will run, decided without loading anything.
-///
-/// Exists so the setup screen can say where the work will happen *before* the
-/// model is on disk. It calls the same [`choose_device`] against the same
-/// candidate list that [`Refiner::load`] does, so the promise the window makes
-/// during setup is the one the daemon keeps afterwards - a second, simpler
-/// guess in the console would eventually contradict it.
-pub struct Plan {
-    /// `None` means the CPU, which is a working answer rather than a failure.
-    pub device: Option<Candidate>,
-    pub needed: u64,
-    /// The roomiest card seen, whether or not it was big enough. What turns
-    /// "running on the CPU" into "running on the CPU *because*".
-    pub best_free: u64,
-}
-
-/// How much room the refining model wants. Falls back to the pinned download
-/// size when the file is not there yet, which is exactly the setup case.
-fn needed_bytes() -> u64 {
-    std::fs::metadata(model_path())
-        .map(|meta| meta.len())
-        .unwrap_or_else(|_| crate::install::total_bytes(crate::install::REFINE))
-        + DEVICE_OVERHEAD
-}
-
-pub fn plan(gpu: Option<usize>) -> Plan {
-    let needed = needed_bytes();
-    let available = candidates();
-    let best_free = available.iter().map(|c| c.free_bytes).max().unwrap_or(0);
-
-    // An explicit index is the escape hatch, and it is deliberately not
-    // validated against `needed`: someone overriding this knows their machine
-    // better than a size estimate does.
-    let device = match gpu {
-        Some(index) => match available.iter().find(|c| c.index == index) {
-            Some(candidate) => Some(candidate.clone()),
-            None => {
-                eprintln!(
-                    "config wants gpu {index}, which is not a GPU here - falling back to auto"
-                );
-                choose_device(&available, needed).cloned()
-            }
-        },
-        None => choose_device(&available, needed).cloned(),
-    };
-
-    Plan {
-        device,
-        needed,
-        best_free,
-    }
-}
-
-fn candidates() -> Vec<Candidate> {
-    use llama_cpp_2::LlamaBackendDeviceType as Kind;
-    llama_cpp_2::list_llama_ggml_backend_devices()
-        .into_iter()
-        .filter_map(|device| {
-            let discrete = match device.device_type {
-                Kind::Gpu => true,
-                Kind::IntegratedGpu => false,
-                _ => return None,
-            };
-            Some(Candidate {
-                index: device.index,
-                description: device.description,
-                discrete,
-                free_bytes: device.memory_free as u64,
-            })
-        })
-        .collect()
-}
-
-pub fn model_path() -> PathBuf {
-    flow_paths::refine_model_file()
-}
-
 /// Terms the recogniser mangles, one per line, from
 /// `~/.config/flow/vocabulary.txt`. Absent or empty is the normal state, not an
 /// error: there is no useful default list, because the words a recogniser gets
@@ -804,66 +666,32 @@ impl Style {
 }
 
 pub struct Refiner {
-    model: LlamaModel,
+    /// Copied in at startup rather than read per dictation: the key is settled
+    /// when the daemon starts, and a config read in front of every refinement
+    /// would be a file open on the paste path.
+    key: String,
 }
 
 impl Refiner {
-    pub fn load(path: &Path, gpu: Option<usize>) -> Result<Self> {
-        let started = Instant::now();
-        let backend = backend()?;
-
-        // The same decision the setup screen showed, from the same function:
-        // a window that promised the RTX and a daemon that then used the iGPU
-        // would be worse than either answer on its own.
-        let chosen = plan(gpu);
-
-        // Offloading everything is the whole point of leaving STT on the CPU, but
-        // only onto a device that can hold it: too little VRAM either fails the
-        // load or thrashes, and slow-but-correct on the CPU beats both.
-        let params = match &chosen.device {
-            Some(candidate) => {
-                eprintln!(
-                    "refining on gpu {} ({}, {:.1} GB free)",
-                    candidate.index,
-                    candidate.description,
-                    candidate.free_bytes as f64 / 1e9
-                );
-                LlamaModelParams::default()
-                    .with_n_gpu_layers(99)
-                    .with_devices(&[candidate.index])?
-            }
-            None => {
-                eprintln!(
-                    "refining on cpu: no GPU with {:.1} GB free{}",
-                    chosen.needed as f64 / 1e9,
-                    if chosen.best_free == 0 {
-                        String::new()
-                    } else {
-                        format!(" (best was {:.1} GB)", chosen.best_free as f64 / 1e9)
-                    }
-                );
-                LlamaModelParams::default().with_n_gpu_layers(0)
-            }
-        };
-
-        let model = LlamaModel::load_from_file(backend, path, &params)
-            .with_context(|| format!("loading {}", path.display()))?;
-
-        eprintln!("refining model loaded in {:?}", started.elapsed());
-        Ok(Self { model })
+    pub fn new(key: String) -> Self {
+        Self { key }
     }
 
-    /// The first inference builds compute graphs and takes seconds; every one
-    /// after is milliseconds. Paying that at startup keeps it out of the user's
-    /// first dictation.
-    pub fn warm_up(&self) {
-        let started = Instant::now();
-        if self.refine("um hello", &Style::default()).is_ok() {
-            eprintln!("refining warmed up in {:?}", started.elapsed());
-        }
+    /// Whether the editor answers at all, which is the only thing a status
+    /// light can honestly claim.
+    ///
+    /// Deliberately a real request rather than a ping: a key that is present
+    /// but rejected, a account out of credit and a dead network are the three
+    /// ways this fails, and only one of them is visible to a socket test. The
+    /// input is the shortest thing the prompt still applies to.
+    pub fn reachable(&self) -> bool {
+        !self.key.is_empty()
+            && self
+                .refine("um hello", &Style::current(Cleanup::Light))
+                .is_ok()
     }
 
-    fn system_prompt(&self, raw: &str, style: &Style) -> String {
+    pub fn system_prompt(raw: &str, style: &Style) -> String {
         let mut prompt = format!("{PREAMBLE}\n\n{}", style.level.rules());
 
         // Naming the one language this input is in, which is the opposite of what
@@ -910,6 +738,20 @@ impl Refiner {
     }
 
     pub fn refine_within(&self, raw: &str, budget_for: Duration, style: &Style) -> Result<String> {
+        self.refine_using(raw, budget_for, style, None)
+    }
+
+    pub fn refine_with_system(&self, raw: &str, style: &Style, system: &str) -> Result<String> {
+        self.refine_using(raw, budget_for(raw), style, Some(system))
+    }
+
+    fn refine_using(
+        &self,
+        raw: &str,
+        budget_for: Duration,
+        style: &Style,
+        system: Option<&str>,
+    ) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
@@ -920,101 +762,18 @@ impl Refiner {
         }
         // Inside `refine` rather than at the call site so every caller gets it,
         // and so the gate is impossible to forget when another one appears.
-        if !needs_refining(raw) {
+        if system.is_none() && !needs_refining(raw) {
             return Ok(raw.trim().to_string());
         }
 
-        // Before the context and the prompt pass, not after them. It used to
-        // start where generation started, which left the whole prompt - a
-        // thousand tokens of rules - outside the budget it was documented as
-        // being inside: one refining measured 2769ms against a 2500ms wall and
-        // was shipped anyway, because none of the overrun was being counted. On
-        // the integrated GPU this bound exists for, the prompt pass alone is
-        // the part that runs away.
-        let deadline = Instant::now() + budget_for;
-
-        let template = self.model.chat_template(None)?;
-        let chat = [
-            LlamaChatMessage::new("system".into(), self.system_prompt(raw, style))?,
-            LlamaChatMessage::new("user".into(), raw.into())?,
-        ];
-        let prompt = self.model.apply_chat_template(&template, &chat, true)?;
-
-        let tokens = self.model.str_to_token(&prompt, AddBos::Always)?;
-        let spoken = self.model.str_to_token(raw, AddBos::Never)?.len();
-
-        // Refining only ever shortens or lightly rewrites, so a generous ceiling
-        // still catches the model going off and answering instead.
-        let budget = (spoken * 2 + 32) as i32;
-        let mut finished = false;
-
-        let context_size = (tokens.len() as u32 + budget as u32 + 64).max(512);
-        let mut ctx = self.model.new_context(
-            backend()?,
-            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(context_size)),
-        )?;
-
-        let mut batch = LlamaBatch::new(tokens.len().max(64), 1);
-        let last = tokens.len() - 1;
-        for (position, token) in tokens.iter().enumerate() {
-            batch.add(*token, position as i32, &[0], position == last)?;
-        }
-        ctx.decode(&mut batch)?;
-
-        // Nothing has been generated yet, so a prompt pass that has already
-        // spent the budget is a refining that cannot land in time. Failing here
-        // rather than entering the loop to fail on the first token keeps the
-        // reason in the log honest.
-        if Instant::now() > deadline {
-            bail!("refining spent {budget_for:?} on the prompt alone");
-        }
-
-        // Greedy: this is a mechanical rewrite, so the same input should always
-        // give the same output. Sampling would make the regression suite lie.
-        let mut sampler = LlamaSampler::greedy();
-        let mut position = batch.n_tokens();
-        let mut output = String::new();
-
-        // One decoder across the whole generation: a multi-byte character can be
-        // split across two tokens, and only a decoder holding state between them
-        // reassembles it. Accents matter here - the recogniser handles 25
-        // languages.
-        let mut decoder = encoding_rs::UTF_8.new_decoder();
-
-        for _ in 0..budget {
-            // Bounded so the wait between speaking and seeing text cannot run
-            // away with the hardware. Erroring rather than returning the partial
-            // generation hands main.rs the raw transcript, which is a finished
-            // sentence - a truncated refining would not be.
-            if Instant::now() > deadline {
-                bail!("refining exceeded {budget_for:?}");
-            }
-            let token = sampler.sample(&ctx, -1);
-            sampler.accept(token);
-            if self.model.is_eog_token(token) {
-                finished = true;
-                break;
-            }
-            output.push_str(
-                &self
-                    .model
-                    .token_to_piece(token, &mut decoder, false, None)?,
-            );
-
-            batch.clear();
-            batch.add(token, position, &[0], true)?;
-            position += 1;
-            ctx.decode(&mut batch)?;
-        }
-
-        // Reaching the ceiling means the model was still writing at twice the
-        // length of what was said, which refining never needs: it was answering
-        // the dictation rather than cleaning it. Bailing hands main.rs the raw
-        // transcript, the same trade the deadline above makes - a rough sentence
-        // beats half an essay pasted where the words should have been.
-        if !finished {
-            bail!("refining ran past {budget} tokens without finishing - answered instead");
-        }
+        // The budget is now a network timeout rather than a GPU wall, and it
+        // still means the same thing: past it, the raw transcript ships instead
+        // of a late one. Parakeet used to punctuate the fallback; MAI does too,
+        // so a dropped refinement is still a sentence.
+        let system = system
+            .map(str::to_owned)
+            .unwrap_or_else(|| Self::system_prompt(raw, style));
+        let output = super::router::chat(&self.key, &system, raw, budget_for)?;
 
         let cleaned = tidy(&output);
         if is_non_answer(&cleaned, raw) {

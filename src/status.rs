@@ -65,6 +65,12 @@ struct State {
     /// Set when something the user needs to act on has gone wrong - a failed
     /// injection, a missing model. Cleared by the next success.
     problem: Option<String>,
+    /// Whether OpenRouter answered the last time Flow asked.
+    ///
+    /// Starts unknown rather than optimistic: a window that says Connected
+    /// before anything has been sent is guessing, and the first thing it would
+    /// be wrong about is the case that matters - a key that does not work.
+    reachable: Option<bool>,
     recent: VecDeque<Dictation>,
     words: usize,
     clients: Vec<UnixStream>,
@@ -86,6 +92,7 @@ impl State {
 
         json!({
             "activity": self.activity.name(),
+            "reachable": self.reachable,
             "problem": self.problem,
             "words": self.words,
             "recent": recent,
@@ -119,6 +126,7 @@ impl Reporter {
             state: Arc::new(Mutex::new(State {
                 activity: Activity::Starting,
                 problem: None,
+                reachable: None,
                 recent: VecDeque::new(),
                 words: 0,
                 clients: Vec::new(),
@@ -183,9 +191,21 @@ impl Reporter {
         state.broadcast();
     }
 
+    /// What the last request to OpenRouter did, which is the only honest
+    /// source for a connection light: it is the request dictation actually
+    /// makes, not a ping to something adjacent.
+    pub fn reachable(&self, answered: bool) {
+        let mut state = self.state.lock().expect("status state");
+        if state.reachable != Some(answered) {
+            state.reachable = Some(answered);
+            state.broadcast();
+        }
+    }
+
     /// A dictation landed. Clears any problem, since the thing evidently works.
     pub fn finished(&self, dictation: Dictation) {
         let mut state = self.state.lock().expect("status state");
+        state.reachable = Some(true);
         state.words += dictation.text.split_whitespace().count();
         state.recent.push_front(dictation);
         state.recent.truncate(RECENT);

@@ -709,7 +709,20 @@ fn handle(
                 eprintln!("record_debug: denoised wav write failed: {err:#}");
             }
         }
-        engine.transcribe(denoised.unwrap_or(samples))?
+        // The connection light is set from the request dictation actually
+        // makes. A reachability ping to something adjacent could say Connected
+        // while a rejected key fails every dictation, which is precisely the
+        // case the light exists to show.
+        match engine.transcribe(denoised.unwrap_or(samples)) {
+            Ok(text) => {
+                reporter.reachable(true);
+                text
+            }
+            Err(err) => {
+                reporter.reachable(false);
+                return Err(err);
+            }
+        }
     };
     let transcribed = started.elapsed();
 

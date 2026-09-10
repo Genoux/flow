@@ -16,7 +16,7 @@ impl Console {
         let (label, dot) = if needs_setup {
             ("Setup unfinished", ERR)
         } else {
-            activity_label(self.daemon.activity)
+            activity_label(self.daemon.activity, self.daemon.reachable)
         };
         let mut header = row![
             text("Overview").size(22).color(FG),

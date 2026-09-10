@@ -7,7 +7,6 @@
 //! remembers what it set is a window that disagrees with the system the moment
 //! anything else touches it.
 
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -116,6 +115,75 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
     } else {
         reason
     })
+}
+
+/// Which build the `flow` symlink currently points at.
+///
+/// The link is the setting. There is deliberately no `channel = ` line in the
+/// config: two sources for one fact drift, and a config that claimed
+/// experimental while the link pointed at stable would be lying about which
+/// binary is about to run. Reading the link cannot be wrong, and someone who
+/// repoints it by hand gets a window that agrees with them.
+pub fn channel() -> Channel {
+    let link = bin_dir().join("flow");
+    match std::fs::read_link(&link) {
+        Ok(target) if target.to_string_lossy().ends_with("-experimental") => Channel::Experimental,
+        Ok(_) => Channel::Stable,
+        // No link at all is an install that predates channels, which is a
+        // stable one.
+        Err(_) => Channel::Stable,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Stable,
+    Experimental,
+}
+
+impl Channel {
+    fn suffix(self) -> &'static str {
+        match self {
+            Channel::Stable => "stable",
+            Channel::Experimental => "experimental",
+        }
+    }
+}
+
+fn bin_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_BIN_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/bin")
+        })
+}
+
+/// Point `flow` and `flow-console` at the other build.
+///
+/// Takes effect on restart, not now: the running daemon is the old binary and
+/// this window is the old console. Switching is repointing two links, so going
+/// back is the same operation - which is the whole reason both builds stay on
+/// disk rather than one replacing the other.
+pub fn set_channel(channel: Channel) -> Result<(), String> {
+    let dir = bin_dir();
+    for name in ["flow", "flow-console"] {
+        let link = dir.join(name);
+        let target = format!("{name}-{}", channel.suffix());
+        if !dir.join(&target).exists() {
+            return Err(format!(
+                "{target} is not installed - install that build first"
+            ));
+        }
+        // A regular file here is a pre-channels install; symlink creation will
+        // not replace one, so it has to go.
+        if link.exists() && !link.is_symlink() {
+            std::fs::remove_file(&link).map_err(|err| format!("replacing {name}: {err}"))?;
+        }
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link)
+            .map_err(|err| format!("pointing {name} at {target}: {err}"))?;
+    }
+    Ok(())
 }
 
 /// Start, stop or restart the daemon.
@@ -318,134 +386,6 @@ pub fn session() -> String {
     }
 }
 
-/// A model directory as the window reports it: present or not, and how big.
-pub struct Model {
-    pub detail: &'static str,
-    pub bytes: u64,
-    pub installed: bool,
-}
-
-impl Model {
-    /// What About says about this engine: which model it is, and how much of it
-    /// is on disk. Absent is stated rather than implied - naming a model that
-    /// is not there reads as a model that is.
-    pub fn fact(&self) -> String {
-        if self.installed {
-            format!("{} · {}", self.detail, human_bytes(self.bytes))
-        } else {
-            format!("{} · not installed", self.detail)
-        }
-    }
-}
-
-/// Measure what is actually on disk. The sizes used to be written into the
-/// source, so they stayed the same however much was really there - including
-/// when nothing was.
-/// How many of the installed files are missing or the wrong length, straight
-/// from the daemon binary - which is the one that pins their names and sizes.
-///
-/// `None` means no verdict: no `flow` on PATH, or it did not answer inside the
-/// budget. The window falls back to what it can see for itself rather than
-/// claiming an install is whole on the strength of a command that never ran.
-///
-/// Costs about three milliseconds, which is what makes it something the window
-/// can do every time it opens. The hashing pass is Repair's job.
-pub fn damage() -> Option<usize> {
-    damage_for(BUDGET)
-}
-
-/// Installation health shapes the Overview layout, so it is read before the
-/// first frame rather than arriving later and moving the page. Its deadline is
-/// nevertheless launch-sized: a wedged binary is no reason to hide the window.
-pub fn startup_damage() -> Option<usize> {
-    damage_for(STARTUP_BUDGET)
-}
-
-fn damage_for(budget: Duration) -> Option<usize> {
-    let output = run_for("flow", &["check", "--porcelain"], budget)?;
-    let text = String::from_utf8_lossy(&output.stdout);
-
-    // The verdict line is the handshake: without it this is an older `flow`
-    // that has no idea what was asked of it, and an empty stdout would
-    // otherwise read as a clean bill of health.
-    let answered = text
-        .lines()
-        .any(|line| matches!(line.trim(), "whole" | "broken"));
-
-    answered.then(|| {
-        text.lines()
-            .filter(|line| line.starts_with("damaged "))
-            .count()
-    })
-}
-
-pub fn models() -> Vec<Model> {
-    let root = flow_paths::models_dir();
-
-    // The speech model is a directory of onnx files; the refining model is a
-    // single gguf beside it. Found by extension rather than by name so that
-    // swapping the gguf for a different one does not turn this into a lie the
-    // moment the daemon moves on.
-    let speech = root.join("tdt");
-    let refining = largest_gguf(&root);
-
-    vec![
-        Model {
-            detail: "Parakeet TDT 0.6B v3 · int8 ONNX",
-            bytes: size_of(&speech),
-            installed: speech.is_dir(),
-        },
-        Model {
-            detail: "Qwen3 4B Instruct 2507 · Q4_K_M",
-            bytes: refining.as_deref().map(size_of).unwrap_or(0),
-            installed: refining.is_some(),
-        },
-    ]
-}
-
-/// The biggest `.gguf` in `root`, which is the refining model. Biggest rather
-/// than first so a leftover from an older, smaller model is not mistaken for
-/// the one in use.
-fn largest_gguf(root: &std::path::Path) -> Option<PathBuf> {
-    std::fs::read_dir(root)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "gguf"))
-        .max_by_key(|path| size_of(path))
-}
-
-/// The file or directory name, which is what identifies a model to a person -
-/// the full path is already shown once at the bottom of the screen.
-/// Bytes on disk, counting a directory's contents recursively.
-fn size_of(path: &std::path::Path) -> u64 {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return 0;
-    };
-    if meta.is_file() {
-        return meta.len();
-    }
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| size_of(&entry.path()))
-        .sum()
-}
-
-/// Bytes as a human reads them. Kept here so the same rounding is used for a
-/// single model and for the total.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [(&str, u64); 3] = [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)];
-    for (unit, size) in UNITS {
-        if bytes >= size {
-            return format!("{:.1} {unit}", bytes as f64 / size as f64);
-        }
-    }
-    format!("{bytes} B")
-}
-
 /// Hand a path to the desktop's own handler. Used by the buttons that used to
 /// do nothing at all.
 pub fn open(path: &std::path::Path) -> Result<(), String> {
@@ -492,6 +432,59 @@ const OPENER: &str = if cfg!(target_os = "macos") {
 
 #[cfg(test)]
 mod tests {
+    /// The link is the setting, so reading it back is the only check that
+    /// matters: a switch that reported success while the link stayed put would
+    /// be a window lying about which binary is about to run.
+    #[test]
+    fn switching_channels_repoints_both_links_and_is_reversible() {
+        let root = std::env::temp_dir().join(format!("flow-channel-{}", std::process::id()));
+        let bin = root.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in [
+            "flow-stable",
+            "flow-console-stable",
+            "flow-experimental",
+            "flow-console-experimental",
+        ] {
+            std::fs::write(bin.join(name), "").unwrap();
+        }
+        // A pre-channels install: a real file where the link belongs.
+        std::fs::write(bin.join("flow"), "").unwrap();
+
+        // SAFETY: single-threaded test process, restored before returning.
+        let previous = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &root) };
+
+        assert_eq!(channel(), Channel::Stable, "no link reads as stable");
+
+        set_channel(Channel::Experimental).unwrap();
+        assert_eq!(channel(), Channel::Experimental);
+        assert!(
+            bin.join("flow").is_symlink(),
+            "the regular file was replaced"
+        );
+        assert_eq!(
+            std::fs::read_link(bin.join("flow-console"))
+                .unwrap()
+                .to_string_lossy(),
+            "flow-console-experimental",
+            "the console link must move with the daemon link"
+        );
+
+        set_channel(Channel::Stable).unwrap();
+        assert_eq!(
+            channel(),
+            Channel::Stable,
+            "switching back is the same click"
+        );
+
+        match previous {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     use super::*;
 
     /// A process that never answers is the failure behind the three-second
@@ -537,14 +530,6 @@ mod tests {
     fn only_a_process_called_flow_is_signalled() {
         assert!(!is_flow_process(std::process::id()));
         assert!(!is_flow_process(u32::MAX));
-    }
-
-    #[test]
-    fn bytes_read_the_way_a_person_would() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(2048), "2.0 KB");
-        assert_eq!(human_bytes(650 * (1 << 20)), "650.0 MB");
-        assert_eq!(human_bytes(3 * (1 << 30) / 2), "1.5 GB");
     }
 
     const LISTING: &str = "\

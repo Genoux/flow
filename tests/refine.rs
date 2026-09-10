@@ -222,22 +222,17 @@ const CASES: &[Case] = &[
 
 /// Which device to refine on, from `FLOW_TEST_GPU`, or automatic when unset.
 ///
-/// Worth having because greedy sampling is only deterministic on one device:
-/// the same prompt and the same model answered differently on this machine's
-/// iGPU and its discrete card, and a run that silently moved between them once
-/// turned a real prompt bug into "a flaky test". Pin it to compare two prompts,
-/// leave it unset to test what a user actually gets.
-fn test_gpu() -> Option<usize> {
-    std::env::var("FLOW_TEST_GPU").ok()?.parse().ok()
-}
-
+/// Skipped without a key, the same way this used to skip without the weights.
+///
+/// These now cost real OpenRouter requests, so they are opt-in by configuration
+/// rather than by a flag: a machine set up to dictate is a machine that can run
+/// them, and one that is not should not be failing on a network call.
 fn load() -> Option<flow::refine::Refiner> {
-    let path = flow::refine::model_path();
-    if !path.is_file() {
-        eprintln!("skipping: no refining model at {}", path.display());
+    let Some(key) = flow::config::Config::load().openrouter_key else {
+        eprintln!("skipping: no OpenRouter key configured");
         return None;
-    }
-    Some(flow::refine::Refiner::load(&path, test_gpu()).expect("load"))
+    };
+    Some(flow::refine::Refiner::new(key))
 }
 
 /// One test, not several: cargo runs tests as parallel threads, and two
@@ -513,5 +508,52 @@ fn refining_behaves() {
         }
     }
 
+    // On another thread, because the daemon refines on one it spawns while the
+    // model is loaded on this one. The context behind that move is a raw
+    // llama.cpp handle the binding makes no `Send` claim about, so `refine.rs`
+    // makes the claim itself - and a claim with nothing exercising it is a
+    // claim nobody has checked.
+    std::thread::scope(|scope| {
+        scope.spawn(|| a_dictation_does_not_depend_on_the_one_before_it(&refiner, &mut failures));
+    });
+
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// The prompt is decoded once and its cache kept, so the danger is an answer
+/// that depends on what was dictated before it. Reuse stops at a boundary that
+/// is constant for a level, which is the whole reason these come back equal;
+/// reusing whatever the cache happened to hold instead made them differ, and
+/// nothing about the output said why.
+///
+/// Both predecessors here vary everything the prompt can vary below that
+/// boundary: a different level, and a different detected language.
+fn a_dictation_does_not_depend_on_the_one_before_it(
+    refiner: &flow::refine::Refiner,
+    failures: &mut Vec<String>,
+) {
+    let long = std::time::Duration::from_secs(120);
+    let target = "um so the deploy went out on Friday and uh nothing broke";
+    let mut answers = Vec::new();
+
+    for before in [
+        "send the invoice to Mary",
+        "euh je pense qu'on peut livrer la fonctionnalité vendredi",
+    ] {
+        let _ = refiner.refine_within(before, long, &style(Cleanup::Medium));
+        match refiner.refine_within(target, long, &style(Cleanup::Light)) {
+            Ok(text) => answers.push(text),
+            Err(err) => failures.push(format!("prefill reuse: refining failed: {err}")),
+        }
+    }
+
+    eprintln!("\n[prefill reuse] {answers:?}");
+    if let [after_english, after_french] = &answers[..]
+        && after_english != after_french
+    {
+        failures.push(format!(
+            "the answer depended on the previous dictation: {after_english:?} after \
+             English, {after_french:?} after French"
+        ));
+    }
 }

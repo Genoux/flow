@@ -41,6 +41,8 @@ impl Console {
             group("General", self.general_rows()),
             group("Shortcut", self.shortcut_rows()),
             group("Microphone", self.microphone_rows()),
+            group("OpenRouter", self.openrouter_rows()),
+            group("Build", self.channel_rows()),
         ];
 
         // No subtitle. It was a table of contents for three group headings
@@ -144,6 +146,56 @@ impl Console {
     /// Ducking belongs here rather than with the sounds Flow makes: it exists to
     /// keep your speakers out of the microphone, which is a fact about the
     /// input, not about the output.
+    /// Flow transcribes and refines through OpenRouter, so this key is not a
+    /// preference - without it the hotkey has nothing to talk to. The box is
+    /// secure and never shows the saved key back: what is on disk is a
+    /// credential, and re-displaying it only invites a shoulder-surf. The hint
+    /// says whether one is saved, which is the only thing worth reading.
+    fn openrouter_rows(&self) -> Vec<Element<'_, Message>> {
+        let saved = self.settings.openrouter_key.is_some();
+        vec![setting(
+            "API key",
+            if saved {
+                "A key is saved. Typing a new one replaces it."
+            } else {
+                "Required. Flow cannot dictate without it."
+            },
+            crate::interaction::field(|amount| {
+                iced::widget::text_input("sk-or-v1-…", &self.typing_key)
+                    .secure(true)
+                    .on_input(Message::TypingKey)
+                    .on_submit(Message::SaveKey)
+                    .size(13)
+                    .padding([10, 12])
+                    .width(Length::Fill)
+                    .style(move |theme, status| {
+                        super::editorial::input_style(theme, status, amount.get())
+                    })
+                    .into()
+            }),
+        )]
+    }
+
+    /// Two builds are installed side by side and a symlink picks which one
+    /// runs, so this switch is reversible in a way a version channel is not:
+    /// stable never left the disk, and going back is the same click.
+    ///
+    /// It deliberately does not restart anything. The daemon in memory is the
+    /// old binary and so is this window; pretending otherwise would show a
+    /// switch that had moved over a Flow that had not.
+    fn channel_rows(&self) -> Vec<Element<'_, Message>> {
+        let on = self.channel == crate::system::Channel::Experimental;
+        vec![setting(
+            "Experimental build",
+            if on {
+                "Running the experimental build after the next restart."
+            } else {
+                "Stable. The experimental build stays installed either way."
+            },
+            toggle(on, self.travel("channel"), Message::SetChannel),
+        )]
+    }
+
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {
         vec![
             setting(

@@ -41,7 +41,7 @@ impl Console {
                 Space::new().height(24),
                 cards,
                 Space::new().height(20),
-                text("The same thought, with a different amount of cleanup.")
+                text("The same thought, with a different amount of polish.")
                     .size(12)
                     .color(MUTED),
                 Space::new().height(36),

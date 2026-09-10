@@ -15,10 +15,26 @@ set -euo pipefail
 # without a daemon or a systemd unit would be installing a window onto nothing.
 if [ "$(uname -s)" != "Linux" ]; then
   echo "Flow is Linux-only - this is $(uname -s)." >&2
-  echo "The daemon needs /dev/uinput, Wayland and a Vulkan llama.cpp, none of" >&2
-  echo "which exist here. Run this on the machine you dictate on." >&2
+  echo "The daemon opens /dev/uinput and talks Wayland, neither of which" >&2
+  echo "exists here. Run this on the machine you dictate on." >&2
   exit 1
 fi
+
+# Which build this is. Both live side by side under their own names and a
+# symlink decides which one runs, so switching is repointing a link rather than
+# reinstalling - and going back is possible because stable never left the disk.
+channel=stable
+if [ "${1:-}" = "--channel" ]; then
+  channel="$2"
+  shift 2
+fi
+case "$channel" in
+  stable | experimental) ;;
+  *)
+    echo "unknown channel $channel - stable or experimental" >&2
+    exit 1
+    ;;
+esac
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
@@ -57,10 +73,28 @@ for binary in "$daemon" "$console"; do
   fi
 done
 
-say "Installing binaries into $bin_dir"
+say "Installing the $channel build into $bin_dir"
 mkdir -p "$bin_dir"
-install -m755 "$daemon" "$bin_dir/flow"
-install -m755 "$console" "$bin_dir/flow-console"
+install -m755 "$daemon" "$bin_dir/flow-$channel"
+install -m755 "$console" "$bin_dir/flow-console-$channel"
+
+# The service runs `flow`, never `flow-stable`, so the unit file never has to
+# know which channel is live. Older installs put a real binary at this path;
+# ln -sfn will not replace a regular file, so it goes first.
+for name in flow flow-console; do
+  link="$bin_dir/$name"
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    rm -f "$link"
+  fi
+  # Only claim the link if nothing has it yet, or if it already points at this
+  # channel. Reinstalling stable must not drag someone off experimental.
+  current="$(readlink "$link" 2>/dev/null || true)"
+  if [ -z "$current" ] || [ "$current" = "$name-$channel" ]; then
+    ln -sfn "$name-$channel" "$link"
+  else
+    echo "left $name pointing at $current - switch channels in Settings"
+  fi
+done
 
 say "Installing the service, desktop entry and icon"
 mkdir -p "$units" "$apps" "$icons"
@@ -88,18 +122,11 @@ command -v update-desktop-database >/dev/null && update-desktop-database "$apps"
 command -v gtk-update-icon-cache >/dev/null &&
   gtk-update-icon-cache -qtf "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 
-# Models are deliberately NOT fetched here. They are ~3 GB, and a terminal that
-# sits on a progress bar for twenty minutes is the worst first impression this
-# tool can make. Opening Flow shows a setup screen that downloads them, says
-# which GPU it found while it does, and starts the daemon at the end.
-#
-# `flow install` still exists and still does the whole job, for a scripted or
-# headless install that wants it: run it yourself, or pass --models here.
-if [ "${1:-}" = "--models" ]; then
-  shift
-  say "Fetching models"
-  "$bin_dir/flow" install "$@"
-fi
+# Seeds the config templates. There are no models to fetch any more:
+# transcription and refining are OpenRouter requests, and the key that pays for
+# them is typed into the console's Settings screen.
+say "Seeding config"
+"$bin_dir/flow-$channel" install
 
 # The question is whether this user can open /dev/uinput, not whether our rule
 # file exists. Many setups already grant it - a logind uaccess ACL, an existing
@@ -141,11 +168,9 @@ case ":$PATH:" in
      ;;
 esac
 # The one instruction that matters is first and on its own. Everything under
-# it is for later; the models are not downloaded yet, so anything that suggests
-# starting the daemon before opening the window would only start a daemon with
-# nothing to load.
+# it is for later; the key is entered in the console before the daemon starts.
 cat <<EOF
-Open Flow to finish setting up - it downloads the models and starts the daemon.
+Open Flow to finish setting up - add your OpenRouter key and start the daemon.
 
   flow-console          or "Flow" in your launcher
 

@@ -38,7 +38,6 @@ mod layout;
 mod motion;
 mod screen;
 mod settings;
-mod setup;
 mod smooth_scroll;
 mod storage;
 mod system;
@@ -57,7 +56,7 @@ use crate::layout::{
 use crate::theme::{
     mix, progress, ACCENT, BG, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR,
     FADE, FAINT, FG, GAP, HAIRLINE, LABEL_GAP, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH,
-    ROW_PAD, STARTING, WARN,
+    ROW_PAD, STARTING,
 };
 use iced::{Color, Subscription, Task, Theme};
 
@@ -201,18 +200,18 @@ impl Section {
 
     /// Whether this screen still means something when Flow cannot run.
     ///
-    /// Both models are required, so a machine missing either has no daemon at
-    /// all - not a daemon doing less. That makes every screen that tunes
-    /// dictation a screen tuning nothing: Settings, Vocabulary and Style
-    /// all describe behaviour that has no process to belong to.
+    /// Without a key there is no daemon at all - not a daemon doing less - so
+    /// Vocabulary and Style describe behaviour with no process to belong to.
     ///
-    /// Overview survives because it is where the way out is, and About because
-    /// a version and a path are true whether or not anything is running.
+    /// Settings is the exception it did not used to be: it is where the key
+    /// goes, so disabling it would lock the one door out of this state.
+    /// Overview survives because it says what is wrong, and About because a
+    /// version and a path are true whether or not anything is running.
     ///
-    /// Disabled rather than hidden. A nav that grows items when a download
-    /// finishes is a nav that was lying about what the product is.
+    /// Disabled rather than hidden. A nav that grows items once a key is
+    /// pasted is a nav that was lying about what the product is.
     fn works_without_models(self) -> bool {
-        matches!(self, Section::Overview | Section::About)
+        matches!(self, Section::Overview | Section::About | Section::Settings)
     }
 
     fn label(self) -> &'static str {
@@ -275,6 +274,10 @@ impl Picker {
 
 #[derive(Debug, Clone)]
 enum Message {
+    TypingKey(String),
+    /// Switch which build runs on the next restart.
+    SetChannel(bool),
+    SaveKey,
     Select(Section),
     BannersAllocated(Vec<Result<iced::advanced::image::Allocation, iced::advanced::image::Error>>),
     PushToTalk(bool),
@@ -298,7 +301,6 @@ enum Message {
     TrayStarted(Result<(), String>),
     Autostart(bool),
     AutostartFinished(Result<Option<bool>, String>),
-    InstallChecked(Option<usize>),
     PathOpened(Result<(), String>),
     HistoryLoaded(Vec<history::Entry>, Vec<history::Day>),
     Duck(u32),
@@ -336,14 +338,8 @@ enum Message {
     HoverEntry(Option<usize>),
     /// Put one transcript on the clipboard.
     Copy(usize),
-    /// Start, or restart after a failure, the first-run install.
+    /// Take the user to Settings, which is where the key goes.
     BeginSetup,
-    /// Stop the download that is running and throw away what it had.
-    StopDownload,
-    /// One line from `flow install --porcelain`.
-    SetupEvent(setup::Event),
-    /// Automatic startup, or a retry from setup, finished.
-    SetupStarted(Result<(), String>),
     CheckUpdate,
     UpdateChecked(update::Status),
     InstallUpdate,
@@ -416,19 +412,10 @@ struct Console {
     update: update::Status,
     /// True while the release tarball is downloading and installing.
     updating: bool,
-    models: Vec<system::Model>,
     /// How many installed files are missing or the wrong length, asked of the
     /// daemon binary at launch and again whenever setup ends. `None` when
-    /// nothing could answer.
-    damage: Option<usize>,
-    /// The one model download that can be in flight, whether it is first
-    /// run's or one started from a row on the Models screen.
-    download: Option<setup::State>,
-    /// True while the setup screen owns the whole window - no rail, no
-    /// sections.
-    showing_setup: bool,
-    /// Seconds into setup dissolving away, once its work is done. `None` the
-    /// rest of the time.
+    /// Seconds into a full-window transition. Nothing drives it since the
+    /// setup screen went, kept because `moving` still asks.
     fading: Option<f32>,
     session: String,
     terms: Vec<String>,
@@ -438,6 +425,14 @@ struct Console {
     /// Standing instructions for the cleanup model, edited on the Style screen.
     notes: Vec<String>,
     note_typing: String,
+    /// What is in the OpenRouter key box right now, which is not yet what is
+    /// saved. Typed keys are persisted on Enter, not per keystroke: a
+    /// half-pasted credential written to disk is a config file that fails
+    /// authentication until the paste finishes.
+    typing_key: String,
+    /// Which build the `flow` symlink points at, read at launch. The link is
+    /// the source of truth; this is only what the switch renders.
+    channel: system::Channel,
     note_error: Option<String>,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
@@ -460,9 +455,11 @@ impl Console {
     fn new() -> (Self, Task<Message>) {
         let entries = history::recent();
 
-        // A machine with no speech model cannot dictate, so the window has
-        // nothing to report and one thing to do.
-        let first_run = setup::needed();
+        // A machine with no key cannot dictate, so the window has nothing to
+        // report and one thing to do: Overview says so, and Settings is where
+        // the key goes. There is no longer anything to download, so this is a
+        // banner rather than a screen of its own.
+        let first_run = settings::Settings::load().openrouter_key.is_none();
 
         let settings = settings::Settings::load();
         let cleanup_selection = settings::Cleanup::ALL.map(|level| {
@@ -500,10 +497,6 @@ impl Console {
                 // second one.
                 update: update::Status::Checking,
                 updating: false,
-                models: system::models(),
-                damage: system::startup_damage(),
-                download: None,
-                showing_setup: first_run,
                 fading: None,
                 session: system::session(),
                 terms: vocabulary::load(),
@@ -512,6 +505,8 @@ impl Console {
                 term_error: None,
                 notes: instructions::load(),
                 note_typing: String::new(),
+                typing_key: String::new(),
+                channel: system::channel(),
                 note_error: None,
                 capturing: false,
                 can_capture: false,
@@ -596,19 +591,25 @@ impl Console {
         let running = |since: std::time::Instant, ms: u64| {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
-        self.nav_motion.iter().chain(&self.cleanup_selection).chain(&self.cleanup_hover).any(|motion| motion.moving(self.now))
+        self.nav_motion
+            .iter()
+            .chain(&self.cleanup_selection)
+            .chain(&self.cleanup_hover)
+            .any(|motion| motion.moving(self.now))
             || self.page_motion.moving()
-            || self.entry_motion.values().any(|motion| motion.moving(self.now))
+            || self
+                .entry_motion
+                .values()
+                .any(|motion| motion.moving(self.now))
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
-            || self.toggle_motion.values().any(|motion| motion.moving(self.now))
+            || self
+                .toggle_motion
+                .values()
+                .any(|motion| motion.moving(self.now))
             || self
                 .picking_input
                 .is_some_and(|picker| running(picker.since(), FADE))
             || self.fading.is_some()
-            // The only motion in the product driven by something outside it:
-            // the ring is chasing a download, so it moves until it catches up
-            // rather than for a fixed duration.
-            || self.download.as_ref().is_some_and(setup::State::running)
     }
 
     /// True while this row's copy button should still be saying so.
@@ -640,132 +641,22 @@ impl Console {
         )
     }
 
-    fn start_setup_daemon(&mut self) -> Task<Message> {
-        let Some(state) = self.download.as_mut() else {
-            return Task::none();
-        };
-        if state.starting_daemon {
-            return Task::none();
-        }
-
-        state.starting_daemon = true;
-        state.start_error = None;
-        // `restart`, not `start`. Two reasons, and both are the same reason.
-        //
-        // A daemon that was already up started before these models existed, so
-        // it is running without the one setup just fetched - `start` on an
-        // active unit does nothing at all, and leaves it that way.
-        //
-        // And because it does nothing, the socket never drops, so the console
-        // never reconnects and never gets the fresh snapshot that would correct
-        // the "Starting…" it just set on itself. It sat there until something
-        // else restarted the daemon. `restart` on an inactive unit simply
-        // starts it, so this is right whether or not one was running.
-        Task::perform(async { system::service("restart") }, Message::SetupStarted)
-    }
-
-    /// Spawn `flow install` once the intro has landed. Hashing during the
-    /// fade is what made the motion hitch.
-    fn launch_install(&mut self) -> Task<Message> {
-        let Some(state) = self.download.as_mut() else {
-            return Task::none();
-        };
-        if state.spawned || state.stopped || !state.intro_over() {
-            return Task::none();
-        }
-        state.spawned = true;
-        let (events, handle) = setup::install();
-        state.handle = handle;
-        Task::run(events, Message::SetupEvent)
-    }
-
-    /// The speech model is on disk, so Flow can dictate: start the daemon.
-    ///
-    /// There is no button for this and nothing to confirm. Called from
-    /// everything that can move setup forward, because what it is waiting on
-    /// last is sometimes only `FLOOR`.
-    fn setup_usable(&mut self) -> Task<Message> {
-        let ready = self.showing_setup
-            && self.download.as_ref().is_some_and(|state| {
-                state.finished()
-                    && !state.daemon_started
-                    && !state.starting_daemon
-                    && state.start_error.is_none()
-            });
-
-        if !ready {
-            return Task::none();
-        }
-
-        // Nothing came down the wire, so nothing on disk changed and the daemon
-        // is already running the files a restart would hand it. Restarting it
-        // to prove a repair found nothing wrong is a dropped socket and a model
-        // reloaded for no one. It only has to start if it is not running.
-        let repaired_nothing = self.download.as_ref().is_some_and(|state| !state.fetching)
-            && self.daemon.activity != daemon::Activity::Offline;
-
-        if repaired_nothing {
-            if let Some(state) = self.download.as_mut() {
-                state.daemon_started = true;
-            }
-            self.models = system::models();
-            self.fading = Some(-setup::HOLD);
-            return Task::none();
-        }
-
-        self.start_setup_daemon()
-    }
-
-    /// Whether an install is missing a model it needs.
-    ///
-    /// Reachable only by stopping setup: `setup::needed` sends a half-installed
-    /// machine back through it, so the one way to sit here is to have said no.
-    /// That makes this a deferred choice rather than a fault - the window says
-    /// what is missing and offers to finish, and nothing starts in the
-    /// meantime.
-    fn incomplete(&self) -> bool {
-        match self.damage {
-            Some(count) => count > 0,
-            // No verdict. What the window can see for itself is whether the
-            // models are there at all, which is what it used to go on.
-            None => !self.models.iter().all(|model| model.installed),
-        }
-    }
-
     /// Why the Overview banner is up, if it is.
     ///
-    /// One banner, two situations, and they are not the same news. A machine
-    /// with nothing on it has not finished setting up - green, an invitation.
-    /// A machine that had both models and lost a file out of one is broken -
-    /// amber, and saying "setup isn't finished" to someone who finished it a
-    /// month ago is how a real fault gets read as a glitch.
-    fn install_problem(&self) -> Option<InstallProblem> {
-        if !self.incomplete() {
-            return None;
-        }
-        Some(if self.models.iter().any(|model| model.installed) {
-            InstallProblem::Damaged
-        } else {
-            InstallProblem::Unfinished
-        })
+    /// One situation now, where there used to be two. A missing or damaged
+    /// model file was a fault the window could see and offer to repair; there
+    /// are no files any more, so the only thing that stops Flow working before
+    /// it starts is the absence of a key - and that is a thing to finish, not
+    /// a fault to fix.
+    fn incomplete(&self) -> bool {
+        self.install_problem().is_some()
     }
 
-    /// Setup is over: the window becomes the console it was standing in for.
-    fn leave_setup(&mut self) -> Task<Message> {
-        self.showing_setup = false;
-        self.fading = None;
-        self.download = None;
-        self.models = system::models();
-        self.autostart_pending = true;
-        Task::batch([
-            self.refresh_peripherals(),
-            self.refresh_history(),
-            Task::perform(async { system::damage() }, Message::InstallChecked),
-            Task::perform(
-                async { Ok(system::autostart_enabled()) },
-                Message::AutostartFinished,
-            ),
-        ])
+    fn install_problem(&self) -> Option<InstallProblem> {
+        self.settings
+            .openrouter_key
+            .is_none()
+            .then_some(InstallProblem::Unfinished)
     }
 }
 
@@ -780,16 +671,22 @@ fn believe_disconnect(activity: daemon::Activity) -> bool {
 /// The line and dot colour for each activity the daemon can report. Offline
 /// and Ready both read as calm (no accent) - the accent is reserved for the
 /// two states where Flow is actually doing something with your voice.
-fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
+///
+/// Ready is the one that had to change. "Running" was true of the process and
+/// silent about the only thing that decides whether the hotkey works: every
+/// dictation is an OpenRouter request now, so a daemon that is up with a dead
+/// network or a rejected key is running and useless. The word says which.
+fn activity_label(activity: daemon::Activity, reachable: Option<bool>) -> (&'static str, Color) {
     match activity {
         daemon::Activity::Offline => ("Not running", FAINT),
         daemon::Activity::Starting => ("Starting…", STARTING),
-        // Ready means the daemon is up and waiting for the hotkey, which is
-        // the state a person calls running - and a grey dot beside it read as
-        // "nothing is happening" rather than "everything is fine". Green here
-        // and green while listening are the same claim at two volumes: Flow is
-        // alive. The word beside it is what separates idle from live.
-        daemon::Activity::Ready => ("Running", OK),
+        // Unknown is not a failure and must not be coloured like one: the
+        // daemon is up and has simply not had a dictation to send yet.
+        daemon::Activity::Ready => match reachable {
+            Some(true) => ("Connected", OK),
+            Some(false) => ("Disconnected", ERR),
+            None => ("Running", OK),
+        },
         daemon::Activity::Listening => ("Listening", ACCENT),
         daemon::Activity::Working => ("Refining", ACCENT),
     }
@@ -825,18 +722,17 @@ fn update_state(status: &update::Status) -> (Color, String) {
 /// Why the Overview is showing a banner. See `Console::install_problem`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallProblem {
-    /// Nothing installed: setup was never finished, or was stopped.
+    /// No key, which is the only way Flow can be unable to work before it
+    /// starts. `Damaged` used to sit beside this, for a model file that went
+    /// missing; there are no files to lose any more.
     Unfinished,
-    /// Installed, then a file went missing or came back the wrong length.
-    Damaged,
 }
 
 impl InstallProblem {
     /// The line, the button, and the colour the banner is drawn in.
     fn banner(self) -> (&'static str, &'static str, Color) {
         match self {
-            Self::Unfinished => ("Setup isn't finished.", "Finish setup", ACCENT),
-            Self::Damaged => ("A file is missing or damaged.", "Repair", WARN),
+            Self::Unfinished => ("No OpenRouter key yet.", "Open Settings", ACCENT),
         }
     }
 }
@@ -951,13 +847,35 @@ mod tests {
     #[test]
     fn startup_is_named_once_in_the_status() {
         assert_eq!(
-            activity_label(daemon::Activity::Starting),
+            activity_label(daemon::Activity::Starting, None),
             ("Starting…", STARTING)
         );
         assert_eq!(service_action_label(false), "Start");
         // The action is the state it is not in - never a word that reads the
         // same either way.
         assert_eq!(service_action_label(true), "Stop");
+    }
+
+    /// "Running" said the process was up. It never said whether a dictation
+    /// could reach anything, which after the move to OpenRouter is the whole
+    /// question.
+    #[test]
+    fn ready_reports_the_connection_rather_than_the_process() {
+        assert_eq!(
+            activity_label(daemon::Activity::Ready, Some(true)).0,
+            "Connected"
+        );
+        assert_eq!(
+            activity_label(daemon::Activity::Ready, Some(false)).0,
+            "Disconnected"
+        );
+        // Nothing has been sent yet, so there is nothing to claim either way.
+        assert_eq!(activity_label(daemon::Activity::Ready, None).0, "Running");
+        // A daemon that is down is down, whatever the network is doing.
+        assert_eq!(
+            activity_label(daemon::Activity::Offline, Some(true)).0,
+            "Not running"
+        );
     }
 
     #[test]
@@ -974,19 +892,10 @@ mod install_banner {
     use super::*;
 
     #[test]
-    fn a_lost_file_warns_in_amber_rather_than_inviting_in_green() {
-        let (line, offer, tone) = InstallProblem::Damaged.banner();
-        assert_eq!(tone, WARN, "a fault must not wear the invitation's colour");
-        assert_ne!(tone, ACCENT);
-        assert!(line.contains("damaged"), "{line}");
-        assert_eq!(offer, "Repair");
-    }
-
-    #[test]
-    fn an_unfinished_setup_stays_an_invitation() {
+    fn a_missing_key_reads_as_an_invitation_not_a_fault() {
         let (line, offer, tone) = InstallProblem::Unfinished.banner();
-        assert_eq!(tone, ACCENT);
-        assert!(line.contains("Setup isn't finished"), "{line}");
-        assert_eq!(offer, "Finish setup");
+        assert_eq!(tone, ACCENT, "nothing is broken - it is unfinished");
+        assert!(line.contains("key"), "{line}");
+        assert_eq!(offer, "Open Settings");
     }
 }

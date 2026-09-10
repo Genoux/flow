@@ -123,8 +123,6 @@ pub(crate) const OK: Color = ACCENT;
 /// "Something needs you" - and the same amber as STARTING, on the same
 /// principle as OK above. One meaning per colour: green invites, amber warns,
 /// red is a failure. A broken install is not a failure of Flow's, it is a job
-/// waiting to be done, so it takes the middle one.
-pub(crate) const WARN: Color = STARTING;
 pub(crate) const ON_ACCENT: Color = Color {
     r: 0.078,
     g: 0.082,
@@ -225,11 +223,6 @@ pub(crate) const FADE: u64 = 200;
 /// waiting for a hover. Long enough to be read, short enough that it is never
 /// still saying it by the time you look again.
 pub(crate) const COPIED: u64 = 1600;
-
-pub(crate) fn ease_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(4)
-}
 
 /// 0.0 at `since`, 1.0 once `ms` has passed.
 pub(crate) fn progress(since: std::time::Instant, now: std::time::Instant, ms: u64) -> f32 {

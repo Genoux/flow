@@ -144,6 +144,10 @@ pub struct Settings {
     /// the system default and is written as no line at all, the same way `gpu`
     /// spells "choose for me".
     pub input_device: Option<String>,
+    /// OpenRouter API key. Absent means Flow cannot transcribe or refine at
+    /// all, so the daemon reports that rather than starting into a state where
+    /// the hotkey silently does nothing.
+    pub openrouter_key: Option<String>,
 }
 
 /// The chord a fresh install dictates with, and what Reset puts back.
@@ -169,6 +173,7 @@ impl Default for Settings {
             gpu: None,
             hotkey: DEFAULT_HOTKEY.to_string(),
             input_device: None,
+            openrouter_key: None,
         }
     }
 }
@@ -215,6 +220,9 @@ impl Settings {
                 "input_device" => {
                     settings.input_device = (!value.is_empty()).then(|| value.to_owned())
                 }
+                "openrouter_key" => {
+                    settings.openrouter_key = (!value.is_empty()).then(|| value.to_owned())
+                }
                 _ => {}
             }
         }
@@ -236,7 +244,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 10] = [
+        let wanted: [(&str, Option<String>); 11] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.as_str().to_string())),
             // Deleted rather than left alone. The daemon still understands
@@ -251,6 +259,7 @@ impl Settings {
             ("gpu", self.gpu.map(|index| index.to_string())),
             ("hotkey", Some(self.hotkey.clone())),
             ("input_device", self.input_device.clone()),
+            ("openrouter_key", self.openrouter_key.clone()),
         ];
 
         let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
@@ -371,6 +380,7 @@ mod tests {
             gpu: Some(0),
             hotkey: "ctrl+alt+space".to_string(),
             input_device: Some("alsa_input.usb-Generic_USB_Audio-00.HiFi_5_1__Mic__source".into()),
+            openrouter_key: Some("sk-or-v1-example".into()),
         };
         assert_eq!(Settings::parse(&settings.render("")), settings);
     }
@@ -470,5 +480,28 @@ mod tests {
             "input_device line survived:\n{back}"
         );
         assert_eq!(Settings::parse(&back).input_device, None);
+    }
+
+    /// Clearing the key must take the line out, not write an empty one: the
+    /// daemon reads a bare `openrouter_key =` as no key, but a user who cleared
+    /// it is entitled to a file that no longer mentions their credential.
+    #[test]
+    fn clearing_the_openrouter_key_removes_the_line() {
+        let keyed = Settings {
+            openrouter_key: Some("sk-or-v1-example".into()),
+            ..Settings::default()
+        };
+        let out = keyed.render("");
+        assert_eq!(
+            Settings::parse(&out).openrouter_key.as_deref(),
+            Some("sk-or-v1-example")
+        );
+
+        let back = Settings::default().render(&out);
+        assert!(
+            !back.contains("openrouter_key"),
+            "openrouter_key line survived:\n{back}"
+        );
+        assert_eq!(Settings::parse(&back).openrouter_key, None);
     }
 }

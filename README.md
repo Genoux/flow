@@ -2,10 +2,10 @@
 
 Hold a key, talk, let go. The text appears where your cursor already was.
 
-Flow is a voice dictation daemon for Linux. Speech recognition and refining both
-run on your machine — no account, no API key, no per-word cost, nothing leaves
-the computer. There is no window to focus and no button to press: the only
-interface is a key you hold and a small island that appears while you speak.
+Flow is a voice dictation daemon for Linux. Speech recognition and refining use
+the selected OpenRouter models. There is no window to focus and no button to
+press: the only interface is a key you hold and a small island that appears
+while you speak.
 
 ## Requirements
 
@@ -13,8 +13,8 @@ interface is a key you hold and a small island that appears while you speak.
 |---|---|
 | Session | Wayland (wlroots — Hyprland, Sway) |
 | Audio | PipeWire or ALSA |
-| Disk | ~3 GB for the two models |
-| GPU | Optional. Vulkan is used for refining if a card can hold the model, CPU otherwise |
+| Network | Required. Transcription and refining are OpenRouter requests |
+| Account | An [OpenRouter](https://openrouter.ai) key, which you pay per dictation |
 | Access | Your user in the `input` group, and `/dev/uinput` writable |
 
 ## Install
@@ -31,25 +31,27 @@ and the desktop entry. Nothing is written outside your home directory, and
 nothing runs as root — except one udev rule, which the script prints for you to
 run yourself rather than doing behind your back.
 
-The first build takes 10–15 minutes: llama.cpp is compiled from source.
-
-Then open **Flow** from your launcher, or `flow-console` from a terminal. The
-first run is a setup screen: it downloads the two models and starts the daemon
-at the end. They are about 3 GB together and Flow needs both, so there is
-nothing to choose — but you can stop the download and pick it up later from
-where it left off, and **Run setup again** on the About screen refetches them
-from scratch if one ever goes bad.
+Then open **Flow** from your launcher, or `flow-console` from a terminal, and
+paste an OpenRouter key into **Settings → OpenRouter**. Nothing dictates without
+one: MAI-Transcribe-2 and Gemini 3.1 Flash-Lite are reached through that key.
 
 Then hold **Super+Shift+D** and talk.
 
-Scripted installs that would rather not wait for a window can fetch the models
-up front with `./packaging/install.sh --models`, or `flow install` at any time.
+Overview says **Connected** once a dictation has reached OpenRouter, and
+**Disconnected** when one could not — a daemon that is up with a dead network or
+a rejected key is running and useless, so the word says which.
 
 Updating is the same script — `git pull && ./packaging/install.sh` — which
 restarts the daemon onto the new build if it was already running.
 
-Removing it is `./packaging/uninstall.sh`. That leaves your config, history and
-the models alone, and prints how to delete those if you want them gone.
+Two builds can be installed side by side — `./packaging/install.sh --channel
+experimental` puts one in without touching the stable binary. A symlink decides
+which one runs, and **Settings → Build** repoints it for the next restart. The
+experimental channel is the opt-in release lane for changes that need feedback;
+stable remains available for daily use.
+
+Removing it is `./packaging/uninstall.sh`. That leaves your config and history
+alone, and prints how to delete those if you want them gone.
 
 ## Daily use
 
@@ -61,7 +63,7 @@ the models alone, and prints how to delete those if you want them gone.
 | `flow logs` | What the daemon has been saying |
 | `flow retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
 | `flow start` / `flow stop` | Trigger dictation without the chord, for a compositor bind |
-| `flow probe` | Which GPU refining will run on, and why |
+| `flow probe` | Whether OpenRouter answers, and which models it would use |
 | `flow help` | Every command and flag |
 
 ## Configuration
@@ -73,28 +75,43 @@ of them. The ones people actually change:
 ```toml
 hotkey = "super+shift+d"   # the combination to hold
 duck = 50                  # volume of other apps while recording, in percent
-refine = true              # run the transcript through the local refining model
+cleanup = "light"          # none, light or medium
+openrouter_key = "sk-or-…" # easier to paste in Settings than to type here
 ```
+
+The key is a billable credential. Saving it from the window writes the file
+`0600`; if you put it there by hand, do the same.
 
 Word fixes go next door in `~/.config/flow/vocabulary.txt` — one term per line,
 for names the recogniser mishears. Note that vocabulary is applied *by the
-refining model*, so it does nothing when `refine = false`.
+refining model*, so it does nothing at `cleanup = "none"`.
 
 ## How it works
 
-Two models, both local:
+Two models, both through OpenRouter:
 
-- **Parakeet TDT 0.6B v3** (int8 ONNX, CPU) turns audio into text at roughly
-  23× realtime. Running it on the CPU is deliberate — it keeps the GPU free.
-- **Qwen3 4B Instruct** (Q4_K_M via llama.cpp, Vulkan) punctuates and removes
-  filler. It is told the language it just heard, and a result that comes back
-  in a different language is discarded, so speaking French gets French back.
+- **MAI-Transcribe-2** turns audio into text.
+- **Gemini 3.1 Flash-Lite** punctuates and removes filler. It is told the
+  language it just heard, and a result that comes back in a different language
+  is discarded, so speaking French gets French back.
 
-Long dictations are transcribed in pieces *during* the hold, split only inside
-real silence, so releasing the key does not start a long wait.
+Both choices are fixed in the current release: MAI-Transcribe-2 handles speech
+and Gemini 3.1 Flash-Lite applies the selected cleanup level. The prompt, cleanup
+levels and guards around the model's answer are shared by stable and experimental
+builds; the experimental channel is for future product changes, not a silent
+model change in a stable install.
 
-Both model choices are measured rather than assumed. If you swap them, rerun
-the numbers.
+A dictation longer than 45 seconds is split before it is sent, cut inside real
+silence rather than at a stopwatch, because the provider times out at 60
+seconds of processing per request. A stretch of speech with no pause in it is
+sent whole: an oversized request that may fail beats a transcript with a word
+sliced in half.
+
+Refining is bounded. Past its budget the raw transcript is pasted instead of a
+late one, and every guard that made the local refiner safe still runs on the
+reply — an answer instead of an edit, a question turned into a statement, a
+dictation that lost most of its words, or a translation, all fall back to what
+you actually said.
 
 ## When something goes wrong
 

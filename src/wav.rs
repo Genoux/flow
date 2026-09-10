@@ -33,12 +33,6 @@ pub fn write_16k_mono(path: impl AsRef<Path>, samples: &[f32]) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: super::audio::SAMPLE_RATE,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -47,13 +41,30 @@ pub fn write_16k_mono(path: impl AsRef<Path>, samples: &[f32]) -> Result<()> {
         .open(path)
         .with_context(|| format!("opening {} for write", path.display()))?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    let mut writer = hound::WavWriter::new(std::io::BufWriter::new(file), spec)?;
+    let mut file = std::io::BufWriter::new(file);
+    std::io::Write::write_all(&mut file, &encode_16k_mono(samples)?)?;
+    Ok(())
+}
+
+/// The same bytes `write_16k_mono` puts on disk, in memory.
+///
+/// The transcription request wants a complete RIFF file rather than raw
+/// samples, and staging one through a file only to read it straight back would
+/// be a round trip through the disk for every dictation.
+pub fn encode_16k_mono(samples: &[f32]) -> Result<Vec<u8>> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: super::audio::SAMPLE_RATE,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    let mut writer = hound::WavWriter::new(&mut out, spec)?;
     for sample in samples {
-        let clamped = sample.clamp(-1.0, 1.0);
-        writer.write_sample((clamped * i16::MAX as f32) as i16)?;
+        writer.write_sample((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
     }
     writer.finalize().context("finalising wav")?;
-    Ok(())
+    Ok(out.into_inner())
 }
 
 #[cfg(test)]

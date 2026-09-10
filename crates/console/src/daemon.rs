@@ -33,6 +33,10 @@ pub enum Activity {
 #[derive(Debug, Clone)]
 pub struct State {
     pub activity: Activity,
+    /// Whether OpenRouter answered the last time the daemon asked. `None` until
+    /// it has asked at all - a window that claimed Connected before the first
+    /// request would be guessing about the one thing worth knowing.
+    pub reachable: Option<bool>,
     pub problem: Option<String>,
     pub words: usize,
 }
@@ -41,6 +45,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             activity: Activity::Offline,
+            reachable: None,
             problem: None,
             words: 0,
         }
@@ -63,6 +68,8 @@ impl State {
             Some("working") => Activity::Working,
             _ => return,
         };
+
+        self.reachable = value.get("reachable").and_then(|r| r.as_bool());
 
         self.problem = value
             .get("problem")

@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
-use flow::{audio, config, daemon, inject, install, ipc, notify, refine, status, stt, tray, wav};
+use flow::{
+    audio, config, daemon, inject, install, ipc, notify, refine, router, status, stt, tray, wav,
+};
 use std::time::{Duration, Instant};
 
 /// Audio that must be spoken before any of it is transcribed early. Long enough
@@ -17,8 +19,8 @@ COMMANDS
     daemon           Watch the hotkey and dictate. What flow.service runs.
     tray             Publish the system tray icon. What flow-tray.service runs.
     start | stop     Begin or end a dictation without holding the chord
-    install          Download the speech and refining models
-    probe            Where refining would run on this machine
+    install          Seed the config and vocabulary templates
+    probe            Check the OpenRouter connection and model routes
     logs [ARGS..]    The daemon's journal. Arguments go straight to journalctl,
                      so `flow logs -f` and `flow logs --since today` both work.
     retry [N]        Replay a saved dictation, counting back from the newest.
@@ -30,10 +32,6 @@ COMMANDS
     version          Print the version
 
 FLAGS
-    --speech-only    install: the speech model only
-    --refine-only    install: the refining model only
-    --porcelain      install: report progress as lines, for the setup screen
-    --plan           install: print what would be fetched, and fetch nothing
     --raw            Skip the refining model for this run
     --no-ptt         Do not watch the hotkey
     --denoise | --no-denoise
@@ -73,38 +71,11 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("start") => return ipc::send(ipc::START),
         Some("stop") => return ipc::send(ipc::STOP),
-        Some("install") => {
-            let want = install::Want::from_args(&args);
-            // What an install would fetch, without fetching it. Always the
-            // machine-readable rendering: this exists for the Models screen,
-            // which has to name a model's size before offering to fetch it.
-            if args.iter().any(|a| a == "--plan") {
-                install::plan_reported(want, &mut install::to_console);
-                return Ok(());
-            }
-            // The console drives the same installer and needs numbers rather
-            // than a bar, so it asks for the machine-readable rendering.
-            if args.iter().any(|a| a == "--porcelain") {
-                return install::run_reported(want, &mut install::to_console);
-            }
-            return install::run(want);
-        }
-        // Cheap enough to run every time the window opens, which is the point:
-        // an install that lost a file should say so on Overview rather than
-        // wait for someone to go looking in About.
-        Some("check") => {
-            let damaged = install::damaged();
-            if args.iter().any(|a| a == "--porcelain") {
-                install::report_damage(&damaged);
-            } else if damaged.is_empty() {
-                println!("install is whole");
-            } else {
-                for asset in &damaged {
-                    println!("missing or damaged: {}", asset.dest);
-                }
-            }
-            return Ok(());
-        }
+        Some("install") => return install::run(),
+        // There is nothing left to verify: the models it used to hash are
+        // gone, and whether Flow can actually work is a question about the key
+        // and the network, which `probe` answers.
+        Some("check") => return probe(),
         Some("probe") => return probe(),
         Some("logs") => return logs(&args[1..]),
         _ => {}
@@ -128,97 +99,50 @@ fn main() -> Result<()> {
         return inject::Injector::new()?.inject(&text);
     }
 
-    let dir = stt::model_dir();
-    if !dir.is_dir() {
-        // Under systemd this is the difference between a daemon that failed
-        // for a reason and one that simply never came up: nothing else on the
-        // desktop reports a unit that exited before it did any work.
+    // The key is what the models used to be: without it there is nothing to
+    // dictate to, and a daemon that starts anyway is one whose hotkey silently
+    // does nothing. Under systemd this notification is the difference between
+    // a unit that failed for a reason and one that never came up.
+    //
+    // Only the daemon. `flow foo.wav` and `flow retry` are diagnostics, and
+    // both report their own failure with the request that made it - refusing
+    // to start them here would hide the reason behind a second one.
+    if matches!(command(&args), Some("daemon")) && settings.openrouter_key.is_none() {
         notify::failure(
             "Flow can't start",
-            "The speech model is missing. Run `flow install` to fetch it.",
+            "No OpenRouter key. Add one in Settings.",
         );
-        bail!("model not found at {} - run `flow install`", dir.display());
+        bail!("no OpenRouter key - add one in the console's Settings screen");
     }
-    // The cleanup model is required too, and required even at `cleanup = none`.
-    //
-    // Not a matter of taste: `cleanup` is read live, once per dictation, but
-    // the refiner is loaded once at startup. A daemon that started without the
-    // weights can never honour a later switch to Light - the level changes, the
-    // output does not, and nothing on screen explains why. Demanding the file
-    // here is what makes the Style screen's four levels mean anything at all.
-    //
-    // Refusing rather than degrading is also the honest version of what Flow
-    // now is. Both models arrive together and a machine missing one is a
-    // half-finished install, not a smaller Flow - so it stops, says which half
-    // is missing, and the console offers to finish the job.
-    // Only the daemon. `flow foo.wav` benchmarks the recogniser and `flow
-    // retry` re-runs one dictation - both are diagnostics, and refusing to
-    // measure STT because a second model is absent would be exactly the kind
-    // of unhelpful strictness this gate exists to avoid. `install` returns long
-    // before here, so there is no way to need the model in order to fetch it.
-    let cleanup_model = refine::model_path();
-    if matches!(command(&args), Some("daemon")) && !cleanup_model.is_file() {
-        notify::failure(
-            "Flow can't start",
-            "The cleanup model is missing. Run `flow install` to fetch it.",
-        );
-        bail!(
-            "model not found at {} - run `flow install`",
-            cleanup_model.display()
-        );
-    }
-    // Bound before the loading starts, not after it. The console shows
+    // Bound before the daemon starts, not after it. The console shows
     // "Starting…" from the moment it asks systemd for a start, and the only
-    // thing that can honestly end that is this process saying so. Between here
-    // and `ready` sit a 650 MB recogniser, 2.5 GB of refining weights when
-    // refining is on, and a two-second microphone warm-up - seconds in which a
-    // socket that did not exist yet read as "Flow isn't running" in the middle
-    // of Flow starting. The reporter already opens in `Starting` and sends
-    // that snapshot to whoever connects, so the window has something true to
-    // show for the whole wait.
+    // thing that can honestly end that is this process saying so. The reporter
+    // already opens in `Starting` and sends that snapshot to whoever connects,
+    // so the window has something true to show for the whole wait.
     //
     // Only for the daemon: `spawn` unlinks the socket path before it binds, so
     // a `flow retry` doing this would cut the running daemon off from the
     // console it was talking to.
     let reporter = matches!(command(&args), Some("daemon")).then(status::Reporter::spawn);
-    let mut engine = stt::Stt::load(&dir)?;
+    let mut engine = stt::Stt::new(settings.openrouter_key.clone().unwrap_or_default());
 
     match command(&args) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
         Some("retry") => {
             let back = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-            retry(&mut engine, back, settings.cleanup, settings.gpu)
+            retry(&mut engine, back, settings.cleanup)
         }
         Some("daemon") => {
-            // Loaded whatever the level says, including `none`.
+            // Built whatever the level says, including `none`.
             //
-            // The level is a live setting and this is a startup cost, so tying
-            // the two together makes the setting a lie in one direction: a
-            // daemon started at `none` could never be switched to Light without
-            // a restart, which is exactly the trap the old `refine = false`
-            // had. Someone who wants the VRAM back turns Flow off, not the dial
-            // down.
-            //
-            // Still not fatal when it will not load, and now that is a real
-            // fault rather than a choice: startup already refused to get this
-            // far without the file, so reaching here means the weights exist
-            // and something else is wrong - a corrupt download, or a card that
-            // cannot hold them. Dictation carries on at raw transcripts, which
-            // is worth more than no dictation, and the notification says so.
-            let refiner = match refine::Refiner::load(&refine::model_path(), settings.gpu) {
-                Ok(refiner) => {
-                    refiner.warm_up();
-                    Some(refiner)
-                }
-                Err(err) => {
-                    notify::failure(
-                        "Cleanup is off",
-                        "Dictation still works. See `flow logs` for why.",
-                    );
-                    eprintln!("cleanup model: {err}");
-                    None
-                }
-            };
+            // The level is a live setting, so a daemon that only built a
+            // refiner at Light could never honour a later switch - which is
+            // exactly the trap the old `refine = false` had. Construction is
+            // now just holding the key, so there is nothing left to make
+            // conditional.
+            let refiner = Some(refine::Refiner::new(
+                settings.openrouter_key.clone().unwrap_or_default(),
+            ));
             // Shared so the file watcher can swap in new values while the
             // daemon runs. Hold vs tap is read per event from that; --no-ptt
             // is the one thing that still decides whether the watcher thread
@@ -278,12 +202,7 @@ fn wants_usage(args: &[String]) -> bool {
 /// recogniser three times: the transcript people actually receive has been
 /// through refining, so a retry that stopped at the raw text would answer a
 /// question nobody asked.
-fn retry(
-    engine: &mut stt::Stt,
-    back: usize,
-    cleanup: refine::Cleanup,
-    gpu: Option<usize>,
-) -> Result<()> {
+fn retry(engine: &mut stt::Stt, back: usize, cleanup: refine::Cleanup) -> Result<()> {
     let takes = recorded_takes()?;
     let Some(raw_path) = takes.iter().rev().nth(back) else {
         bail!(
@@ -315,12 +234,10 @@ fn retry(
     if !cleanup.wants_model() {
         return Ok(());
     }
-    match refine::Refiner::load(&refine::model_path(), gpu) {
-        Ok(refiner) => match refiner.refine(&raw_text, &refine::Style::current(cleanup)) {
-            Ok(refined) => println!("refined   {refined}"),
-            Err(err) => eprintln!("refining failed: {err}"),
-        },
-        Err(err) => eprintln!("refining unavailable: {err}"),
+    let refiner = refine::Refiner::new(config::Config::load().openrouter_key.unwrap_or_default());
+    match refiner.refine(&raw_text, &refine::Style::current(cleanup)) {
+        Ok(refined) => println!("refined   {refined}"),
+        Err(err) => eprintln!("refining failed: {err}"),
     }
     Ok(())
 }
@@ -378,41 +295,31 @@ fn logs(args: &[String]) -> Result<()> {
     .context("running journalctl - is this a systemd machine?")
 }
 
-/// Where refining would run on this machine, as `key<TAB>value` lines.
+/// Whether OpenRouter answers, as `key<TAB>value` lines.
 ///
-/// The console cannot answer this itself: enumerating GPUs means llama.cpp,
-/// and the whole reason the window is a second binary is that it does not carry
-/// that tree. So it asks the daemon binary, which already knows.
+/// The console asks the daemon binary rather than calling OpenRouter itself
+/// because the key lives in the daemon's config and the answer has to be the
+/// one dictation would actually get - a window that checked its own way could
+/// report connected while the hotkey fails.
 ///
-/// The reason it can read the config at all without a `?` is `Config::load`,
-/// which every command now shares: a broken line is a reason to ignore a
-/// `gpu = ` override, not a reason to refuse to say what hardware is present.
+/// A real request, not a reachability ping. Missing, rejected and out-of-credit
+/// keys all fail here, and only the last of those is invisible to a socket
+/// test.
 fn probe() -> Result<()> {
-    let gpu = config::Config::load().gpu;
-    let plan = refine::plan(gpu);
-
-    match plan.device {
-        Some(device) => {
-            println!("refine\t{}", device.description);
-            println!(
-                "detail\tVulkan · {:.1} GB free",
-                device.free_bytes as f64 / 1e9
-            );
-        }
+    let key = config::Config::load().openrouter_key;
+    match key {
         None => {
-            println!("refine\tCPU");
-            println!(
-                "detail\t{}",
-                if plan.best_free == 0 {
-                    format!("no GPU found · needs {:.1} GB", plan.needed as f64 / 1e9)
-                } else {
-                    format!(
-                        "needs {:.1} GB, the roomiest card has {:.1} GB",
-                        plan.needed as f64 / 1e9,
-                        plan.best_free as f64 / 1e9
-                    )
-                }
-            );
+            println!("router\tNo key");
+            println!("detail\tAdd an OpenRouter key in Settings");
+        }
+        Some(key) => {
+            if refine::Refiner::new(key).reachable() {
+                println!("router\tConnected");
+                println!("detail\t{} · {}", router::STT_MODEL, router::REFINE_MODEL);
+            } else {
+                println!("router\tDisconnected");
+                println!("detail\tOpenRouter did not answer - check the key and the network");
+            }
         }
     }
     Ok(())

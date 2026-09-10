@@ -3,9 +3,8 @@
 # without this, `cargo test --workspace` built flow-paths but ran none of its
 # tests.
 #
-# The console stays out on purpose - it is its own workspace root so that
-# iced's tree and llama.cpp's tree are never resolved together. CI runs it as
-# a separate step.
+# The console stays out on purpose - it is its own workspace root, and CI runs
+# it as a separate step.
 members = [".", "crates/flow-paths"]
 exclude = ["crates/console"]
 
@@ -23,8 +22,6 @@ evdev = "0.13.2"
 flow-paths = { path = "crates/flow-paths" }
 hound = "3.5.1"
 libc = "0.2.189"
-llama-cpp-2 = { version = "0.1.154", features = ["vulkan"] }
-parakeet-rs = "0.3.7"
 serde_json = "1.0.151"
 realfft = "3.5.0"
 signal-hook = "0.4.4"
@@ -54,11 +51,10 @@ debug = 1
 
 # Dependencies optimised even in a debug build; this crate left alone.
 #
-# Without this `flow-dev` is a toy: llama.cpp and parakeet built at opt-level 0
-# turn a two-second transcription into most of a minute, and a dictation you
-# have to wait out is not a dictation you can judge the feel of. They are
-# third-party and never stepped through, so there is nothing to lose by
-# optimising them - and this crate stays at 0, which is what keeps the edit to
-# on-screen loop at a few seconds.
+# This existed for llama.cpp and parakeet, which at opt-level 0 turned a
+# two-second transcription into most of a minute. Both are gone and inference
+# is a network call now, so the override buys much less - kept because the
+# audio and resampling crates on the capture path are still real work, and
+# dropping it is a build-time measurement nobody has made yet.
 [profile.dev.package."*"]
 opt-level = 3
