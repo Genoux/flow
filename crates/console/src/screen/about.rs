@@ -11,13 +11,7 @@ impl Console {
         // rather than files on disk, so they cannot be missing or damaged.
         let rows: Vec<Element<Message>> = vec![
             self.version_row(),
-            fact_row(
-                "Build",
-                match self.channel {
-                    system::Channel::Stable => "Stable".to_string(),
-                    system::Channel::Experimental => "Experimental".to_string(),
-                },
-            ),
+            fact_row("Build", "Experimental · MAI + Flash-Lite".to_string()),
             fact_row("Speech", "microsoft/mai-transcribe-2".to_string()),
             fact_row("Polish", "google/gemini-3.1-flash-lite".to_string()),
             fact_row("Session", self.session.clone()),
@@ -28,11 +22,7 @@ impl Console {
         // Not "push-to-talk": tap to start and tap to stop is the other half
         // of the Shortcut group, and naming only one of them here made the
         // product's one-line description describe a setting.
-        section_shell(
-            "Flow",
-            "Dictation through MAI and Flash-Lite.",
-            rows,
-        )
+        section_shell("Flow", "Dictation through MAI and Flash-Lite.", rows)
     }
 
     fn version_row(&self) -> Element<'_, Message> {
@@ -40,6 +30,8 @@ impl Console {
 
         let action = if self.updating {
             action_msg("Updating…", true, Message::InstallUpdate)
+        } else if matches!(self.update, update::Status::Installed(_)) {
+            action_msg("Restart Flow", true, Message::RestartApp)
         } else if let update::Status::Available(tag) = &self.update {
             action_msg(&format!("Update to {tag}"), true, Message::InstallUpdate)
         } else if self.update == update::Status::Checking {

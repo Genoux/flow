@@ -277,6 +277,9 @@ enum Message {
     TypingKey(String),
     /// Switch which build runs on the next restart.
     SetChannel(bool),
+    ChannelInstalled(Result<(), String>),
+    RestartApp,
+    AppRestarted(Result<(), String>),
     SaveKey,
     Select(Section),
     BannersAllocated(Vec<Result<iced::advanced::image::Allocation, iced::advanced::image::Error>>),

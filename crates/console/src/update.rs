@@ -110,7 +110,7 @@ pub fn latest() -> Status {
     };
 
     match code.trim() {
-        "200" => match pick(json, running()) {
+        "200" => match pick_channel(json, crate::system::channel()) {
             Err(reason) => Status::Failed(reason),
             Ok(Some(tag)) if newer(&tag, running()) => Status::Available(tag),
             Ok(_) => Status::Current,
@@ -131,27 +131,114 @@ pub fn latest() -> Status {
 /// it was started from. It does mean the new version only appears on the next
 /// launch, which is what `Status::Installed` exists to say.
 pub fn install(tag: &str) -> Result<(), String> {
+    install_channel(tag, crate::system::channel(), false)
+}
+
+pub fn join_channel(channel: crate::system::Channel) -> Result<(), String> {
+    if channel == crate::system::Channel::Stable && crate::system::channel_installed(channel) {
+        return crate::system::set_channel(channel);
+    }
+    let output = Command::new("curl")
+        .args(["-fsSL", "--max-time", TIMEOUT_SECONDS, RELEASES])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("Could not fetch releases. Your current build is unchanged.".into());
+    }
+    let tag = pick_channel(&String::from_utf8_lossy(&output.stdout), channel)?
+        .ok_or("No published release is available for that channel.")?;
+    install_channel(&tag, channel, true)?;
+    crate::system::set_channel(channel)
+}
+
+fn pick_channel(json: &str, channel: crate::system::Channel) -> Result<Option<String>, String> {
+    let releases: Vec<serde_json::Value> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    Ok(releases
+        .iter()
+        .filter(|r| r["draft"].as_bool() == Some(false))
+        .filter(|r| match channel {
+            crate::system::Channel::Stable => r["prerelease"].as_bool() == Some(false),
+            crate::system::Channel::Experimental => r["prerelease"].as_bool() == Some(true),
+        })
+        .filter_map(|r| r["tag_name"].as_str())
+        .filter(|t| semver::Version::parse(t.trim_start_matches('v')).is_ok())
+        .filter(|t| channel != crate::system::Channel::Experimental || t.contains("-experimental."))
+        .max_by(|a, b| {
+            semver::Version::parse(a.trim_start_matches('v'))
+                .unwrap()
+                .cmp(&semver::Version::parse(b.trim_start_matches('v')).unwrap())
+        })
+        .map(str::to_owned))
+}
+
+fn install_channel(
+    tag: &str,
+    channel: crate::system::Channel,
+    staging: bool,
+) -> Result<(), String> {
+    semver::Version::parse(tag.strip_prefix('v').ok_or("Invalid release tag")?)
+        .map_err(|_| "Invalid release tag")?;
     let name = format!("flow-{tag}-x86_64-linux");
-    let dir = std::env::temp_dir().join(format!("flow-update-{tag}"));
-    // Left over from an interrupted attempt otherwise, and tar would unpack
-    // over a half-written tree.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("flow-update-{}-{unique}", std::process::id()));
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|err| err.to_string())?;
 
-    let tarball = dir.join(format!("{name}.tar.gz"));
-    run(Command::new("curl")
-        .args(["-sSL", "--fail", "--max-time", "600", "-o"])
-        .arg(&tarball)
-        .arg(format!("{DOWNLOAD}/{tag}/{name}.tar.gz")))?;
-    run(Command::new("tar")
-        .arg("xzf")
-        .arg(&tarball)
-        .arg("-C")
-        .arg(&dir))?;
-    run(Command::new("bash").arg(dir.join(&name).join("packaging/install.sh")))?;
+    let result = (|| {
+        let tarball = dir.join(format!("{name}.tar.gz"));
+        run(Command::new("curl")
+            .args(["-sSL", "--fail", "--max-time", "600", "-o"])
+            .arg(&tarball)
+            .arg(format!("{DOWNLOAD}/{tag}/{name}.tar.gz")))?;
+        let checksum = dir.join(format!("{name}.tar.gz.sha256"));
+        run(Command::new("curl")
+            .args(["-fsSL", "--max-time", "30", "-o"])
+            .arg(&checksum)
+            .arg(format!("{DOWNLOAD}/{tag}/{name}.tar.gz.sha256")))?;
+        let expected = std::fs::read_to_string(&checksum).map_err(|e| e.to_string())?;
+        let hash = expected
+            .split_whitespace()
+            .next()
+            .ok_or("Missing checksum")?;
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("Invalid release checksum".into());
+        }
+        let actual = Command::new("sha256sum")
+            .arg(&tarball)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !actual.status.success()
+            || String::from_utf8_lossy(&actual.stdout)
+                .split_whitespace()
+                .next()
+                != Some(hash)
+        {
+            return Err("Release checksum mismatch. Installation cancelled.".into());
+        }
+        run(Command::new("tar")
+            .arg("xzf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&dir))?;
+        let mut installer = Command::new("bash");
+        installer
+            .arg(dir.join(&name).join("packaging/install.sh"))
+            .args(["--channel", channel.suffix()]);
+        if staging {
+            installer.args(["--no-activate", "--no-restart"]);
+        }
+        run(&mut installer)?;
 
+        Ok(())
+    })();
     let _ = std::fs::remove_dir_all(&dir);
-    Ok(())
+    result
 }
 
 /// Run a command to completion, failing with whatever it said on stderr.
@@ -175,29 +262,6 @@ fn run(command: &mut Command) -> Result<(), String> {
     })
 }
 
-/// The highest release this build is allowed to be offered, if any.
-///
-/// A stable build is never offered a prerelease: someone who installed 0.2.0
-/// should not be walked onto 0.3.0-alpha.1 by a check that runs on open.
-/// Running a prerelease is the opt-in, and it is the only one there is.
-fn pick(json: &str, running: &str) -> Result<Option<String>, String> {
-    let releases: Vec<serde_json::Value> =
-        serde_json::from_str(json).map_err(|err| format!("GitHub sent no release list: {err}"))?;
-    let wants_prerelease = parse(running).1;
-    Ok(releases
-        .iter()
-        .filter(|release| !release["draft"].as_bool().unwrap_or(false))
-        .filter(|release| wants_prerelease || !release["prerelease"].as_bool().unwrap_or(false))
-        .filter_map(|release| release["tag_name"].as_str())
-        // Ordered by when they were cut, not by version, so a patch backported
-        // after a minor sits above it. Ask which is actually higher.
-        .fold(None, |best: Option<&str>, tag| match best {
-            Some(best) if !newer(tag, best) => Some(best),
-            _ => Some(tag),
-        })
-        .map(str::to_string))
-}
-
 /// Whether `candidate` is a later version than `running`.
 ///
 /// Compared field by field as numbers, so 0.10.0 beats 0.9.0 - which string
@@ -209,6 +273,12 @@ fn pick(json: &str, running: &str) -> Result<Option<String>, String> {
 /// `-rc1` as a fourth field made it *higher*, which would have offered an
 /// update to the release candidate of a version already installed.
 fn newer(candidate: &str, running: &str) -> bool {
+    if let (Ok(candidate), Ok(running)) = (
+        semver::Version::parse(candidate.trim_start_matches('v')),
+        semver::Version::parse(running.trim_start_matches('v')),
+    ) {
+        return candidate > running;
+    }
     let (candidate_release, candidate_pre) = parse(candidate);
     let (running_release, running_pre) = parse(running);
     match candidate_release.cmp(&running_release) {
@@ -234,7 +304,31 @@ fn parse(version: &str) -> (Vec<u64>, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{newer, parse, pick, Status};
+    use super::{newer, parse, pick_channel, Status};
+    use crate::system::Channel;
+
+    #[test]
+    fn channel_selection_survives_mixed_releases_and_numeric_prereleases() {
+        let releases = r#"[
+            {"tag_name":"v0.3.0","draft":false,"prerelease":false},
+            {"tag_name":"v0.3.0-experimental.9","draft":false,"prerelease":true},
+            {"tag_name":"v0.3.0-experimental.10","draft":false,"prerelease":true},
+            {"tag_name":"v9.0.0-alpha.1","draft":false,"prerelease":true},
+            {"tag_name":"v9.0.0-experimental.1","draft":true,"prerelease":true}
+        ]"#;
+        assert_eq!(
+            pick_channel(releases, Channel::Stable).unwrap().as_deref(),
+            Some("v0.3.0")
+        );
+        assert_eq!(
+            pick_channel(releases, Channel::Experimental)
+                .unwrap()
+                .as_deref(),
+            Some("v0.3.0-experimental.10")
+        );
+        assert!(newer("v0.3.0-experimental.10", "0.3.0-experimental.9"));
+        assert!(!newer("v0.3.0-experimental.1", "0.3.0"));
+    }
 
     #[test]
     fn later_versions_are_newer() {
@@ -268,7 +362,7 @@ mod tests {
     /// first, drafts included for whoever can see them.
     const LIST: &str = r#"[
         {"tag_name":"v0.3.0","draft":true,"prerelease":false},
-        {"tag_name":"v0.2.0-alpha.1","draft":false,"prerelease":true},
+        {"tag_name":"v0.3.0-experimental.1","draft":false,"prerelease":true},
         {"tag_name":"v0.1.3-alpha.2","draft":false,"prerelease":true},
         {"tag_name":"v0.1.2","draft":false,"prerelease":false}
     ]"#;
@@ -279,14 +373,17 @@ mod tests {
     #[test]
     fn a_prerelease_build_is_offered_the_newest_prerelease() {
         assert_eq!(
-            pick(LIST, "0.1.3-alpha.2"),
-            Ok(Some("v0.2.0-alpha.1".into()))
+            pick_channel(LIST, Channel::Experimental),
+            Ok(Some("v0.3.0-experimental.1".into()))
         );
     }
 
     #[test]
     fn a_stable_build_is_never_walked_onto_a_prerelease() {
-        assert_eq!(pick(LIST, "0.1.2"), Ok(Some("v0.1.2".into())));
+        assert_eq!(
+            pick_channel(LIST, Channel::Stable),
+            Ok(Some("v0.1.2".into()))
+        );
         // And that is not an update, so nothing gets offered.
         assert!(!newer("v0.1.2", "0.1.2"));
     }
@@ -295,8 +392,8 @@ mod tests {
     fn a_draft_is_invisible_even_to_a_prerelease_build() {
         // v0.3.0 is the highest tag in the list and must still lose.
         assert_eq!(
-            pick(LIST, "0.2.0-alpha.1"),
-            Ok(Some("v0.2.0-alpha.1".into()))
+            pick_channel(LIST, Channel::Experimental),
+            Ok(Some("v0.3.0-experimental.1".into()))
         );
     }
 
@@ -308,13 +405,16 @@ mod tests {
             {"tag_name":"v0.1.4","draft":false,"prerelease":false},
             {"tag_name":"v0.9.0","draft":false,"prerelease":false}
         ]"#;
-        assert_eq!(pick(out_of_order, "0.1.0"), Ok(Some("v0.9.0".into())));
+        assert_eq!(
+            pick_channel(out_of_order, Channel::Stable),
+            Ok(Some("v0.9.0".into()))
+        );
     }
 
     #[test]
     fn a_repo_with_no_releases_offers_nothing_and_is_not_an_error() {
-        assert_eq!(pick("[]", "0.1.0"), Ok(None));
-        assert!(pick("not json", "0.1.0").is_err());
+        assert_eq!(pick_channel("[]", Channel::Stable), Ok(None));
+        assert!(pick_channel("not json", Channel::Stable).is_err());
     }
 
     /// The unit tests above all feed `newer` and `tag_of` strings this file

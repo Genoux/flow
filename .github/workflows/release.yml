@@ -67,6 +67,17 @@ jobs:
             fi
           done
 
+      - name: Channel matches the tag
+        run: |
+          channel=$(cat packaging/channel)
+          case "$GITHUB_REF_NAME:$channel" in
+            v*-experimental.*:experimental) ;;
+            v*-*:*) exit 1 ;;
+            v*:stable) ;;
+            *) exit 1 ;;
+          esac
+          python3 tests/packaging_channels.py
+
       # A tag can point anywhere, including a branch CI never saw. Building an
       # untested binary is cheap; shipping one is not.
       # --release so the tests and the shipped binary share one set of

@@ -173,18 +173,30 @@ impl Console {
                 }
             }
             Message::SetChannel(experimental) => {
+                if self.updating {
+                    return Task::none();
+                }
                 let wanted = if experimental {
                     system::Channel::Experimental
                 } else {
                     system::Channel::Stable
                 };
-                match system::set_channel(wanted) {
-                    // Read back rather than assumed: if the link did not move,
-                    // the switch must not claim it did.
-                    Ok(()) => self.channel = system::channel(),
+                self.updating = true;
+                self.save_error = None;
+                return Task::perform(
+                    async move { update::join_channel(wanted) },
+                    Message::ChannelInstalled,
+                );
+            }
+            Message::ChannelInstalled(result) => {
+                self.updating = false;
+                match result {
+                    Ok(()) => {
+                        self.channel = system::channel();
+                        self.update = update::Status::Installed(self.channel.suffix().into());
+                    }
                     Err(error) => self.save_error = Some(error),
                 }
-                return Task::none();
             }
             // The banner's one action. There is nothing to install any more, so
             // "finish setup" means "go and paste the key".
@@ -445,7 +457,25 @@ impl Console {
                     return Task::perform(async { update::latest() }, Message::UpdateChecked);
                 }
             }
-            Message::UpdateChecked(status) => self.update = status,
+            Message::UpdateChecked(status) => {
+                if !self.updating && !matches!(self.update, update::Status::Installed(_)) {
+                    self.update = status;
+                }
+            }
+            Message::RestartApp => {
+                if self.updating || self.save_pending {
+                    return Task::none();
+                }
+                self.updating = true;
+                return Task::perform(async { system::restart_app() }, Message::AppRestarted);
+            }
+            Message::AppRestarted(result) => {
+                self.updating = false;
+                match result {
+                    Ok(()) => return iced::exit(),
+                    Err(error) => self.save_error = Some(error),
+                }
+            }
             Message::InstallUpdate => {
                 if let (false, update::Status::Available(tag)) = (self.updating, &self.update) {
                     let tag = tag.clone();

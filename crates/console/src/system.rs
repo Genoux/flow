@@ -125,7 +125,11 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
 /// binary is about to run. Reading the link cannot be wrong, and someone who
 /// repoints it by hand gets a window that agrees with them.
 pub fn channel() -> Channel {
-    let link = bin_dir().join("flow");
+    channel_in(&bin_dir())
+}
+
+fn channel_in(dir: &std::path::Path) -> Channel {
+    let link = dir.join("flow");
     match std::fs::read_link(&link) {
         Ok(target) if target.to_string_lossy().ends_with("-experimental") => Channel::Experimental,
         Ok(_) => Channel::Stable,
@@ -142,7 +146,7 @@ pub enum Channel {
 }
 
 impl Channel {
-    fn suffix(self) -> &'static str {
+    pub fn suffix(self) -> &'static str {
         match self {
             Channel::Stable => "stable",
             Channel::Experimental => "experimental",
@@ -165,24 +169,67 @@ fn bin_dir() -> std::path::PathBuf {
 /// back is the same operation - which is the whole reason both builds stay on
 /// disk rather than one replacing the other.
 pub fn set_channel(channel: Channel) -> Result<(), String> {
-    let dir = bin_dir();
+    set_channel_in(&bin_dir(), channel)
+}
+
+pub fn channel_installed(channel: Channel) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    ["flow", "flow-console"].iter().all(|name| {
+        bin_dir()
+            .join(format!("{name}-{}", channel.suffix()))
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
+}
+
+fn set_channel_in(dir: &std::path::Path, channel: Channel) -> Result<(), String> {
     for name in ["flow", "flow-console"] {
-        let link = dir.join(name);
-        let target = format!("{name}-{}", channel.suffix());
-        if !dir.join(&target).exists() {
+        let target = dir.join(format!("{name}-{}", channel.suffix()));
+        use std::os::unix::fs::PermissionsExt;
+        if !target
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        {
             return Err(format!(
-                "{target} is not installed - install that build first"
+                "{} is not installed or executable",
+                target.display()
             ));
         }
-        // A regular file here is a pre-channels install; symlink creation will
-        // not replace one, so it has to go.
-        if link.exists() && !link.is_symlink() {
-            std::fs::remove_file(&link).map_err(|err| format!("replacing {name}: {err}"))?;
-        }
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&target, &link)
-            .map_err(|err| format!("pointing {name} at {target}: {err}"))?;
     }
+    let stage = dir.join(".flow-channel-switch");
+    std::fs::create_dir(&stage).map_err(|e| format!("Preparing channel switch: {e}"))?;
+    let result = (|| -> std::io::Result<()> {
+        for name in ["flow", "flow-console"] {
+            let link = dir.join(name);
+            if link.symlink_metadata().is_ok() {
+                std::fs::hard_link(&link, stage.join(format!("{name}.old")))?;
+            }
+            std::os::unix::fs::symlink(format!("{name}-{}", channel.suffix()), stage.join(name))?;
+        }
+        std::fs::rename(stage.join("flow"), dir.join("flow"))?;
+        if let Err(error) = std::fs::rename(stage.join("flow-console"), dir.join("flow-console")) {
+            let backup = stage.join("flow.old");
+            if backup.symlink_metadata().is_ok() {
+                std::fs::rename(backup, dir.join("flow"))?;
+            } else {
+                std::fs::remove_file(dir.join("flow"))?;
+            }
+            return Err(error);
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(stage);
+    result.map_err(|e| format!("Switching release: {e}"))
+}
+
+pub fn restart_app() -> Result<(), String> {
+    let console = bin_dir().join("flow-console");
+    if !console.is_file() {
+        return Err("The selected console is missing. Install the release again.".into());
+    }
+    service("stop")?;
+    let _ = run("systemctl", &["--user", "try-restart", "flow-tray.service"]);
+    Command::new(console).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -447,18 +494,17 @@ mod tests {
             "flow-console-experimental",
         ] {
             std::fs::write(bin.join(name), "").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
         }
         // A pre-channels install: a real file where the link belongs.
         std::fs::write(bin.join("flow"), "").unwrap();
 
-        // SAFETY: single-threaded test process, restored before returning.
-        let previous = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", &root) };
+        assert_eq!(channel_in(&bin), Channel::Stable, "no link reads as stable");
 
-        assert_eq!(channel(), Channel::Stable, "no link reads as stable");
-
-        set_channel(Channel::Experimental).unwrap();
-        assert_eq!(channel(), Channel::Experimental);
+        set_channel_in(&bin, Channel::Experimental).unwrap();
+        assert_eq!(channel_in(&bin), Channel::Experimental);
         assert!(
             bin.join("flow").is_symlink(),
             "the regular file was replaced"
@@ -471,17 +517,20 @@ mod tests {
             "the console link must move with the daemon link"
         );
 
-        set_channel(Channel::Stable).unwrap();
+        set_channel_in(&bin, Channel::Stable).unwrap();
         assert_eq!(
-            channel(),
+            channel_in(&bin),
             Channel::Stable,
             "switching back is the same click"
         );
 
-        match previous {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
+        std::fs::remove_file(bin.join("flow-console-experimental")).unwrap();
+        assert!(set_channel_in(&bin, Channel::Experimental).is_err());
+        assert_eq!(channel_in(&bin), Channel::Stable);
+        assert_eq!(
+            std::fs::read_link(bin.join("flow-console")).unwrap(),
+            std::path::Path::new("flow-console-stable")
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

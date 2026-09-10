@@ -2,7 +2,7 @@
 
 Hold a key, talk, let go. The text appears where your cursor already was.
 
-Flow is a voice dictation daemon for Linux. Speech recognition and refining use
+This branch builds Flow’s experimental release for Linux. Speech recognition and refining use
 the selected OpenRouter models. There is no window to focus and no button to
 press: the only interface is a key you hold and a small island that appears
 while you speak.
@@ -20,7 +20,8 @@ while you speak.
 ## Install
 
 ```bash
-git clone https://github.com/Genoux/flow && cd flow && ./packaging/install.sh
+git clone --branch experiment/local-cloud https://github.com/Genoux/flow
+cd flow && ./packaging/install.sh
 ```
 
 Or download a release tarball, unpack it, and run the same `packaging/install.sh`
@@ -44,11 +45,14 @@ a rejected key is running and useless, so the word says which.
 Updating is the same script — `git pull && ./packaging/install.sh` — which
 restarts the daemon onto the new build if it was already running.
 
-Two builds can be installed side by side — `./packaging/install.sh --channel
-experimental` puts one in without touching the stable binary. A symlink decides
-which one runs, and **Settings → Build** repoints it for the next restart. The
-experimental channel is the opt-in release lane for changes that need feedback;
-stable remains available for daily use.
+There are two release channels. **Stable** keeps Parakeet and Qwen running locally.
+**Experimental** uses MAI-Transcribe-2 and Gemini 3.1 Flash-Lite through OpenRouter.
+In stable v0.3.0 or later, enable **Settings → Build → Experimental build**.
+Flow downloads and verifies the experimental release; click **Restart Flow**,
+then add your OpenRouter key. Audio and text leave your device, and usage is billed
+to your OpenRouter account. Disable the toggle and restart to return to stable.
+Both builds, your local models, settings and history stay on disk. Updates follow
+the selected channel. A release installer refuses to install under the wrong channel.
 
 Removing it is `./packaging/uninstall.sh`. That leaves your config and history
 alone, and prints how to delete those if you want them gone.
@@ -97,9 +101,8 @@ Two models, both through OpenRouter:
 
 Both choices are fixed in the current release: MAI-Transcribe-2 handles speech
 and Gemini 3.1 Flash-Lite applies the selected cleanup level. The prompt, cleanup
-levels and guards around the model's answer are shared by stable and experimental
-builds; the experimental channel is for future product changes, not a silent
-model change in a stable install.
+levels and guards protect the experimental model's answer. Stable continues using
+its local Parakeet and Qwen pipeline.
 
 A dictation longer than 45 seconds is split before it is sent, cut inside real
 silence rather than at a stopwatch, because the provider times out at 60

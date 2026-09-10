@@ -122,6 +122,13 @@ fn post(key: &str, path: &str, body: &str, timeout: Duration) -> Result<serde_js
 }
 
 fn send(key: &str, path: &str, scratch: &Path, timeout: Duration) -> Result<serde_json::Value> {
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+    {
+        bail!("Invalid OpenRouter key");
+    }
     let mut child = Command::new("curl")
         .args(["--silent", "--show-error", "-K", "-"])
         .stdin(Stdio::piped())
@@ -141,8 +148,13 @@ fn send(key: &str, path: &str, scratch: &Path, timeout: Duration) -> Result<serd
          data-binary = \"@{}\"\n\
          max-time = {}\n\
          fail-with-body\n",
-        scratch.display(),
-        timeout.as_secs().max(1),
+        scratch
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r"),
+        timeout.as_secs_f64().max(0.001),
     );
     child
         .stdin
@@ -181,8 +193,7 @@ fn scratch_file() -> PathBuf {
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .mode(0o600)
         .open(path)?;

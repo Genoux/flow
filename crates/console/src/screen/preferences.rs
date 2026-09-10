@@ -176,24 +176,34 @@ impl Console {
         )]
     }
 
-    /// Two builds are installed side by side and a symlink picks which one
-    /// runs, so this switch is reversible in a way a version channel is not:
-    /// stable never left the disk, and going back is the same click.
-    ///
-    /// It deliberately does not restart anything. The daemon in memory is the
-    /// old binary and so is this window; pretending otherwise would show a
-    /// switch that had moved over a Flow that had not.
     fn channel_rows(&self) -> Vec<Element<'_, Message>> {
         let on = self.channel == crate::system::Channel::Experimental;
-        vec![setting(
+        let mut rows = vec![setting(
             "Experimental build",
-            if on {
-                "Running the experimental build after the next restart."
+            if self.updating {
+                "Downloading and verifying the release…"
+            } else if on {
+                "MAI + Flash-Lite. Audio and text go to OpenRouter; an API key and usage charges apply. Restart Flow to apply."
             } else {
-                "Stable. The experimental build stays installed either way."
+                "Opt in to MAI + Flash-Lite through OpenRouter. Audio leaves your device and usage charges apply. You can return to local dictation."
             },
             toggle(on, self.travel("channel"), Message::SetChannel),
-        )]
+        )];
+        let pending = matches!(self.update, update::Status::Installed(_));
+        rows.push(setting(
+            "Selected release",
+            if pending {
+                "Restart to use the selected build."
+            } else {
+                "Updates stay within your selected channel."
+            },
+            if pending {
+                action_msg("Restart Flow", true, Message::RestartApp)
+            } else {
+                iced::widget::Space::new().width(110).into()
+            },
+        ));
+        rows
     }
 
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {
