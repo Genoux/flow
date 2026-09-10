@@ -1,6 +1,6 @@
 [package]
 name = "flow-console"
-version = "0.3.1"
+version = "0.3.1-experimental.1"
 edition = "2021"
 license = "MIT"
 description = "Status and settings window for the Flow dictation daemon"
