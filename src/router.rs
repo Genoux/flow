@@ -1,8 +1,8 @@
-//! OpenRouter, which is where every transcription and every refinement now
-//! goes.
+//! OpenRouter, which is where every refinement goes. Speech-to-text is local
+//! now (see `stt.rs`); this module is the cloud editor and nothing else.
 //!
 //! curl rather than an HTTP crate, the same call `update.rs` already makes for
-//! releases. Both requests here are one round trip with a JSON reply - no
+//! releases. The request here is one round trip with a JSON reply - no
 //! streaming, no connection reuse worth keeping - and pulling reqwest, rustls
 //! and an async runtime into a synchronous daemon buys none of that back.
 //!
@@ -28,9 +28,6 @@ const API: &str = "https://openrouter.ai/api/v1";
 pub const REFINE_MODEL: &str = "google/gemini-3.1-flash-lite";
 const REFINE_PROVIDER: &str = "google-ai-studio";
 
-/// The recognizer the experiment settled on.
-pub const STT_MODEL: &str = "microsoft/mai-transcribe-2";
-
 /// Ask the editor to clean one dictation.
 pub fn chat(key: &str, system: &str, user: &str, timeout: Duration) -> Result<String> {
     let body = serde_json::json!({
@@ -45,31 +42,6 @@ pub fn chat(key: &str, system: &str, user: &str, timeout: Duration) -> Result<St
         ],
     });
     parse_chat(&post(key, "/chat/completions", &body.to_string(), timeout)?)
-}
-
-/// Transcribe one utterance. `wav` is a complete RIFF file, not raw samples.
-pub fn transcribe(key: &str, wav: &[u8], timeout: Duration) -> Result<String> {
-    let body = serde_json::json!({
-        "model": STT_MODEL,
-        "input_audio": {"data": base64(wav), "format": "wav"},
-    });
-    parse_transcript(&post(
-        key,
-        "/audio/transcriptions",
-        &body.to_string(),
-        timeout,
-    )?)
-}
-
-/// The transcript, or why there isn't one.
-fn parse_transcript(reply: &serde_json::Value) -> Result<String> {
-    if let Some(message) = error_message(reply) {
-        bail!("OpenRouter refused the audio: {message}");
-    }
-    let Some(text) = reply.get("text").and_then(|t| t.as_str()) else {
-        bail!("OpenRouter sent no transcript");
-    };
-    Ok(text.trim().to_string())
 }
 
 /// The edited text, or why there isn't one.
@@ -121,6 +93,19 @@ fn post(key: &str, path: &str, body: &str, timeout: Duration) -> Result<serde_js
     result
 }
 
+/// Every transport failure - curl missing, the connection refused, the
+/// deadline hit - is worded to start with this, and nothing else is. `probe`
+/// matches on it to tell a dead network apart from a key OpenRouter answered
+/// and refused; a parallel error type for one boolean would outweigh the one
+/// string this module already controls end to end.
+const UNREACHABLE_PREFIX: &str = "could not reach OpenRouter";
+
+/// Whether an error from [`chat`] means OpenRouter never answered, as
+/// opposed to a reply that arrived and said no.
+pub fn is_transport_failure(err: &anyhow::Error) -> bool {
+    err.to_string().starts_with(UNREACHABLE_PREFIX)
+}
+
 fn send(key: &str, path: &str, scratch: &Path, timeout: Duration) -> Result<serde_json::Value> {
     if key.is_empty()
         || !key
@@ -170,7 +155,7 @@ fn send(key: &str, path: &str, scratch: &Path, timeout: Duration) -> Result<serd
         let reason = String::from_utf8_lossy(&output.stderr);
         let reason = reason.trim();
         bail!(
-            "could not reach OpenRouter{}",
+            "{UNREACHABLE_PREFIX}{}",
             if reason.is_empty() {
                 String::new()
             } else {
@@ -179,6 +164,68 @@ fn send(key: &str, path: &str, scratch: &Path, timeout: Duration) -> Result<serd
         );
     }
     serde_json::from_slice(&output.stdout).context("OpenRouter sent something that is not JSON")
+}
+
+/// Whether OpenRouter accepts this key, without buying anything.
+///
+/// `GET /key` is not an inference endpoint, so this costs nothing and can run
+/// every time the window opens - which a refining request could not, and that
+/// is the whole reason this exists rather than reusing `chat`. Decided on the
+/// status line alone: the body's shape is OpenRouter's to change, and 200
+/// versus 401 is the entire question.
+///
+/// `Ok(false)` is a live answer that the key is bad. `Err` means no answer at
+/// all, which is a different thing to tell the user.
+pub fn key_accepted(key: &str, timeout: Duration) -> Result<bool> {
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+    {
+        bail!("Invalid OpenRouter key");
+    }
+    let mut child = Command::new("curl")
+        .args(["--silent", "--output", "/dev/null", "-K", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("curl is not installed")?;
+
+    // Same `-K -` handling as `send`: the key never reaches argv.
+    let options = format!(
+        "url = \"{API}/key\"\n\
+         header = \"Authorization: Bearer {key}\"\n\
+         write-out = \"%{{http_code}}\"\n\
+         max-time = {}\n",
+        timeout.as_secs_f64().max(0.001),
+    );
+    child
+        .stdin
+        .take()
+        .expect("piped")
+        .write_all(options.as_bytes())
+        .context("handing curl its options")?;
+
+    let output = child.wait_with_output().context("running curl")?;
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    match status.parse::<u16>() {
+        Ok(code) if (200..300).contains(&code) => Ok(true),
+        Ok(401..=403) => Ok(false),
+        Ok(code) => bail!("could not reach OpenRouter: it answered {code}"),
+        Err(_) => {
+            let reason = String::from_utf8_lossy(&output.stderr);
+            let reason = reason.trim();
+            bail!(
+                "could not reach OpenRouter{}",
+                if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {reason}")
+                }
+            )
+        }
+    }
 }
 
 fn scratch_file() -> PathBuf {
@@ -200,64 +247,15 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)
 }
 
-/// Standard base64, which is what the audio field wants. Small enough to spell
-/// out that adding a crate for it would be the larger change.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let block = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |acc, (i, b)| acc | (*b as u32) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ALPHABET[(block >> (18 - 6 * i) & 0b11_1111) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn base64_matches_the_reference_vectors() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foob"), "Zm9vYg==");
-        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-        // A RIFF header is the real input, and it is the byte range where an
-        // off-by-one in the shift arithmetic would show up.
-        assert_eq!(base64(&[0xff, 0xfe, 0xfd]), "//79");
-    }
-
-    #[test]
-    fn a_transcript_is_trimmed() {
-        let reply = serde_json::json!({"text": "  hello there\n"});
-        assert_eq!(parse_transcript(&reply).unwrap(), "hello there");
-    }
-
-    #[test]
     fn a_provider_error_is_reported_not_swallowed() {
         let reply = serde_json::json!({"error": {"message": "insufficient credits"}});
-        let err = parse_transcript(&reply).unwrap_err().to_string();
-        assert!(err.contains("insufficient credits"), "{err}");
-
         let err = parse_chat(&reply).unwrap_err().to_string();
         assert!(err.contains("insufficient credits"), "{err}");
-    }
-
-    #[test]
-    fn a_reply_with_no_transcript_is_an_error() {
-        assert!(parse_transcript(&serde_json::json!({"usage": {}})).is_err());
     }
 
     #[test]
@@ -281,5 +279,14 @@ mod tests {
             "choices": [{"finish_reason": "stop", "message": {"content": "   "}}]
         });
         assert!(parse_chat(&blank).is_err());
+    }
+
+    #[test]
+    fn only_a_transport_failure_reads_as_unreachable() {
+        let network = anyhow::anyhow!("could not reach OpenRouter: timed out");
+        assert!(is_transport_failure(&network));
+
+        let refused = anyhow::anyhow!("OpenRouter refused the text: Missing Authentication header");
+        assert!(!is_transport_failure(&refused));
     }
 }

@@ -13,7 +13,7 @@ use crate::theme::{
 };
 use crate::{history, Message, Section};
 use iced::widget::{button, column, container, responsive, row, scrollable, text, Space};
-use iced::{Background, Border, Color, Element, Fill, Font, Length};
+use iced::{Background, Border, Color, Element, Fill, Length};
 
 // The copy slot remains in layout while its emphasis changes. List-level exit
 // tracking avoids flicker when the pointer crosses a nested copy control.
@@ -291,11 +291,25 @@ pub(crate) fn setting<'a>(
     description: impl Into<String>,
     control: Element<'a, Message>,
 ) -> Element<'a, Message> {
+    setting_toned(label, description, FAINT, control)
+}
+
+/// `setting`, with the description carrying a colour.
+///
+/// A refused save and a rejected key are read in the description slot, and a
+/// warning drawn in the same grey as every other subtitle is a warning nobody
+/// sees - which is the whole failure this screen was fixed for.
+pub(crate) fn setting_toned<'a>(
+    label: &'a str,
+    description: impl Into<String>,
+    tone: Color,
+    control: Element<'a, Message>,
+) -> Element<'a, Message> {
     let description = description.into();
     let mut text_block = column![text(label).size(13.5).color(FG)];
     if !description.is_empty() {
         text_block = text_block.push(Space::new().height(LABEL_GAP));
-        text_block = text_block.push(text(description).size(12).color(FAINT));
+        text_block = text_block.push(text(description).size(12).color(tone));
     }
 
     container(
@@ -318,10 +332,7 @@ pub(crate) fn fact_row(label: &'static str, value: impl Into<String>) -> Element
         row![
             text(label).size(13.5).color(FG),
             Space::new().width(Fill),
-            text(value.into())
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(MUTED),
+            text(value.into()).size(12).color(MUTED),
         ]
         .align_y(iced::Center),
     )
@@ -344,8 +355,9 @@ pub(crate) fn fact_path(label: &'static str, path: &std::path::Path) -> Element<
             text(label).size(13.5).color(FG),
             Space::new().width(20),
             responsive(move |size| {
-                // Default monospace at 12px is a little under 8px wide; the
-                // extra room is the ellipsis, so a custom XDG path keeps the
+                // 8px per character is wider than the proportional face
+                // actually draws at 12px, deliberately: the estimate has to
+                // clip early rather than late, so a custom XDG path keeps the
                 // filename instead of running off the pane.
                 let chars = (size.width / 8.0).floor().max(8.0) as usize;
                 container(path_link(real.clone(), clip_tail(&shown, chars)))
@@ -363,19 +375,14 @@ pub(crate) fn fact_path(label: &'static str, path: &std::path::Path) -> Element<
 
 fn path_link(path: std::path::PathBuf, shown: String) -> Element<'static, Message> {
     crate::interaction::hover(move |amount| {
-        button(
-            text(shown)
-                .size(12)
-                .font(Font::MONOSPACE)
-                .wrapping(text::Wrapping::None),
-        )
-        .padding(0)
-        .on_press(Message::OpenPath(path))
-        .style(move |_, _| button::Style {
-            text_color: mix(MUTED, FG, amount.get()),
-            ..Default::default()
-        })
-        .into()
+        button(text(shown).size(12).wrapping(text::Wrapping::None))
+            .padding(0)
+            .on_press(Message::OpenPath(path))
+            .style(move |_, _| button::Style {
+                text_color: mix(MUTED, FG, amount.get()),
+                ..Default::default()
+            })
+            .into()
     })
 }
 

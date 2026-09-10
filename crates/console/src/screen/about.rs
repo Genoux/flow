@@ -2,17 +2,24 @@
 
 use crate::*;
 use iced::widget::{column, container, row, text, Space};
-use iced::{Element, Fill, Font};
+use iced::{Element, Fill};
 
 impl Console {
     pub(super) fn about_section(&self) -> Element<'_, Message> {
         // Which engines these are is a fact about the build, not a choice -
-        // the same class of thing as the version. They are constants now
-        // rather than files on disk, so they cannot be missing or damaged.
+        // the same class of thing as the version. Speech is a file on disk
+        // again and so can be missing or damaged; nothing here offers to
+        // repair it, `flow install` does.
         let rows: Vec<Element<Message>> = vec![
             self.version_row(),
-            fact_row("Build", "Experimental · MAI + Flash-Lite".to_string()),
-            fact_row("Speech", "microsoft/mai-transcribe-2".to_string()),
+            fact_row(
+                "Build",
+                "Experimental · on-device speech + Flash-Lite".to_string(),
+            ),
+            fact_row(
+                "Speech",
+                "Nemotron 3.5 ASR 0.6B · fp32 ONNX · 2.6 GB".to_string(),
+            ),
             fact_row("Polish", "google/gemini-3.1-flash-lite".to_string()),
             fact_row("Session", self.session.clone()),
             fact_path("Config", &settings::config_path()),
@@ -22,7 +29,11 @@ impl Console {
         // Not "push-to-talk": tap to start and tap to stop is the other half
         // of the Shortcut group, and naming only one of them here made the
         // product's one-line description describe a setting.
-        section_shell("Flow", "Dictation through MAI and Flash-Lite.", rows)
+        section_shell(
+            "Flow",
+            "Speech on your machine, cleanup through Flash-Lite.",
+            rows,
+        )
     }
 
     fn version_row(&self) -> Element<'_, Message> {
@@ -55,10 +66,7 @@ impl Console {
                 Space::new().width(Fill),
                 pip(dot),
                 Space::new().width(7),
-                text(update::running())
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(MUTED),
+                text(update::running()).size(12).color(MUTED),
                 Space::new().width(12),
                 action,
             ]

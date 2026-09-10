@@ -39,18 +39,11 @@ const ADVERTISED_INPUT: &str =
 /// the level below them must not.
 const SPOKEN_FAULT: &str = "don't work good";
 
+// `Cleanup::None` is not in `CASES`: it never reaches this model at all (see
+// `refine::refine_using`'s gate), so there is nothing here for a prompt suite
+// to grade. `tests/skip.rs`-style offline coverage for that gate lives next to
+// the gate itself, in `src/refine.rs`.
 const CASES: &[Case] = &[
-    // The lowest level's whole promise, in one input: the hesitation goes and
-    // the grammar fault stays. Fixing that fault is what the level above is
-    // for, so a pass that cleans it here has quietly become a Light.
-    Case {
-        name: "the lowest level takes the noise and leaves the mistake",
-        level: Cleanup::None,
-        raw: ADVERTISED_INPUT,
-        forbidden: &["Um", "um,"],
-        required: &[SPOKEN_FAULT, "the thing what we built", "you know", "I think"],
-        max_words: 15,
-    },
     Case {
         name: "fillers and stutters",
         level: Cleanup::Light,
@@ -525,4 +518,31 @@ fn a_dictation_does_not_depend_on_the_one_before_it(
              English, {after_french:?} after French"
         ));
     }
+}
+
+#[test]
+#[ignore = "sends a test phrase to OpenRouter using the configured key"]
+fn light_removes_fillers_and_duplicates_within_the_shipping_budget() {
+    let key = flow::config::Config::load()
+        .openrouter_key
+        .expect("configured OpenRouter key");
+    let refiner = flow::refine::Refiner::new(key);
+    let raw = "um um I would like like to send the report uh tomorrow";
+    let started = std::time::Instant::now();
+    let cleaned = refiner
+        .refine(raw, &style(Cleanup::Light))
+        .expect("live refinement");
+    let words: Vec<_> = cleaned
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .collect();
+    assert!(!words.iter().any(|w| matches!(w.as_str(), "um" | "uh")));
+    assert!(!words.windows(2).any(|pair| pair[0] == pair[1]));
+    for word in ["send", "report", "tomorrow"] {
+        assert!(words.iter().any(|w| w == word), "lost {word}: {cleaned}");
+    }
+    eprintln!("{raw:?} -> {cleaned:?} in {:?}", started.elapsed());
 }

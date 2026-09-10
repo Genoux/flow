@@ -21,7 +21,11 @@ fn run(program: &str, args: &[&str]) -> Option<std::process::Output> {
     run_for(program, args, BUDGET)
 }
 
-fn run_for(program: &str, args: &[&str], budget: Duration) -> Option<std::process::Output> {
+pub(crate) fn run_for(
+    program: &str,
+    args: &[&str],
+    budget: Duration,
+) -> Option<std::process::Output> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -100,6 +104,63 @@ fn autostart_enabled_for(budget: Duration) -> Option<bool> {
     }
 }
 
+/// How many of the installed speech-model files are missing or the wrong
+/// length, straight from the daemon binary - which is the one that pins their
+/// names and sizes.
+///
+/// `None` means no verdict: no `flow` on PATH, or it did not answer inside the
+/// budget. The window falls back to what it can see for itself (whether the
+/// model directory exists at all) rather than claiming an install is whole on
+/// the strength of a command that never ran.
+///
+/// Costs about three milliseconds, which is what makes it something the
+/// window can do every time it opens. The hashing pass is Repair's job.
+pub fn damage() -> Option<usize> {
+    damage_for(BUDGET)
+}
+
+/// Installation health shapes the Overview layout, so it is read before the
+/// first frame rather than arriving later and moving the page. Its deadline is
+/// nevertheless launch-sized: a wedged binary is no reason to hide the window.
+pub fn startup_damage() -> Option<usize> {
+    damage_for(STARTUP_BUDGET)
+}
+
+fn damage_for(budget: Duration) -> Option<usize> {
+    let output = run_for("flow", &["check", "--porcelain"], budget)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // The verdict line is the handshake: without it this is an older `flow`
+    // that has no idea what was asked of it, and an empty stdout would
+    // otherwise read as a clean bill of health.
+    let answered = text
+        .lines()
+        .any(|line| matches!(line.trim(), "whole" | "broken"));
+
+    answered.then(|| {
+        text.lines()
+            .filter(|line| line.starts_with("damaged "))
+            .count()
+    })
+}
+
+/// Long enough for a real round trip to OpenRouter, not just a local read -
+/// every other budget in this file is milliseconds because everything else it
+/// asks leaves the machine.
+const PROBE_BUDGET: Duration = Duration::from_secs(15);
+
+/// Whether the saved OpenRouter key works, straight from the daemon binary -
+/// same reasoning as [`damage_for`]: the key lives in the daemon's config, and
+/// a second HTTP call from this window could disagree with the one dictation
+/// actually gets.
+///
+/// `None` means no verdict, the same as [`damage`]: no `flow` on PATH, or it
+/// did not answer inside the budget.
+pub fn probe_router() -> Option<crate::openrouter::Outcome> {
+    let output = run_for("flow", &["probe", "--porcelain"], PROBE_BUDGET)?;
+    crate::openrouter::parse_probe(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Enable or disable the user unit. Returns the error text on failure so the
 /// window can show why rather than silently springing the switch back.
 pub fn set_autostart(enable: bool) -> Result<(), String> {
@@ -154,7 +215,7 @@ impl Channel {
     }
 }
 
-fn bin_dir() -> std::path::PathBuf {
+pub(crate) fn bin_dir() -> std::path::PathBuf {
     std::env::var_os("XDG_BIN_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -170,16 +231,6 @@ fn bin_dir() -> std::path::PathBuf {
 /// disk rather than one replacing the other.
 pub fn set_channel(channel: Channel) -> Result<(), String> {
     set_channel_in(&bin_dir(), channel)
-}
-
-pub fn channel_installed(channel: Channel) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    ["flow", "flow-console"].iter().all(|name| {
-        bin_dir()
-            .join(format!("{name}-{}", channel.suffix()))
-            .metadata()
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    })
 }
 
 fn set_channel_in(dir: &std::path::Path, channel: Channel) -> Result<(), String> {
@@ -229,7 +280,25 @@ pub fn restart_app() -> Result<(), String> {
     }
     service("stop")?;
     let _ = run("systemctl", &["--user", "try-restart", "flow-tray.service"]);
-    Command::new(console).spawn().map_err(|e| e.to_string())?;
+    // A child in the old console's transient unit dies when that window exits.
+    let output = run(
+        "systemd-run",
+        &[
+            "--user",
+            "--quiet",
+            "--collect",
+            "--property=Type=exec",
+            "--",
+            console.to_str().ok_or("Invalid console path")?,
+        ],
+    )
+    .ok_or("The replacement window could not be started. Reopen Flow to retry.")?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not reopen Flow: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
     Ok(())
 }
 

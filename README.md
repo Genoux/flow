@@ -2,10 +2,10 @@
 
 Hold a key, talk, let go. The text appears where your cursor already was.
 
-This branch builds Flow’s experimental release for Linux. Speech recognition and refining use
-the selected OpenRouter models. There is no window to focus and no button to
-press: the only interface is a key you hold and a small island that appears
-while you speak.
+This branch builds Flow’s experimental release for Linux. Speech recognition runs
+locally; refining uses the selected OpenRouter model. There is no window to
+focus and no button to press: the only interface is a key you hold and a small
+island that appears while you speak.
 
 ## Requirements
 
@@ -13,8 +13,8 @@ while you speak.
 |---|---|
 | Session | Wayland (wlroots — Hyprland, Sway) |
 | Audio | PipeWire or ALSA |
-| Network | Required. Transcription and refining are OpenRouter requests |
-| Account | An [OpenRouter](https://openrouter.ai) key, which you pay per dictation |
+| Network | Only for refining, and not even that at `cleanup = "none"` |
+| Account | An [OpenRouter](https://openrouter.ai) key, for the cleanup levels above `none` |
 | Access | Your user in the `input` group, and `/dev/uinput` writable |
 
 ## Install
@@ -32,27 +32,33 @@ and the desktop entry. Nothing is written outside your home directory, and
 nothing runs as root — except one udev rule, which the script prints for you to
 run yourself rather than doing behind your back.
 
-Then open **Flow** from your launcher, or `flow-console` from a terminal, and
-paste an OpenRouter key into **Settings → OpenRouter**. Nothing dictates without
-one: MAI-Transcribe-2 and Gemini 3.1 Flash-Lite are reached through that key.
+Then open **Flow** from your launcher, or `flow-console` from a terminal. The first
+launch fetches the speech model itself — there is a progress screen and nothing to
+type — and Nemotron then runs on-device for every dictation. If a model file ever
+goes missing or turns up damaged, the window notices at launch and offers **Repair**
+on the same screen; no terminal is needed for either case, though `flow install`
+does the same fetch if you would rather run it yourself. Cleanup above
+`cleanup = "none"` needs an OpenRouter key, pasted into **Settings → OpenRouter**:
+that is what Gemini 3.1 Flash-Lite is reached through.
 
 Then hold **Super+Shift+D** and talk.
 
-Overview says **Connected** once a dictation has reached OpenRouter, and
+Overview says **Connected** once refining has reached OpenRouter, and
 **Disconnected** when one could not — a daemon that is up with a dead network or
-a rejected key is running and useless, so the word says which.
+a rejected key still transcribes, but a cleanup level above `none` will not run.
 
 Updating is the same script — `git pull && ./packaging/install.sh` — which
 restarts the daemon onto the new build if it was already running.
 
-There are two release channels. **Stable** keeps Parakeet and Qwen running locally.
-**Experimental** uses MAI-Transcribe-2 and Gemini 3.1 Flash-Lite through OpenRouter.
-In stable v0.3.0 or later, enable **Settings → Build → Experimental build**.
-Flow downloads and verifies the experimental release; click **Restart Flow**,
-then add your OpenRouter key. Audio and text leave your device, and usage is billed
-to your OpenRouter account. Disable the toggle and restart to return to stable.
-Both builds, your local models, settings and history stay on disk. Updates follow
-the selected channel. A release installer refuses to install under the wrong channel.
+There are two release channels. **Stable** keeps Parakeet and Qwen running locally,
+refining included. **Experimental** transcribes locally with Nemotron 3.5 ASR and
+sends only the transcript to Gemini 3.1 Flash-Lite for cleanup — nothing leaves your
+device at `cleanup = "none"`. In stable v0.3.0 or later, enable **Settings → Build →
+Experimental build**. Flow downloads and verifies the experimental release and its
+speech model; click **Restart Flow**, then add your OpenRouter key for cleanup
+above `none`. Disable the toggle and restart to return to stable. Both builds,
+your local models, settings and history stay on disk. Updates follow the selected
+channel. A release installer refuses to install under the wrong channel.
 
 Removing it is `./packaging/uninstall.sh`. That leaves your config and history
 alone, and prints how to delete those if you want them gone.
@@ -67,7 +73,8 @@ alone, and prints how to delete those if you want them gone.
 | `flow logs` | What the daemon has been saying |
 | `flow retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
 | `flow start` / `flow stop` | Trigger dictation without the chord, for a compositor bind |
-| `flow probe` | Whether OpenRouter answers, and which models it would use |
+| `flow probe` | Whether OpenRouter answers, and which model refining would use |
+| `flow install` | Re-fetch any speech-model file that is missing or fails its hash |
 | `flow help` | Every command and flag |
 
 ## Configuration
@@ -92,23 +99,25 @@ refining model*, so it does nothing at `cleanup = "none"`.
 
 ## How it works
 
-Two models, both through OpenRouter:
+One model on-device, one through OpenRouter:
 
-- **MAI-Transcribe-2** turns audio into text.
-- **Gemini 3.1 Flash-Lite** punctuates and removes filler. It is told the
-  language it just heard, and a result that comes back in a different language
-  is discarded, so speaking French gets French back.
+- **Nemotron 3.5 ASR streaming multilingual 0.6B** turns audio into text, on the
+  CPU. `flow install` fetches it once (~2.6GB, ONNX, licensed OpenMDW-1.1 — the
+  weights and origin notices travel with any redistribution). Audio is transcribed
+  during recording in 560 ms chunks, preserving context across chunks. Release
+  finishes the remaining audio. Optional denoising uses whole-recording inference;
+  it is off by default.
+- **Gemini 3.1 Flash-Lite** punctuates and removes filler, above `cleanup =
+  "none"`. It is told the language it just heard, and a result that comes back
+  in a different language is discarded, so speaking French gets French back.
 
-Both choices are fixed in the current release: MAI-Transcribe-2 handles speech
-and Gemini 3.1 Flash-Lite applies the selected cleanup level. The prompt, cleanup
-levels and guards protect the experimental model's answer. Stable continues using
-its local Parakeet and Qwen pipeline.
-
-A dictation longer than 45 seconds is split before it is sent, cut inside real
-silence rather than at a stopwatch, because the provider times out at 60
-seconds of processing per request. A stretch of speech with no pause in it is
-sent whole: an oversized request that may fail beats a transcript with a word
-sliced in half.
+`cleanup = "none"` is a local passthrough: nothing is sent anywhere, and no
+OpenRouter key is needed to use it. Expect rough text from it — the recogniser
+punctuates short utterances but not long ones, and leaves every "um" and
+repeated word where it was. Every level above it is one refining
+request per dictation, guarded the same way regardless of which channel built
+the binary. Stable continues using its own local Parakeet and Qwen pipeline
+for both steps.
 
 Refining is bounded. Past its budget the raw transcript is pasted instead of a
 late one, and every guard that made the local refiner safe still runs on the

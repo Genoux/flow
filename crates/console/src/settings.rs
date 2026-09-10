@@ -67,16 +67,13 @@ impl Cleanup {
     /// not for someone who already knows what the levels do.
     pub fn describe(self) -> (&'static str, &'static str) {
         match self {
-            // "including mistakes" is the only reason anyone would not pick
-            // this level, so it earns its two words. What went was "mistakes
-            // and all", which said it in a folksier voice than the two levels
-            // beside it.
-            //
-            // Named for what it does rather than "None", which stopped being
-            // true when the level started running a pass of its own: the ums
-            // go and the vocabulary applies, and a card promising nothing
-            // would have been describing the version before that.
-            Self::None => ("Minimal", "Takes out the ums, keeps the rest including mistakes."),
+            // A local passthrough: nothing here reaches the cloud editor, so
+            // nothing about the transcript changes either - hesitations,
+            // stutters and grammar mistakes all ship exactly as spoken.
+            Self::None => (
+                "Off",
+                "Pastes exactly what you said - no editor, no network.",
+            ),
             // "nothing else" is the half that makes this the default. Fillers
             // out and grammar right is what every level above None does; not
             // touching the rest is what tells this level from that one.
@@ -89,19 +86,11 @@ impl Cleanup {
     /// than describing it. Showing beats describing here: the levels are
     /// legible at a glance only because the reader can compare three lines.
     ///
-    /// These are measured, not written. The set they replaced was invented, and
-    /// it was inventing the wrong thing: it showed None as lowercase and
-    /// unpunctuated, which the recogniser never produces - Parakeet punctuates
-    /// and capitalises, so what reaches the refiner is already sentences. That
-    /// made Light look like it pastes lowercase rubbish when what it actually
-    /// pastes is the middle line below, and it is the reason this screen read as
-    /// a worse product than it is.
-    ///
-    /// Kept in step with `ADVERTISED_INPUT` in tests/refine.rs, which feeds the
-    /// spoken original to the real model and checks the split these lines
-    /// claim. That original is this first line with its "Um," still on the
-    /// front - the hesitation is what the lowest level takes, so it belongs in
-    /// the input and not in any card.
+    /// `None` is exactly `ADVERTISED_INPUT` in tests/refine.rs, unedited - it
+    /// never reaches the cloud editor, so its card can only show what the
+    /// recogniser produced. Light and Medium are measured against that same
+    /// input, not written: `tests/refine.rs` feeds it to the real model and
+    /// checks the split these lines claim.
     ///
     /// Chosen because it is the shortest sentence found that shows both steps:
     /// "what we built don't work good" becomes "we built doesn't work well"
@@ -118,9 +107,17 @@ impl Cleanup {
     ///
     /// Measured on both of this machine's GPUs, which do not always agree - see
     /// `FLOW_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
+    /// Every level above `None` is refined by the cloud model, so without a
+    /// key the card is advertising something the app cannot currently do.
+    pub fn needs_key(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
     pub fn example(self) -> &'static str {
         match self {
-            Self::None => "I think the thing what we built don't work good on mobile, you know.",
+            Self::None => {
+                "Um, I think the thing what we built don't work good on mobile, you know."
+            }
             Self::Light => "I think the thing we built doesn't work well on mobile, you know.",
             Self::Medium => "The thing we built doesn't work well on mobile.",
         }

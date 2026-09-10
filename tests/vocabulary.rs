@@ -20,11 +20,12 @@ fn compare_with_and_without_vocabulary() {
         return;
     };
     let refiner = flow::refine::Refiner::new(key);
-    // At the lowest level, where `MINIMAL_RULES` forbids swapping a word the
+    // At Light, where `LIGHT_RULES` otherwise forbids swapping a word the
     // model merely thinks was misheard. The vocabulary block is the one
     // substitution that survives that rule, and this is where it has to prove
-    // it still does.
-    let bare = Style::new(Cleanup::None);
+    // it still does. Not `Cleanup::None`: that level is a local passthrough
+    // now and never reaches this model at all, so it has no vocabulary to test.
+    let bare = Style::new(Cleanup::Light);
     let informed = bare.clone().with_vocabulary(
         ["Flow", "Hyprland", "Neovim", "PipeWire"]
             .map(str::to_string)

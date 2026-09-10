@@ -28,7 +28,7 @@ use crate::format::clip_tail;
 use crate::theme::dissolve;
 use crate::*;
 use iced::widget::{column, mouse_area, row, stack, text, Space};
-use iced::{Element, Font, Length};
+use iced::{Element, Length};
 
 /// The dialog's own measure. Wide enough for a full PipeWire description at
 /// 13px, narrow enough that it still reads as a dialog on a 1040px window
@@ -111,7 +111,6 @@ impl Console {
                         self.settings.hotkey.replace('+', " ")
                     })
                     .size(12)
-                    .font(Font::MONOSPACE)
                     .color(if self.capturing { ACCENT } else { MUTED }),
                     Space::new().width(12),
                     // Reset earns its place only when the chord is not already
@@ -148,32 +147,91 @@ impl Console {
     /// input, not about the output.
     /// Flow transcribes and refines through OpenRouter, so this key is not a
     /// preference - without it the hotkey has nothing to talk to. The box is
-    /// secure and never shows the saved key back: what is on disk is a
-    /// credential, and re-displaying it only invites a shoulder-surf. The hint
-    /// says whether one is saved, which is the only thing worth reading.
+    /// secure and never shows the saved key back in full: what is on disk is a
+    /// credential, and re-displaying it only invites a shoulder-surf. A
+    /// fingerprint - the prefix and the last four characters - is the
+    /// exception: it says which key is saved without exposing enough of it to
+    /// use, which is the only thing worth reading here.
     fn openrouter_rows(&self) -> Vec<Element<'_, Message>> {
-        let saved = self.settings.openrouter_key.is_some();
-        vec![setting(
+        let (note, tone) = self.key_note();
+        vec![crate::layout::setting_toned(
             "API key",
-            if saved {
-                "A key is saved. Typing a new one replaces it."
-            } else {
-                "Required. Flow cannot dictate without it."
-            },
-            crate::interaction::field(|amount| {
-                iced::widget::text_input("sk-or-v1-…", &self.typing_key)
-                    .secure(true)
-                    .on_input(Message::TypingKey)
-                    .on_submit(Message::SaveKey)
-                    .size(13)
-                    .padding([10, 12])
-                    .width(Length::Fill)
-                    .style(move |theme, status| {
-                        super::editorial::input_style(theme, status, amount.get())
-                    })
-                    .into()
-            }),
+            note,
+            tone,
+            row![
+                crate::interaction::field(|amount| {
+                    iced::widget::text_input("sk-or-v1-…", &self.typing_key)
+                        .secure(true)
+                        .on_input(Message::TypingKey)
+                        .on_submit(Message::SaveKey)
+                        .size(13)
+                        .padding([10, 12])
+                        .width(Length::Fill)
+                        .style(move |theme, status| {
+                            super::editorial::input_style(theme, status, amount.get())
+                        })
+                        .into()
+                }),
+                Space::new().width(8),
+                // One slot, because a third control crowds the row: with
+                // nothing typed there is nothing to save, and the only thing
+                // left to do to a stored key is take it away.
+                if openrouter::can_save(&self.typing_key) {
+                    crate::control::action_padded(
+                        "Save",
+                        true,
+                        1.0,
+                        [10.0, 14.0],
+                        Some(Message::SaveKey),
+                    )
+                } else {
+                    crate::control::action_padded(
+                        "Remove",
+                        false,
+                        1.0,
+                        [10.0, 14.0],
+                        self.settings
+                            .openrouter_key
+                            .is_some()
+                            .then_some(Message::ClearKey),
+                    )
+                },
+            ]
+            .align_y(iced::Center)
+            .into(),
         )]
+    }
+
+    /// The one line under "API key", and the colour to draw it in.
+    ///
+    /// Saving tests the key, so this says what happened rather than what could
+    /// be tried: a separate Test action asked for two presses to answer one
+    /// question, and put a button on a row of its own to do it.
+    fn key_note(&self) -> (String, Color) {
+        if let Some(error) = &self.key_error {
+            return (error.clone(), ERR);
+        }
+        if self.testing_key {
+            return ("Checking…".to_string(), MUTED);
+        }
+        match &self.key_test {
+            // Not the model name: which model refines is a fact about the
+            // build, not about the key, and it has already changed once.
+            Some(openrouter::Outcome::Accepted) => ("Active".to_string(), OK),
+            Some(openrouter::Outcome::Rejected(reason)) => (format!("Rejected: {reason}"), ERR),
+            Some(openrouter::Outcome::Unreachable(reason)) => {
+                (format!("No answer from OpenRouter: {reason}"), ERR)
+            }
+            Some(openrouter::Outcome::NoKey) | None => {
+                match self.settings.openrouter_key.as_deref() {
+                    Some(key) => (openrouter::fingerprint(key), FAINT),
+                    // Not "required" - dictation is on-device and works without
+                    // one - and not naming what it unlocks either. Cleanup is what
+                    // uses it today, which is not a reason to write that down here.
+                    None => ("Needed for cloud features.".to_string(), FAINT),
+                }
+            }
+        }
     }
 
     fn channel_rows(&self) -> Vec<Element<'_, Message>> {
@@ -188,7 +246,7 @@ impl Console {
         } else if on {
             update::running().to_string()
         } else {
-            "Opt in to MAI + Flash-Lite through OpenRouter. Audio leaves your device and usage charges apply.".to_string()
+            "Opt in to on-device speech with Flash-Lite cleanup. Audio stays on your machine; text leaves it above `cleanup = none`, and usage charges apply.".to_string()
         };
         vec![setting(
             "Experimental build",

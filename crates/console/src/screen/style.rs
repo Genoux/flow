@@ -52,8 +52,11 @@ impl Console {
     fn cleanup_card(&self, level: settings::Cleanup, height: f32) -> Element<'_, Message> {
         let (title, blurb) = level.describe();
         let chosen = self.settings.cleanup == level;
+        let locked = level.needs_key() && self.settings.openrouter_key.is_none();
         let selected = self.cleanup_selection[level as usize].value(self.now);
-        let warmth = if chosen {
+        // A card that cannot be picked must not light up under the pointer:
+        // the glow is the only thing on it that claims it is pressable.
+        let warmth = if chosen || locked {
             0.0
         } else {
             self.cleanup_hover[level as usize].value(self.now)
@@ -89,7 +92,7 @@ impl Console {
 
         let body = column![
             row![
-                text(title).size(19).color(FG),
+                text(title).size(19).color(if locked { MUTED } else { FG }),
                 Space::new().width(Fill),
                 indicator,
             ]
@@ -102,14 +105,23 @@ impl Console {
                 .line_height(0.8)
                 .color(mix(MUTED, ACCENT, selected * 0.5)),
             Space::new().height(6),
-            text(level.example()).size(14).line_height(1.5).color(FG),
+            // The example is what this level would write. A locked one has
+            // written nothing, so the slot says why instead of promising it.
+            text(if locked {
+                "Needs an OpenRouter key."
+            } else {
+                level.example()
+            })
+            .size(14)
+            .line_height(1.5)
+            .color(if locked { MUTED } else { FG }),
         ];
 
         iced::widget::mouse_area(
             button(container(body).padding(20).width(Fill).height(height))
                 .padding(0)
                 .width(Fill)
-                .on_press_maybe((!chosen).then_some(Message::SetCleanup(level)))
+                .on_press_maybe((!chosen && !locked).then_some(Message::SetCleanup(level)))
                 .style(move |_, status| button::Style {
                     background: Some(Background::Color(
                         if chosen || status == button::Status::Pressed {

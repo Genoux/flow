@@ -12,13 +12,29 @@ use crate::{
 use anyhow::Result;
 use std::time::{Duration, Instant};
 
-/// that short dictations never pay an extra encoder pass, short enough that a
-/// rambling one gets several pieces done before the key comes up.
-const PREFIX_MIN: usize = 8 * audio::SAMPLE_RATE as usize;
+const STREAM_POLL: Duration = Duration::from_millis(40);
 
-/// How often to look for a pause worth cutting at. The speaker is still talking,
-/// so there is nothing to race.
-const PREFIX_POLL: Duration = Duration::from_millis(400);
+#[derive(Clone, Default)]
+struct StreamProgress {
+    generation: u64,
+    processed: usize,
+    failed: bool,
+}
+
+impl StreamProgress {
+    fn prepare_job(&mut self, job: &mut Self) {
+        if job.generation != self.generation {
+            job.failed = true;
+            self.clear();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.processed = 0;
+        self.failed = false;
+    }
+}
 
 /// Two ways in, and the second is deliberately not compositor-specific.
 ///
@@ -37,7 +53,6 @@ pub type Live = std::sync::Arc<std::sync::Mutex<config::Config>>;
 pub fn run(
     engine: &mut stt::Stt,
     chord: hotkey::Chord,
-    refiner: Option<refine::Refiner>,
     live: Live,
     watch_keys: bool,
     reporter: status::Reporter,
@@ -134,41 +149,32 @@ pub fn run(
     // first honest moment to tell a watching console the daemon is up.
     reporter.ready();
 
-    let (jobs, job_rx) = std::sync::mpsc::channel();
+    let (jobs, job_rx) = std::sync::mpsc::channel::<(Vec<f32>, StreamProgress)>();
     let island = &overlay;
     let status = &reporter;
     // Both the job thread and the event loop read the live config, so they
     // share a borrow rather than the Arc being moved into the first one.
     let live = &live;
-    // Shared so the start of a long dictation can be transcribed while the rest is
-    // still being spoken. The lock is held only for the duration of one
-    // transcription, and taking it before taking audio is what keeps the early
-    // pieces and the final tail in order.
+    // Lock the engine before progress so release waits for the in-flight chunk.
     let engine = std::sync::Mutex::new(engine);
-    let early: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let stream_progress: std::sync::Mutex<StreamProgress> =
+        std::sync::Mutex::new(StreamProgress::default());
     let listening = std::sync::atomic::AtomicBool::new(true);
     // Shared for the same reason the island is: the recording ends on the event
     // loop, the island ends on the job thread, and the duck now ends with the
     // island.
     let held: Held = std::sync::Mutex::new(None);
-    let (engine, early, listening, held) = (&engine, &early, &listening, &held);
+    let (engine, stream_progress, listening, held) = (&engine, &stream_progress, &listening, &held);
 
     std::thread::scope(|scope| {
         scope.spawn(move || {
-            while let Ok(samples) = job_rx.recv() {
-                // Waits out any in-flight early piece, which is also what
-                // guarantees its text is already in `early` before this reads it.
+            while let Ok((samples, mut done)) = job_rx.recv() {
                 let mut engine = engine.lock().expect("stt engine");
-                let done = std::mem::take(&mut *early.lock().expect("early transcripts"));
-                if let Err(err) = handle(
-                    *engine,
-                    &mut injector,
-                    samples,
-                    done,
-                    refiner.as_ref(),
-                    status,
-                    live,
-                ) {
+                {
+                    let mut progress = stream_progress.lock().expect("stream progress");
+                    progress.prepare_job(&mut done);
+                }
+                if let Err(err) = handle(*engine, &mut injector, samples, done, status, live) {
                     // The console shows this until the next dictation lands, so
                     // a failure the user would otherwise only find in the
                     // journal has somewhere to appear. The notification is for
@@ -205,30 +211,31 @@ pub fn run(
             }
         });
 
-        // Transcribes whatever the speaker has already finished saying. Sleeping
-        // first costs nothing: there is no prefix to take until several seconds in.
         let recording = &capture;
         scope.spawn(move || {
             while listening.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(PREFIX_POLL);
+                std::thread::sleep(STREAM_POLL);
+                if live.lock().expect("config").denoise {
+                    continue;
+                }
                 let mut engine = engine.lock().expect("stt engine");
-                let Some(prefix) = recording.take_prefix(PREFIX_MIN) else {
+                let mut progress = stream_progress.lock().expect("stream progress");
+                if progress.failed {
+                    continue;
+                }
+                let size = engine.chunk_samples();
+                let Some(chunk) = recording.stream_chunk(progress.processed, size) else {
                     continue;
                 };
-                let spoken = prefix.len() as f32 / audio::SAMPLE_RATE as f32;
-                let started = Instant::now();
-                match engine.transcribe(prefix) {
-                    // Pushed while still holding the engine, so the release path
-                    // cannot read a partial set of pieces.
-                    Ok(text) if !text.trim().is_empty() => {
-                        crate::verbose!(
-                            "transcribed {spoken:.1}s early in {:?}",
-                            started.elapsed()
-                        );
-                        early.lock().expect("early transcripts").push(text);
+                if progress.processed == 0 {
+                    engine.start_stream();
+                }
+                match engine.stream_chunk(&chunk) {
+                    Ok(()) => progress.processed += size,
+                    Err(err) => {
+                        progress.failed = true;
+                        eprintln!("streaming failed, retrying full recording on release: {err}");
                     }
-                    Ok(_) => {}
-                    Err(err) => eprintln!("early transcription failed: {err}"),
                 }
             }
         });
@@ -287,7 +294,7 @@ pub fn run(
                                 live,
                                 &overlay,
                                 &reporter,
-                                early,
+                                stream_progress,
                                 held,
                                 &incoming,
                             )
@@ -320,7 +327,7 @@ pub fn run(
                             live,
                             &overlay,
                             &reporter,
-                            early,
+                            stream_progress,
                             held,
                             &incoming,
                         )
@@ -345,7 +352,7 @@ pub fn run(
                             live,
                             &overlay,
                             &reporter,
-                            early,
+                            stream_progress,
                             held,
                             &incoming,
                         )
@@ -377,9 +384,7 @@ pub fn run(
                     hold_started = None;
                     if let Some(session) = session.take() {
                         session.discard(&capture);
-                        // Anything already transcribed early belongs to the
-                        // recording being thrown away, so it goes too.
-                        early.lock().expect("early transcripts").clear();
+                        stream_progress.lock().expect("stream progress").clear();
                         eprintln!("discarded: another key turned the hold into a shortcut");
                     }
                     None
@@ -414,7 +419,7 @@ pub fn run(
                     match session.take().map(|s| s.finish(&capture)) {
                         Some(samples) if hotkey::was_long_enough(total) => Some(samples),
                         Some(_) => {
-                            early.lock().expect("early transcripts").clear();
+                            stream_progress.lock().expect("stream progress").clear();
                             eprintln!("discarded: {total:?} is too short to be a deliberate hold");
                             None
                         }
@@ -448,7 +453,12 @@ pub fn run(
             }
 
             if let Some(samples) = finished
-                && jobs.send(samples).is_err()
+                && jobs
+                    .send((
+                        samples,
+                        stream_progress.lock().expect("stream progress").clone(),
+                    ))
+                    .is_err()
             {
                 break;
             }
@@ -521,7 +531,7 @@ fn begin(
     live: &Live,
     overlay: &overlay::Overlay,
     reporter: &status::Reporter,
-    early: &std::sync::Mutex<Vec<String>>,
+    stream_progress: &std::sync::Mutex<StreamProgress>,
     held: &Held,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
 ) -> Option<Duration> {
@@ -539,11 +549,8 @@ fn begin(
     // than the next restart, the same way the chord itself does.
     chime::set_enabled(sound);
 
-    // A new recording abandons whatever came before it, including anything already
-    // transcribed early - otherwise those words would prepend to this dictation.
-    // Reachable with both trigger paths live: a signal starts a session and the
-    // physical chord then starts another.
-    early.lock().expect("early transcripts").clear();
+    capture.abandon();
+    stream_progress.lock().expect("stream progress").clear();
 
     // Up immediately so the key press is acknowledged, but armed rather than
     // listening: the microphone is not open until the ducking has settled, and
@@ -642,17 +649,21 @@ fn handle(
     engine: &mut stt::Stt,
     injector: &mut inject::Injector,
     samples: Vec<f32>,
-    early: Vec<String>,
+    stream_progress: StreamProgress,
 
-    refiner: Option<&refine::Refiner>,
     reporter: &status::Reporter,
     live: &Live,
 ) -> Result<()> {
     // One read for the whole of this dictation, so a file change part-way
     // through cannot refine the text but paste it with the other chord.
-    let (denoise_audio, record_debug, cleanup) = {
+    let (denoise_audio, record_debug, cleanup, refiner) = {
         let config = live.lock().expect("config");
-        (config.denoise, config.record_debug, config.cleanup)
+        (
+            config.denoise,
+            config.record_debug,
+            config.cleanup,
+            refine::Refiner::new(config.openrouter_key.clone().unwrap_or_default()),
+        )
     };
     let spoken = samples.len() as f32 / audio::SAMPLE_RATE as f32;
     let peak = audio::peak(&samples);
@@ -669,7 +680,7 @@ fn handle(
     // recogniser is confident either way: room tone came back as "Oh" and "Yeah."
     // and no threshold on how loud it was could tell those from a real "Yeah."
     // What separates them is whether the level moved. See audio::sounds_like_speech.
-    if early.is_empty() && !audio::sounds_like_speech(&samples) {
+    if !audio::sounds_like_speech(&samples) {
         eprintln!(
             "({spoken:.1}s, {level}, no voice - skipped: swing {:.1}x)",
             audio::swing(&samples)
@@ -677,19 +688,8 @@ fn handle(
         return Ok(());
     }
 
-    // A silent tail is only nothing when nothing came before it: the recording may
-    // have ended in the pause that let its earlier half be transcribed already.
-    let tail = if rms < audio::SILENCE_RMS {
-        if early.is_empty() {
-            // Nothing said here. The island watches the same microphone live
-            // and has already said its piece mid-hold - see overlay::DEAD_MIC.
-            // Repeating it now would be a second message for one dead line, and
-            // arriving after the release it could only ever be a post-mortem.
-            eprintln!("({spoken:.1}s, {level}, no signal - skipped)");
-            return Ok(());
-        }
-        String::new()
-    } else {
+    let mut streamed = stream_progress.processed > 0 && !stream_progress.failed && !denoise_audio;
+    let text = {
         // A/B pair. Recording happens BEFORE denoise so the raw wav is exactly
         // what the mic gave us and the denoised wav is exactly what the model
         // saw. Both write on best-effort - a full disk must not lose the
@@ -709,32 +709,26 @@ fn handle(
                 eprintln!("record_debug: denoised wav write failed: {err:#}");
             }
         }
-        // The connection light is set from the request dictation actually
-        // makes. A reachability ping to something adjacent could say Connected
-        // while a rejected key fails every dictation, which is precisely the
-        // case the light exists to show.
-        match engine.transcribe(denoised.unwrap_or(samples)) {
-            Ok(text) => {
-                reporter.reachable(true);
-                text
+        let audio = denoised.unwrap_or(samples);
+        if streamed {
+            match engine.finish_stream(&audio[stream_progress.processed..]) {
+                Ok(text) => text,
+                Err(err) => {
+                    streamed = false;
+                    eprintln!("stream finalisation failed, retrying full recording: {err}");
+                    engine.transcribe(audio)?
+                }
             }
-            Err(err) => {
-                reporter.reachable(false);
-                return Err(err);
-            }
+        } else {
+            engine.transcribe(audio)?
         }
     };
     let transcribed = started.elapsed();
-
-    // Pieces in the order they were spoken, the tail last.
-    let pieces = early.len();
-    let mut spoken_text = early;
-    if !tail.trim().is_empty() {
-        spoken_text.push(tail);
-    }
-    let text = spoken_text.join(" ");
-    let head = if pieces > 0 {
-        format!(" ({pieces} early)")
+    let head = if streamed {
+        format!(
+            " ({:.1}s streamed)",
+            stream_progress.processed as f32 / audio::SAMPLE_RATE as f32
+        )
     } else {
         String::new()
     };
@@ -758,28 +752,26 @@ fn handle(
     // a word added in the console has to reach the next dictation, not the next
     // restart. See `refine::Style`.
     //
-    // `cleanup` is read live and every level runs a pass, so a change to it
-    // takes effect on the next dictation with nothing to load or tear down.
-    let (final_text, outcome) = match refiner {
-        Some(refiner) => match refiner.refine(&text, &refine::Style::current(cleanup)) {
-            Ok(refined) if refined.trim().is_empty() => {
-                eprintln!("refining returned nothing, using raw transcript");
-                (
-                    text.clone(),
-                    refine::Outcome::FellBack("came back empty".into()),
-                )
-            }
-            // The gates inside `refine` return the transcript untouched when
-            // there was nothing to do, which is a different thing to report
-            // than a pass that ran and changed nothing.
-            Ok(refined) if refined == text => (refined, refine::Outcome::Unchanged),
-            Ok(refined) => (refined, refine::Outcome::Applied),
-            Err(err) => {
-                eprintln!("refining failed ({err}), using raw transcript");
-                (text.clone(), refine::Outcome::FellBack(format!("{err}")))
-            }
-        },
-        None => (text.clone(), refine::Outcome::Off),
+    // `cleanup` is read live, so a change to it takes effect on the next
+    // dictation with nothing to load or tear down. At `Cleanup::None` the call
+    // below never leaves the machine - see the gate in `refine::refine_using`.
+    let (final_text, outcome) = match refiner.refine(&text, &refine::Style::current(cleanup)) {
+        Ok(refined) if refined.trim().is_empty() => {
+            eprintln!("refining returned nothing, using raw transcript");
+            (
+                text.clone(),
+                refine::Outcome::FellBack("came back empty".into()),
+            )
+        }
+        // The gates inside `refine` return the transcript untouched when
+        // there was nothing to do, which is a different thing to report
+        // than a pass that ran and changed nothing.
+        Ok(refined) if refined == text => (refined, refine::Outcome::Unchanged),
+        Ok(refined) => (refined, refine::Outcome::Applied),
+        Err(err) => {
+            eprintln!("refining failed ({err}), using raw transcript");
+            (text.clone(), refine::Outcome::FellBack(format!("{err}")))
+        }
     };
     let refined_at = started.elapsed();
 
@@ -841,4 +833,42 @@ fn next_recording_index() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::StreamProgress;
+
+    #[test]
+    fn queued_recordings_cannot_reuse_another_recordings_decoder() {
+        let mut progress = StreamProgress {
+            processed: 8960,
+            ..StreamProgress::default()
+        };
+        let mut old_job = progress.clone();
+        progress.clear();
+        progress.processed = 17920;
+        let mut new_job = progress.clone();
+        progress.prepare_job(&mut old_job);
+        assert!(old_job.failed);
+        assert_eq!(progress.processed, 0);
+        progress.prepare_job(&mut new_job);
+        assert!(new_job.failed);
+    }
+
+    #[test]
+    fn release_reuses_its_own_decoder_and_cancellation_clears_failure() {
+        let mut progress = StreamProgress {
+            processed: 8960,
+            ..StreamProgress::default()
+        };
+        let mut job = progress.clone();
+        progress.prepare_job(&mut job);
+        assert!(!job.failed);
+        assert_eq!(progress.processed, 8960);
+        progress.failed = true;
+        progress.clear();
+        assert!(!progress.failed);
+        assert_eq!(progress.processed, 0);
+    }
 }

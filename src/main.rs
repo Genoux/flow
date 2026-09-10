@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, bail};
-use flow::{
-    audio, config, daemon, inject, install, ipc, notify, refine, router, status, stt, tray, wav,
-};
+use flow::{audio, config, daemon, inject, install, ipc, refine, router, status, stt, tray, wav};
 use std::time::{Duration, Instant};
 
 /// Audio that must be spoken before any of it is transcribed early. Long enough
@@ -19,7 +17,8 @@ COMMANDS
     daemon           Watch the hotkey and dictate. What flow.service runs.
     tray             Publish the system tray icon. What flow-tray.service runs.
     start | stop     Begin or end a dictation without holding the chord
-    install          Seed the config and vocabulary templates
+    install          Fetch the speech model and seed the config templates
+    check            Whether the speech model is whole
     probe            Check the OpenRouter connection and model routes
     logs [ARGS..]    The daemon's journal. Arguments go straight to journalctl,
                      so `flow logs -f` and `flow logs --since today` both work.
@@ -32,6 +31,8 @@ COMMANDS
     version          Print the version
 
 FLAGS
+    --porcelain      install|check|probe: report progress or faults as lines, for the console
+    --plan           install: print what would be fetched, and fetch nothing
     --raw            Skip the refining model for this run
     --no-ptt         Do not watch the hotkey
     --denoise | --no-denoise
@@ -70,12 +71,38 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("start") => return ipc::send(ipc::START),
         Some("stop") => return ipc::send(ipc::STOP),
-        Some("install") => return install::run(),
-        // There is nothing left to verify: the models it used to hash are
-        // gone, and whether Flow can actually work is a question about the key
-        // and the network, which `probe` answers.
-        Some("check") => return probe(),
-        Some("probe") => return probe(),
+        Some("install") => {
+            // What an install would fetch, without fetching it. Always the
+            // machine-readable rendering: this exists for the console's setup
+            // screen, which has to name a size before it starts a download.
+            if args.iter().any(|a| a == "--plan") {
+                install::plan_reported(&mut install::to_console);
+                return Ok(());
+            }
+            // The console drives the same installer and needs numbers rather
+            // than a bar, so it asks for the machine-readable rendering.
+            if args.iter().any(|a| a == "--porcelain") {
+                return install::run_reported(&mut install::to_console);
+            }
+            return install::run();
+        }
+        // Cheap enough to run every time the console opens, which is the
+        // point: an install that lost a file should say so on Overview rather
+        // than wait for someone to go looking in About.
+        Some("check") => {
+            let damaged = install::damaged();
+            if args.iter().any(|a| a == "--porcelain") {
+                install::report_damage(&damaged);
+            } else if damaged.is_empty() {
+                println!("install is whole");
+            } else {
+                for asset in &damaged {
+                    println!("missing or damaged: {}", asset.dest);
+                }
+            }
+            return Ok(());
+        }
+        Some("probe") => return probe(args.iter().any(|a| a == "--porcelain")),
         Some("logs") => return logs(&args[1..]),
         _ => {}
     }
@@ -103,15 +130,18 @@ fn main() -> Result<()> {
     // does nothing. Under systemd this notification is the difference between
     // a unit that failed for a reason and one that never came up.
     //
-    // Only the daemon. `flow foo.wav` and `flow retry` are diagnostics, and
-    // both report their own failure with the request that made it - refusing
-    // to start them here would hide the reason behind a second one.
+    // A missing key used to be fatal here, from when speech-to-text was also a
+    // cloud request and a keyless Flow could not transcribe a word. Recognition
+    // is on-device now, so refusing to start makes the daemon crash-loop into
+    // systemd's start limit over an optional feature - and dictation at
+    // `cleanup = none` needs nothing from the network at all. Said once at
+    // startup instead, because a level above `none` will quietly paste raw
+    // transcripts and the log is where that gets explained.
     if matches!(command(&args), Some("daemon")) && settings.openrouter_key.is_none() {
-        notify::failure(
-            "Flow can't start",
-            "No OpenRouter key. Add one in Settings.",
+        eprintln!(
+            "no OpenRouter key: dictation works, refining does not - \
+             every level pastes the raw transcript until a key is added"
         );
-        bail!("no OpenRouter key - add one in the console's Settings screen");
     }
     // Bound before the daemon starts, not after it. The console shows
     // "Starting…" from the moment it asks systemd for a start, and the only
@@ -123,7 +153,8 @@ fn main() -> Result<()> {
     // a `flow retry` doing this would cut the running daemon off from the
     // console it was talking to.
     let reporter = matches!(command(&args), Some("daemon")).then(status::Reporter::spawn);
-    let mut engine = stt::Stt::new(settings.openrouter_key.clone().unwrap_or_default());
+    let mut engine = stt::Stt::load(&flow_paths::speech_model_dir())
+        .context("loading the speech model - has `flow install` been run?")?;
 
     match command(&args) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
@@ -132,16 +163,6 @@ fn main() -> Result<()> {
             retry(&mut engine, back, settings.cleanup)
         }
         Some("daemon") => {
-            // Built whatever the level says, including `none`.
-            //
-            // The level is a live setting, so a daemon that only built a
-            // refiner at Light could never honour a later switch - which is
-            // exactly the trap the old `refine = false` had. Construction is
-            // now just holding the key, so there is nothing left to make
-            // conditional.
-            let refiner = Some(refine::Refiner::new(
-                settings.openrouter_key.clone().unwrap_or_default(),
-            ));
             // Shared so the file watcher can swap in new values while the
             // daemon runs. Hold vs tap is read per event from that; --no-ptt
             // is the one thing that still decides whether the watcher thread
@@ -151,7 +172,6 @@ fn main() -> Result<()> {
             daemon::run(
                 &mut engine,
                 settings.chord.clone(),
-                refiner,
                 live,
                 !args.iter().any(|arg| arg == "--no-ptt"),
                 reporter.expect("bound above for the daemon command"),
@@ -291,33 +311,50 @@ fn logs(args: &[String]) -> Result<()> {
     .context("running journalctl - is this a systemd machine?")
 }
 
-/// Whether OpenRouter answers, as `key<TAB>value` lines.
+/// Whether OpenRouter answers, as `key<TAB>value` lines either way - porcelain
+/// differs only in using a stable one-word `router` value instead of a
+/// sentence, the same distinction `check --porcelain` draws between `whole`
+/// and "install is whole".
 ///
 /// The console asks the daemon binary rather than calling OpenRouter itself
 /// because the key lives in the daemon's config and the answer has to be the
 /// one dictation would actually get - a window that checked its own way could
 /// report connected while the hotkey fails.
 ///
-/// A real request, not a reachability ping. Missing, rejected and out-of-credit
-/// keys all fail here, and only the last of those is invisible to a socket
-/// test.
-fn probe() -> Result<()> {
-    let key = config::Config::load().openrouter_key;
-    match key {
-        None => {
-            println!("router\tNo key");
-            println!("detail\tAdd an OpenRouter key in Settings");
-        }
-        Some(key) => {
-            if refine::Refiner::new(key).reachable() {
-                println!("router\tConnected");
-                println!("detail\t{} · {}", router::STT_MODEL, router::REFINE_MODEL);
+/// Four distinct outcomes, not the two a `Result` would give: no key, a
+/// working key, a key OpenRouter rejected, and a network that never answered
+/// all read differently to somebody deciding what to do next, and only the
+/// last of those would be caught by a ping instead of a real request.
+fn probe(porcelain: bool) -> Result<()> {
+    let outcome = match config::Config::load().openrouter_key {
+        None => refine::Reachability::NoKey,
+        Some(key) => refine::Refiner::new(key).probe(),
+    };
+    let (router, detail) = match outcome {
+        refine::Reachability::NoKey => (
+            if porcelain { "no-key" } else { "No key" }.to_string(),
+            "Add an OpenRouter key in Settings".to_string(),
+        ),
+        refine::Reachability::Accepted => (
+            if porcelain { "accepted" } else { "Connected" }.to_string(),
+            router::REFINE_MODEL.to_string(),
+        ),
+        refine::Reachability::Rejected(reason) => (
+            if porcelain { "rejected" } else { "Rejected" }.to_string(),
+            reason,
+        ),
+        refine::Reachability::Unreachable(reason) => (
+            if porcelain {
+                "unreachable"
             } else {
-                println!("router\tDisconnected");
-                println!("detail\tOpenRouter did not answer - check the key and the network");
+                "Unreachable"
             }
-        }
-    }
+            .to_string(),
+            reason,
+        ),
+    };
+    println!("router\t{router}");
+    println!("detail\t{detail}");
     Ok(())
 }
 

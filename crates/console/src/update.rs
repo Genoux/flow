@@ -126,18 +126,13 @@ pub fn latest() -> Status {
 /// Blocking, and long: this is a download of a few tens of megabytes followed
 /// by a script. Call it off the UI thread.
 ///
-/// The console replaces its own binary here, which works because `install`
-/// unlinks the destination before writing - the running process keeps the file
-/// it was started from. It does mean the new version only appears on the next
-/// launch, which is what `Status::Installed` exists to say.
 pub fn install(tag: &str) -> Result<(), String> {
-    install_channel(tag, crate::system::channel(), false)
+    let channel = crate::system::channel();
+    install_channel(tag, channel)?;
+    crate::system::set_channel(channel)
 }
 
 pub fn join_channel(channel: crate::system::Channel) -> Result<(), String> {
-    if channel == crate::system::Channel::Stable && crate::system::channel_installed(channel) {
-        return crate::system::set_channel(channel);
-    }
     let output = Command::new("curl")
         .args(["-fsSL", "--max-time", TIMEOUT_SECONDS, RELEASES])
         .output()
@@ -147,7 +142,7 @@ pub fn join_channel(channel: crate::system::Channel) -> Result<(), String> {
     }
     let tag = pick_channel(&String::from_utf8_lossy(&output.stdout), channel)?
         .ok_or("No published release is available for that channel.")?;
-    install_channel(&tag, channel, true)?;
+    install_channel(&tag, channel)?;
     crate::system::set_channel(channel)
 }
 
@@ -171,11 +166,7 @@ fn pick_channel(json: &str, channel: crate::system::Channel) -> Result<Option<St
         .map(str::to_owned))
 }
 
-fn install_channel(
-    tag: &str,
-    channel: crate::system::Channel,
-    staging: bool,
-) -> Result<(), String> {
+fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), String> {
     semver::Version::parse(tag.strip_prefix('v').ok_or("Invalid release tag")?)
         .map_err(|_| "Invalid release tag")?;
     let name = format!("flow-{tag}-x86_64-linux");
@@ -226,19 +217,58 @@ fn install_channel(
             .arg(&tarball)
             .arg("-C")
             .arg(&dir))?;
+        verify_binaries(&dir.join(&name).join("bin"), "", tag)?;
         let mut installer = Command::new("bash");
         installer
             .arg(dir.join(&name).join("packaging/install.sh"))
             .args(["--channel", channel.suffix()]);
-        if staging {
-            installer.args(["--no-activate", "--no-restart"]);
-        }
+        installer.args(["--no-activate", "--no-restart"]);
         run(&mut installer)?;
-
-        Ok(())
+        verify_install(&crate::system::bin_dir(), channel, tag)
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result
+}
+
+fn verify_install(
+    dir: &std::path::Path,
+    channel: crate::system::Channel,
+    tag: &str,
+) -> Result<(), String> {
+    verify_binaries(dir, &format!("-{}", channel.suffix()), tag)
+}
+
+fn verify_binaries(dir: &std::path::Path, suffix: &str, tag: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let expected = tag.trim_start_matches('v');
+    let version = semver::Version::parse(expected).map_err(|e| e.to_string())?;
+    for name in ["flow", "flow-console"] {
+        let path = dir.join(format!("{name}{suffix}"));
+        if !path
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        {
+            return Err(format!("{name} is missing or not executable."));
+        }
+        // Releases before 0.3.1 open a window for --version; retain channel rollback.
+        if name == "flow-console" && version < semver::Version::new(0, 3, 1) {
+            continue;
+        }
+        let output = crate::system::run_for(
+            path.to_str().ok_or("Invalid binary path")?,
+            &["--version"],
+            std::time::Duration::from_secs(5),
+        )
+        .ok_or_else(|| format!("{name} did not answer the version check."))?;
+        if !output.status.success()
+            || String::from_utf8_lossy(&output.stdout).trim() != format!("{name} {expected}")
+        {
+            return Err(format!(
+                "{name} did not install version {expected}. Reinstall the release."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Run a command to completion, failing with whatever it said on stderr.
@@ -306,6 +336,34 @@ fn parse(version: &str) -> (Vec<u64>, bool) {
 mod tests {
     use super::{newer, parse, pick_channel, Status};
     use crate::system::Channel;
+
+    #[test]
+    fn installation_requires_matching_binaries_and_preserves_legacy_rollback() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("flow-version-test-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(format!("{name}-stable"));
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        write("flow", "echo flow 0.3.1");
+        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_err());
+        write("flow-console", "echo flow-console 0.3.0");
+        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_err());
+        write("flow-console", "echo flow-console 0.3.1; exit 1");
+        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_err());
+        write("flow-console", "echo flow-console 0.3.1");
+        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_ok());
+        write("flow", "echo flow 0.3.0");
+        write(
+            "flow-console",
+            &format!("touch '{}'", dir.join("launched").display()),
+        );
+        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.0").is_ok());
+        assert!(!dir.join("launched").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn channel_selection_survives_mixed_releases_and_numeric_prereleases() {

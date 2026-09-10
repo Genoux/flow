@@ -10,7 +10,13 @@
 //! screen that happens to use it first is a colour the next screen invents
 //! again slightly differently.
 
-use iced::Color;
+use iced::{Color, Font};
+
+// The face the desktop is already wearing: the same family the bar, launcher
+// and lock screen name, so the window does not read as a visitor. A family
+// name rather than a vendored file because it is not ours to ship; where it
+// is missing, iced falls back to the system sans on its own.
+pub(crate) const UI_FONT: Font = Font::with_name("SF Pro Text");
 
 // Every grey here leans a little cool and none of them lean far. The lean used
 // to be twice this: `MUTED` and `FAINT` sat 16 and 17 points of blue above their
@@ -123,6 +129,8 @@ pub(crate) const OK: Color = ACCENT;
 /// "Something needs you" - and the same amber as STARTING, on the same
 /// principle as OK above. One meaning per colour: green invites, amber warns,
 /// red is a failure. A broken install is not a failure of Flow's, it is a job
+/// waiting to be done, so it takes the middle one.
+pub(crate) const WARN: Color = STARTING;
 pub(crate) const ON_ACCENT: Color = Color {
     r: 0.078,
     g: 0.082,
@@ -223,6 +231,11 @@ pub(crate) const FADE: u64 = 200;
 /// waiting for a hover. Long enough to be read, short enough that it is never
 /// still saying it by the time you look again.
 pub(crate) const COPIED: u64 = 1600;
+
+pub(crate) fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(4)
+}
 
 /// 0.0 at `since`, 1.0 once `ms` has passed.
 pub(crate) fn progress(since: std::time::Instant, now: std::time::Instant, ms: u64) -> f32 {

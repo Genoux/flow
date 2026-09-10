@@ -4,16 +4,16 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cleanup {
-    /// The floor, not an off switch: hesitations and stutters gone and the
-    /// vocabulary applied, with every word the speaker chose - and every
-    /// mistake they made - left in the order and spelling they said it in.
+    /// The off switch: the raw transcript, exactly as the local recogniser
+    /// produced it, pasted with no cloud request at all.
     ///
-    /// It used to paste the transcript untouched, which made the vocabulary
-    /// unreachable from this level: terms the recogniser mangles are only ever
-    /// recovered in the prompt, so "Hyprland" stayed "hyper land" and nothing
-    /// on the machine could fix it. A level nobody would choose for that
-    /// reason is not a level, so the dial's bottom rung is now the smallest
-    /// pass worth running rather than no pass at all.
+    /// It used to run a small pass of its own - hesitations and stutters gone,
+    /// vocabulary applied - because speech-to-text was cloud too and the
+    /// vocabulary block was only reachable from a call already being made.
+    /// Recognition moved on-device and the tradeoff moved with it: a level
+    /// promising nothing is honest again, and the cost is that a mangled term
+    /// ("hyper land" for "Hyprland") no longer has anything on the machine to
+    /// recover it. `Refiner::refine` never reaches the network at this level.
     None,
     /// What you said, written properly: hesitations and stutters gone, grammar,
     /// punctuation and capitalisation fixed. Every word that says anything
@@ -286,7 +286,9 @@ a sign-off, is a point and not padding.
 - Never invent. Every fact, name, number and specific noun in your answer must \
 be one the speaker gave you. Where they were vague, stay vague - \"the stuff\" \
 stays \"the stuff\", and never becomes \"the paperwork\" however much better \
-that reads. Naming what the speaker left unnamed is inventing, at any level.
+that reads. Naming what the speaker left unnamed is inventing, at any level. \
+Keep generic references generic: a thing is not a project, task or feature \
+unless the speaker names it. Context that sounds like work is not a name.
 - If the input is nothing but hesitation, give it back unchanged. Deleting \
 every word would leave nothing, and nothing is not an answer you may fill with \
 a word of your own.
@@ -322,6 +324,10 @@ const REFINE_PER_WORD: Duration = Duration::from_millis(20);
 const REFINE_CEILING: Duration = Duration::from_secs(8);
 
 /// How long this particular dictation's refining may take.
+/// How long the key check may take. Generous next to a refining budget because
+/// nothing is waiting on it: the window draws first and the line fills in.
+const PROBE_BUDGET: Duration = Duration::from_secs(10);
+
 fn budget_for(raw: &str) -> Duration {
     let words = raw.split_whitespace().count() as u32;
     (REFINE_BUDGET + REFINE_PER_WORD * words).min(REFINE_CEILING)
@@ -682,10 +688,21 @@ impl Style {
     }
 }
 
+/// What [`Refiner::probe`] found, kept apart because each sends the user
+/// somewhere different: no key needs Settings, a rejected one needs a
+/// different key, and a dead network needs neither.
+pub enum Reachability {
+    NoKey,
+    Accepted,
+    /// OpenRouter answered and said no - a bad key, no credit, or a malformed
+    /// reply. The message is `router::chat`'s own, never the key itself.
+    Rejected(String),
+    /// The request never got an answer - curl missing, connection refused, or
+    /// past its deadline.
+    Unreachable(String),
+}
+
 pub struct Refiner {
-    /// Copied in at startup rather than read per dictation: the key is settled
-    /// when the daemon starts, and a config read in front of every refinement
-    /// would be a file open on the paste path.
     key: String,
 }
 
@@ -694,18 +711,35 @@ impl Refiner {
         Self { key }
     }
 
-    /// Whether the editor answers at all, which is the only thing a status
-    /// light can honestly claim.
+    /// Whether the editor answers, and which of the ways it can fail this is -
+    /// a `bool` cannot tell a rejected key from a dead network, and each of
+    /// those sends the user somewhere different.
     ///
     /// Deliberately a real request rather than a ping: a key that is present
-    /// but rejected, a account out of credit and a dead network are the three
-    /// ways this fails, and only one of them is visible to a socket test. The
+    /// but rejected, an account out of credit and a dead network are three of
+    /// the ways this fails, and only the last is visible to a socket test. The
     /// input is the shortest thing the prompt still applies to.
-    pub fn reachable(&self) -> bool {
-        !self.key.is_empty()
-            && self
-                .refine("um hello", &Style::current(Cleanup::Light))
-                .is_ok()
+    ///
+    /// Calls `router::chat` directly rather than going through `refine`: the
+    /// guards in `refine_using` (`lost_the_dictation`, `changed_language`, ...)
+    /// judge whether an edit of a *real* dictation is trustworthy, and folding
+    /// them in here would report a working key as broken over this one
+    /// throwaway phrase reading oddly.
+    pub fn probe(&self) -> Reachability {
+        if self.key.is_empty() {
+            return Reachability::NoKey;
+        }
+        // Deliberately not a refining request. This is asked every time the
+        // console opens, and a check that bills for an answer is a check
+        // nobody can afford to run on a schedule. `GET /key` settles the two
+        // failures a key can have - rejected, or out of credit - for free; a
+        // model that is itself unavailable surfaces on the next dictation,
+        // where history already records the outcome.
+        match super::router::key_accepted(&self.key, PROBE_BUDGET) {
+            Ok(true) => Reachability::Accepted,
+            Ok(false) => Reachability::Rejected("OpenRouter did not accept this key".into()),
+            Err(err) => Reachability::Unreachable(err.to_string()),
+        }
     }
 
     pub fn system_prompt(raw: &str, style: &Style) -> String {
@@ -748,36 +782,33 @@ impl Refiner {
     }
 
     pub fn refine_within(&self, raw: &str, budget_for: Duration, style: &Style) -> Result<String> {
-        self.refine_using(raw, budget_for, style, None)
+        self.refine_using(raw, budget_for, style)
     }
 
-    pub fn refine_with_system(&self, raw: &str, style: &Style, system: &str) -> Result<String> {
-        self.refine_using(raw, budget_for(raw), style, Some(system))
-    }
-
-    fn refine_using(
-        &self,
-        raw: &str,
-        budget_for: Duration,
-        style: &Style,
-        system: Option<&str>,
-    ) -> Result<String> {
+    fn refine_using(&self, raw: &str, budget_for: Duration, style: &Style) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
         // Inside `refine` rather than at the call site so every caller gets it,
         // and so the gate is impossible to forget when another one appears.
-        if system.is_none() && !needs_refining(raw) {
+        // `None` is a local passthrough by definition, so it is checked before
+        // `needs_refining` rather than folded into it - that gate is about
+        // whether *this text* needs a pass, not about what the level allows.
+        if style.level == Cleanup::None {
+            return Ok(raw.trim().to_string());
+        }
+        if !needs_refining(raw) {
             return Ok(raw.trim().to_string());
         }
 
         // The budget is now a network timeout rather than a GPU wall, and it
         // still means the same thing: past it, the raw transcript ships instead
-        // of a late one. Parakeet used to punctuate the fallback; MAI does too,
-        // so a dropped refinement is still a sentence.
-        let system = system
-            .map(str::to_owned)
-            .unwrap_or_else(|| Self::system_prompt(raw, style));
+        // of a late one. Unlike the Parakeet and MAI eras, that fallback is no
+        // longer guaranteed to be a sentence: Nemotron punctuates short
+        // utterances and leaves longer ones unpunctuated, and keeps every
+        // filler either way. A dropped refinement is now visibly rougher text,
+        // not merely a less polished one.
+        let system = Self::system_prompt(raw, style);
         let output = super::router::chat(&self.key, &system, raw, budget_for)?;
 
         let cleaned = tidy(&output);
@@ -851,6 +882,25 @@ fn restore_edges(refined: &str, raw: &str) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod none_level_tests {
+    use super::{Cleanup, Refiner, Style};
+
+    /// `Cleanup::None` must never reach the network. An invalid key is the
+    /// proof: if this call reached `router::chat` at all it would bail on the
+    /// key before dialling anything, so getting the raw transcript back
+    /// unchanged is only possible if the request was never attempted.
+    #[test]
+    fn none_never_touches_the_network() {
+        let refiner = Refiner::new("not a valid key".to_string());
+        let raw = "Um, so the the build is uh broken again, you know.";
+        let out = refiner
+            .refine(raw, &Style::new(Cleanup::None))
+            .expect("None must not attempt a request");
+        assert_eq!(out, raw.trim());
+    }
 }
 
 /// Every case here is a real dictation from this machine's journal, with the

@@ -101,5 +101,6 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends desktop-file-utils
           desktop-file-validate packaging/flow-console.desktop
+          python3 tests/packaging_channels.py
           bash -n packaging/install.sh
           bash -n packaging/uninstall.sh

@@ -3,6 +3,24 @@ use iced::widget::{button, column, container, responsive, row, text, text_input,
 use iced::{Background, Border, Element, Fill};
 
 impl Console {
+    /// Why nothing on this screen is being applied, if it is not.
+    ///
+    /// `refine::system_prompt` is the only place a term is ever used, so a
+    /// missing key and `cleanup = none` both leave the list on disk and out of
+    /// the pipeline. Saying which one is the difference between a screen that
+    /// looks broken and one that tells you where to go.
+    fn vocabulary_block(&self) -> Option<String> {
+        if self.settings.openrouter_key.is_none() {
+            return Some("Not applied - these are spelled by the refining model, which needs an OpenRouter key.".to_string());
+        }
+        if !self.settings.cleanup.needs_key() {
+            return Some(
+                "Not applied at cleanup = none. Choose Light or Medium in Style.".to_string(),
+            );
+        }
+        None
+    }
+
     pub(super) fn vocabulary_section(&self) -> Element<'_, Message> {
         responsive(move |size| {
             let wide = size.width - CONTENT_RIGHT >= 650.0;
@@ -23,10 +41,17 @@ impl Console {
                     })
                     .into()
             });
+            // The count matters less than whether any of these are reaching
+            // anything: vocabulary is only ever spelled by the refining model,
+            // so there are two states in which this whole screen is inert.
+            let (subtitle, tone) = match self.vocabulary_block() {
+                Some(reason) => (reason, WARN),
+                None => (count, MUTED),
+            };
             let header = row![
                 column![
                     text("Your vocabulary").size(15).color(FG),
-                    text(count).size(12).color(MUTED)
+                    text(subtitle).size(12).color(tone)
                 ]
                 .spacing(4),
                 Space::new().width(Fill),

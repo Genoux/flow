@@ -10,7 +10,7 @@ exclude = ["crates/console"]
 
 [package]
 name = "flow"
-version = "0.3.0-experimental.1"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 
@@ -39,6 +39,7 @@ fontdue = "0.9.4"
 # tray owns its thread and the rest of the process never sees it.
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
 png = "0.18.1"
+parakeet-rs = "0.3.7"
 
 # Line tables instead of full DWARF. Backtraces still name file and line,
 # which is all the daemon's panics are ever read for, but the debug binaries

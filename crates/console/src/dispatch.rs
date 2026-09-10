@@ -84,6 +84,9 @@ impl Console {
                     .min(FRAME_CAP);
                 self.now = now;
                 self.page_motion.advance(elapsed);
+                if let Some(state) = self.download.as_mut() {
+                    state.advance(elapsed);
+                }
                 // Off the tree already - `view` stopped drawing it when the
                 // fade ran out. This is only the state catching up, and it has
                 // to happen here because nothing else will ask again once
@@ -91,7 +94,14 @@ impl Console {
                 if self.picking_input.is_some_and(|picker| picker.spent(now)) {
                     self.picking_input = None;
                 }
-                return Task::none();
+                let mut finished = Task::none();
+                if let Some(fading) = self.fading.as_mut() {
+                    *fading += elapsed;
+                    if *fading >= setup::FADE {
+                        finished = self.leave_setup();
+                    }
+                }
+                return Task::batch([finished, self.launch_install(), self.setup_usable()]);
             }
             Message::Hover(section) => {
                 let now = std::time::Instant::now();
@@ -201,18 +211,114 @@ impl Console {
                     Err(error) => self.save_error = Some(error),
                 }
             }
-            // The banner's one action. There is nothing to install any more, so
-            // "finish setup" means "go and paste the key".
+            // The banner's one action. A missing key just needs Settings; a
+            // missing or damaged speech model needs the actual download, so
+            // that is the only case that opens the setup screen.
             Message::BeginSetup => {
-                self.section = Section::Settings;
+                if self.install_problem().is_none() {
+                    self.section = Section::Settings;
+                    return Task::none();
+                }
+                // Already on setup (a failed fetch, Try again): the veil is
+                // up, so skip the intro and start fetching.
+                let skip = self.showing_setup && self.download.is_some();
+                let mut state = setup::State::new();
+                if skip {
+                    state.skip_intro();
+                }
+                self.download = Some(state);
+                self.showing_setup = true;
                 return Task::none();
             }
-            Message::TypingKey(value) => self.typing_key = value,
-            Message::SaveKey => {
-                let typed = self.typing_key.trim();
-                self.settings.openrouter_key = (!typed.is_empty()).then(|| typed.to_owned());
+            Message::SetupEvent(event) => {
+                if let Some(state) = self.download.as_mut() {
+                    state.apply(event);
+                }
+
+                let over = !self
+                    .download
+                    .as_ref()
+                    .is_some_and(setup::State::downloading);
+
+                // Setup keeps its state until it has faded out; anything else
+                // is done with the moment it stops, and what is on disk has
+                // just changed.
+                if over && !self.showing_setup {
+                    self.download = None;
+                    self.damage = system::startup_damage();
+                }
+
+                return self.setup_usable();
+            }
+            Message::SetupStarted(result) => {
+                let started = result.is_ok();
+                if let Some(state) = self.download.as_mut() {
+                    state.starting_daemon = false;
+                    match result {
+                        Ok(()) => {
+                            state.daemon_started = true;
+                            state.start_error = None;
+                        }
+                        Err(err) => state.start_error = Some(err),
+                    }
+                }
+
+                if started {
+                    self.daemon.activity = daemon::Activity::Starting;
+                    // What the veil is about to reveal has to be true before it
+                    // starts moving, not after. `damage` was refreshed only in
+                    // `leave_setup`, which runs when the fade ends - so Overview
+                    // spent the whole dissolve showing the "setup isn't
+                    // finished" banner for the setup that had just finished,
+                    // then dropped it as the veil landed.
+                    self.damage = system::startup_damage();
+                    // Setup's whole job is done, so it dissolves rather than
+                    // waiting to be dismissed - after the beat its closing line
+                    // needs to be read. Negative, so the screen stands still
+                    // for `HOLD` and then runs the usual outro.
+                    self.fading = Some(-setup::HOLD);
+                }
+            }
+            Message::InstallChecked(damage) => self.damage = damage,
+            Message::TypingKey(value) => {
+                self.typing_key = value;
+                self.key_error = None;
+            }
+            Message::SaveKey => match openrouter::validate(&self.typing_key) {
+                Ok(key) => {
+                    self.settings.openrouter_key = Some(key);
+                    self.typing_key.clear();
+                    self.key_error = None;
+                    self.key_test = None;
+                    // Saving a credential and finding out whether it works are
+                    // one intention, so the save starts the check itself.
+                    return Task::batch([self.persist(), Task::done(Message::TestKey)]);
+                }
+                Err(err) => self.key_error = Some(err),
+            },
+            Message::ClearKey => {
+                self.settings.openrouter_key = None;
                 self.typing_key.clear();
+                self.key_error = None;
+                self.key_test = None;
+                // A level that needs a key it no longer has would keep being
+                // selected while silently pasting the raw transcript, so the
+                // level comes down with the key rather than being left to fail.
+                if self.settings.cleanup.needs_key() {
+                    self.settings.cleanup = crate::settings::Cleanup::None;
+                }
                 return self.persist();
+            }
+            Message::TestKey => {
+                if self.testing_key || self.settings.openrouter_key.is_none() {
+                    return Task::none();
+                }
+                self.testing_key = true;
+                return Task::perform(async { system::probe_router() }, Message::KeyTested);
+            }
+            Message::KeyTested(outcome) => {
+                self.testing_key = false;
+                self.key_test = outcome;
             }
             Message::Sound(on) => {
                 self.animate_toggle("sound", self.settings.sound, on);
