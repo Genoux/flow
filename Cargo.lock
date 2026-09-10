@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "flow"
-version = "0.3.2"
+version = "0.3.2-experimental.1"
 dependencies = [
  "anyhow",
  "cpal",
