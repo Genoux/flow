@@ -47,6 +47,19 @@ pub struct Config {
     /// Flow moves its own capture stream and leaves everything else where it
     /// is. See `audio::Capture::set_source`.
     pub input_device: Option<String>,
+    /// OpenRouter API key. Every dictation is transcribed and refined through
+    /// OpenRouter, so without this Flow has nothing to send audio to and the
+    /// hotkey can only report that.
+    ///
+    /// It lives in the config file like everything else, which means the file
+    /// holds a billable credential. The daemon never writes the config; the
+    /// console does, through `storage::write`, which creates at 0600 and
+    /// renames over the target - so saving a key is also what takes the file
+    /// out of the world-readable mode `flow install` seeded it with.
+    ///
+    /// Never log this value. An error carrying a rejected key is an error that
+    /// puts it in the journal.
+    pub openrouter_key: Option<String>,
 }
 
 impl Default for Config {
@@ -66,6 +79,7 @@ impl Default for Config {
             show_tray: true,
             record_debug: false,
             input_device: None,
+            openrouter_key: None,
         }
     }
 }
@@ -181,6 +195,9 @@ impl Config {
             // A name that resolves to nothing falls back to the system
             // default at the point of use.
             "input_device" => config.input_device = (!value.is_empty()).then(|| value.to_owned()),
+            "openrouter_key" => {
+                config.openrouter_key = (!value.is_empty()).then(|| value.to_owned())
+            }
             "denoise" => config.denoise = boolean(at, key, value)?,
             "sound" => config.sound = boolean(at, key, value)?,
             "show_tray" => config.show_tray = boolean(at, key, value)?,
@@ -203,7 +220,6 @@ impl Config {
                     bail!("{at}: duck is a percentage, found {value}");
                 }
             }
-            "openrouter_key" => {}
             _ => bail!("{at}: unknown key {key:?}"),
         }
 

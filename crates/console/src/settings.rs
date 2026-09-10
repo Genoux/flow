@@ -67,11 +67,13 @@ impl Cleanup {
     /// not for someone who already knows what the levels do.
     pub fn describe(self) -> (&'static str, &'static str) {
         match self {
-            // "including mistakes" is the only reason anyone would not pick
-            // None, so it earns its two words. What went was "mistakes and
-            // all", which said it in a folksier voice than the two levels
-            // beside it.
-            Self::None => ("None", "Types exactly what you said, including mistakes."),
+            // A local passthrough: nothing here reaches the cloud editor, so
+            // nothing about the transcript changes either - hesitations,
+            // stutters and grammar mistakes all ship exactly as spoken.
+            Self::None => (
+                "Off",
+                "Pastes exactly what you said - no editor, no network.",
+            ),
             // "nothing else" is the half that makes this the default. Fillers
             // out and grammar right is what every level above None does; not
             // touching the rest is what tells this level from that one.
@@ -84,16 +86,11 @@ impl Cleanup {
     /// than describing it. Showing beats describing here: the levels are
     /// legible at a glance only because the reader can compare three lines.
     ///
-    /// These are measured, not written. The set they replaced was invented, and
-    /// it was inventing the wrong thing: it showed None as lowercase and
-    /// unpunctuated, which the recogniser never produces - Parakeet punctuates
-    /// and capitalises, so what reaches the refiner is already sentences. That
-    /// made Light look like it pastes lowercase rubbish when what it actually
-    /// pastes is the middle line below, and it is the reason this screen read as
-    /// a worse product than it is.
-    ///
-    /// Kept in step with `ADVERTISED_INPUT` in tests/refine.rs, which feeds the
-    /// None line to the real model and checks the split these lines claim.
+    /// `None` is exactly `ADVERTISED_INPUT` in tests/refine.rs, unedited - it
+    /// never reaches the cloud editor, so its card can only show what the
+    /// recogniser produced. Light and Medium are measured against that same
+    /// input, not written: `tests/refine.rs` feeds it to the real model and
+    /// checks the split these lines claim.
     ///
     /// Chosen because it is the shortest sentence found that shows both steps:
     /// "what we built don't work good" becomes "we built doesn't work well"
@@ -110,6 +107,12 @@ impl Cleanup {
     ///
     /// Measured on both of this machine's GPUs, which do not always agree - see
     /// `FLOW_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
+    /// Every level above `None` is refined by the cloud model, so without a
+    /// key the card is advertising something the app cannot currently do.
+    pub fn needs_key(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
     pub fn example(self) -> &'static str {
         match self {
             Self::None => {
@@ -144,6 +147,10 @@ pub struct Settings {
     /// the system default and is written as no line at all, the same way `gpu`
     /// spells "choose for me".
     pub input_device: Option<String>,
+    /// OpenRouter API key. Absent means Flow cannot transcribe or refine at
+    /// all, so the daemon reports that rather than starting into a state where
+    /// the hotkey silently does nothing.
+    pub openrouter_key: Option<String>,
 }
 
 /// The chord a fresh install dictates with, and what Reset puts back.
@@ -169,6 +176,7 @@ impl Default for Settings {
             gpu: None,
             hotkey: DEFAULT_HOTKEY.to_string(),
             input_device: None,
+            openrouter_key: None,
         }
     }
 }
@@ -215,6 +223,9 @@ impl Settings {
                 "input_device" => {
                     settings.input_device = (!value.is_empty()).then(|| value.to_owned())
                 }
+                "openrouter_key" => {
+                    settings.openrouter_key = (!value.is_empty()).then(|| value.to_owned())
+                }
                 _ => {}
             }
         }
@@ -236,7 +247,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 10] = [
+        let wanted: [(&str, Option<String>); 11] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.as_str().to_string())),
             // Deleted rather than left alone. The daemon still understands
@@ -251,6 +262,7 @@ impl Settings {
             ("gpu", self.gpu.map(|index| index.to_string())),
             ("hotkey", Some(self.hotkey.clone())),
             ("input_device", self.input_device.clone()),
+            ("openrouter_key", self.openrouter_key.clone()),
         ];
 
         let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
@@ -371,6 +383,7 @@ mod tests {
             gpu: Some(0),
             hotkey: "ctrl+alt+space".to_string(),
             input_device: Some("alsa_input.usb-Generic_USB_Audio-00.HiFi_5_1__Mic__source".into()),
+            openrouter_key: Some("sk-or-v1-example".into()),
         };
         assert_eq!(Settings::parse(&settings.render("")), settings);
     }
@@ -470,5 +483,28 @@ mod tests {
             "input_device line survived:\n{back}"
         );
         assert_eq!(Settings::parse(&back).input_device, None);
+    }
+
+    /// Clearing the key must take the line out, not write an empty one: the
+    /// daemon reads a bare `openrouter_key =` as no key, but a user who cleared
+    /// it is entitled to a file that no longer mentions their credential.
+    #[test]
+    fn clearing_the_openrouter_key_removes_the_line() {
+        let keyed = Settings {
+            openrouter_key: Some("sk-or-v1-example".into()),
+            ..Settings::default()
+        };
+        let out = keyed.render("");
+        assert_eq!(
+            Settings::parse(&out).openrouter_key.as_deref(),
+            Some("sk-or-v1-example")
+        );
+
+        let back = Settings::default().render(&out);
+        assert!(
+            !back.contains("openrouter_key"),
+            "openrouter_key line survived:\n{back}"
+        );
+        assert_eq!(Settings::parse(&back).openrouter_key, None);
     }
 }

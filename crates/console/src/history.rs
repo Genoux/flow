@@ -42,8 +42,8 @@ impl Cleanup {
     /// beside the time and the word count.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Off => "no cleanup",
-            Self::FellBack(_) => "cleanup skipped",
+            Self::Off => "no polish",
+            Self::FellBack(_) => "polish skipped",
         }
     }
 

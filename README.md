@@ -2,10 +2,10 @@
 
 Hold a key, talk, let go. The text appears where your cursor already was.
 
-Flow is a voice dictation daemon for Linux. Speech recognition and refining both
-run on your machine — no account, no API key, no per-word cost, nothing leaves
-the computer. There is no window to focus and no button to press: the only
-interface is a key you hold and a small island that appears while you speak.
+Flow is a dictation app for Linux. Speech recognition runs locally; refining uses
+the selected OpenRouter model. There is no window to
+focus and no button to press: the only interface is a key you hold and a small
+island that appears while you speak.
 
 ## Requirements
 
@@ -13,14 +13,15 @@ interface is a key you hold and a small island that appears while you speak.
 |---|---|
 | Session | Wayland (wlroots — Hyprland, Sway) |
 | Audio | PipeWire or ALSA |
-| Disk | ~3 GB for the two models |
-| GPU | Optional. Vulkan is used for refining if a card can hold the model, CPU otherwise |
+| Network | Only for refining, and not even that at `cleanup = "none"` |
+| Account | An [OpenRouter](https://openrouter.ai) key, for the cleanup levels above `none` |
 | Access | Your user in the `input` group, and `/dev/uinput` writable |
 
 ## Install
 
 ```bash
-git clone https://github.com/Genoux/flow && cd flow && ./packaging/install.sh
+git clone https://github.com/Genoux/flow
+cd flow && ./packaging/install.sh
 ```
 
 Or download a release tarball, unpack it, and run the same `packaging/install.sh`
@@ -31,36 +32,33 @@ and the desktop entry. Nothing is written outside your home directory, and
 nothing runs as root — except one udev rule, which the script prints for you to
 run yourself rather than doing behind your back.
 
-The first build takes 10–15 minutes: llama.cpp is compiled from source.
-
-Then open **Flow** from your launcher, or `flow-console` from a terminal. The
-first run is a setup screen: it downloads the two models and starts the daemon
-at the end. They are about 3 GB together and Flow needs both, so there is
-nothing to choose — but you can stop the download and pick it up later from
-where it left off, and **Run setup again** on the About screen refetches them
-from scratch if one ever goes bad.
+Then open **Flow** from your launcher, or `flow-console` from a terminal. The first
+launch fetches the speech model itself — there is a progress screen and nothing to
+type — and Nemotron then runs on-device for every dictation. If a model file ever
+goes missing or turns up damaged, the window notices at launch and offers **Repair**
+on the same screen; no terminal is needed for either case, though `flow install`
+does the same fetch if you would rather run it yourself. Cleanup above
+`cleanup = "none"` needs an OpenRouter key, pasted into **Settings → OpenRouter**:
+that is what Gemini 3.1 Flash-Lite is reached through.
 
 Then hold **Super+Shift+D** and talk.
 
-Scripted installs that would rather not wait for a window can fetch the models
-up front with `./packaging/install.sh --models`, or `flow install` at any time.
+Overview says **Connected** once refining has reached OpenRouter, and
+**Disconnected** when one could not — a daemon that is up with a dead network or
+a rejected key still transcribes, but a cleanup level above `none` will not run.
 
 Updating is the same script — `git pull && ./packaging/install.sh` — which
 restarts the daemon onto the new build if it was already running.
 
-Removing it is `./packaging/uninstall.sh`. That leaves your config, history and
-the models alone, and prints how to delete those if you want them gone.
-
-## Release channels
-
-There are two release channels. **Stable** keeps Parakeet and Qwen running locally.
-**Experimental** uses MAI-Transcribe-2 and Gemini 3.1 Flash-Lite through OpenRouter.
-In stable v0.3.0 or later, enable **Settings → Build → Experimental build**.
-Flow downloads and verifies the experimental release; click **Restart Flow**,
-then add your OpenRouter key. Audio and text leave your device, and usage is billed
-to your OpenRouter account. Disable the toggle and restart to return to stable.
-Both builds, your local models, settings and history stay on disk. Updates follow
+There are two release channels. **Stable** is for everyday use. **Experimental**
+lets you try upcoming changes before they reach stable and may be less reliable.
+Enable **Settings → Build → Experimental build** to opt in, or disable it to return
+to stable. Flow downloads and verifies the selected release and restarts to apply
+it. Both builds, your models, settings and history stay on disk. Updates follow
 the selected channel. A release installer refuses to install under the wrong channel.
+
+Removing it is `./packaging/uninstall.sh`. That leaves your config and history
+alone, and prints how to delete those if you want them gone.
 
 ## Daily use
 
@@ -72,7 +70,8 @@ the selected channel. A release installer refuses to install under the wrong cha
 | `flow logs` | What the daemon has been saying |
 | `flow retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
 | `flow start` / `flow stop` | Trigger dictation without the chord, for a compositor bind |
-| `flow probe` | Which GPU refining will run on, and why |
+| `flow probe` | Whether OpenRouter answers, and which model refining would use |
+| `flow install` | Re-fetch any speech-model file that is missing or fails its hash |
 | `flow help` | Every command and flag |
 
 ## Configuration
@@ -84,28 +83,43 @@ of them. The ones people actually change:
 ```toml
 hotkey = "super+shift+d"   # the combination to hold
 duck = 50                  # volume of other apps while recording, in percent
-refine = true              # run the transcript through the local refining model
+cleanup = "light"          # none, light or medium
+openrouter_key = "sk-or-…" # easier to paste in Settings than to type here
 ```
+
+The key is a billable credential. Saving it from the window writes the file
+`0600`; if you put it there by hand, do the same.
 
 Word fixes go next door in `~/.config/flow/vocabulary.txt` — one term per line,
 for names the recogniser mishears. Note that vocabulary is applied *by the
-refining model*, so it does nothing when `refine = false`.
+refining model*, so it does nothing at `cleanup = "none"`.
 
 ## How it works
 
-Two models, both local:
+One model on-device, one through OpenRouter:
 
-- **Parakeet TDT 0.6B v3** (int8 ONNX, CPU) turns audio into text at roughly
-  23× realtime. Running it on the CPU is deliberate — it keeps the GPU free.
-- **Qwen3 4B Instruct** (Q4_K_M via llama.cpp, Vulkan) punctuates and removes
-  filler. It is told the language it just heard, and a result that comes back
+- **Nemotron 3.5 ASR streaming multilingual 0.6B** turns audio into text, on the
+  CPU. `flow install` fetches it once (~2.6GB, ONNX, licensed OpenMDW-1.1 — the
+  weights and origin notices travel with any redistribution). Audio is transcribed
+  during recording in 560 ms chunks, preserving context across chunks. Release
+  finishes the remaining audio. Optional denoising uses whole-recording inference;
+  it is off by default.
+- **Gemini 3.1 Flash-Lite** punctuates and removes filler, above `cleanup =
+  "none"`. It is told the language it just heard, and a result that comes back
   in a different language is discarded, so speaking French gets French back.
 
-Long dictations are transcribed in pieces *during* the hold, split only inside
-real silence, so releasing the key does not start a long wait.
+`cleanup = "none"` is a local passthrough: nothing is sent anywhere, and no
+OpenRouter key is needed to use it. Expect rough text from it — the recogniser
+punctuates short utterances but not long ones, and leaves every "um" and
+repeated word where it was. Every level above it is one refining
+request per dictation, guarded the same way regardless of which channel built
+the binary.
 
-Both model choices are measured rather than assumed. If you swap them, rerun
-the numbers.
+Refining is bounded. Past its budget the raw transcript is pasted instead of a
+late one, and every guard that made the local refiner safe still runs on the
+reply — an answer instead of an edit, a question turned into a statement, a
+dictation that lost most of its words, or a translation, all fall back to what
+you actually said.
 
 ## When something goes wrong
 

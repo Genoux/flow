@@ -1,39 +1,34 @@
-//! Version, models, paths, and the setup re-entry point.
+//! Version, models, paths, and which build is running.
 
 use crate::*;
 use iced::widget::{column, container, row, text, Space};
-use iced::{Element, Fill, Font};
+use iced::{Element, Fill};
 
 impl Console {
     pub(super) fn about_section(&self) -> Element<'_, Message> {
-        // Bound so the borrows outlive the rows built from them.
         // Which engines these are is a fact about the build, not a choice -
-        // the same class of thing as the version. They stopped being a screen
-        // of their own when the install began fetching both.
+        // the same class of thing as the version. Speech is a file on disk
+        // again and so can be missing or damaged; nothing here offers to
+        // repair it, `flow install` does.
         let rows: Vec<Element<Message>> = vec![
             self.version_row(),
-            fact_row("Speech", self.model_fact(0)),
-            fact_row("Cleanup", self.model_fact(1)),
+            fact_row(
+                "Build",
+                if update::running().contains("-experimental.") {
+                    "Experimental"
+                } else {
+                    "Stable"
+                }
+                .to_string(),
+            ),
+            fact_row(
+                "Speech",
+                "Nemotron 3.5 ASR 0.6B · fp32 ONNX · 2.6 GB".to_string(),
+            ),
+            fact_row("Polish", "google/gemini-3.1-flash-lite".to_string()),
             fact_row("Session", self.session.clone()),
             fact_path("Config", &settings::config_path()),
             fact_path("History", &crate::history::path()),
-            // Named for what it does rather than for the screen it borrows.
-            // It used to say "Run setup again", which promised a fresh 3 GB and
-            // then took a second - a model whose sha256 matches is already the
-            // right bytes, so fetching it again would produce the same file.
-            // What it can do is find the one that does not match and replace it.
-            //
-            // No question in front of it. It deletes nothing, it can be stopped
-            // while it runs, and the screen it opens ends by saying how it went
-            // - which is the beat a warning beforehand was standing in for.
-            //
-            // Here rather than on Overview because it belongs with the two
-            // model rows above it - it is the thing you do when one is wrong.
-            setting(
-                "Repair",
-                "Re-downloads any missing or damaged files.",
-                action_msg("Repair", false, Message::BeginSetup),
-            ),
         ];
 
         // Not "push-to-talk": tap to start and tap to stop is the other half
@@ -41,23 +36,21 @@ impl Console {
         // product's one-line description describe a setting.
         section_shell(
             "Flow",
-            "Dictation that runs entirely on your machine.",
+            "Speech on your machine, cleanup through Flash-Lite.",
             rows,
         )
-    }
-
-    fn model_fact(&self, index: usize) -> String {
-        self.models
-            .get(index)
-            .map(system::Model::fact)
-            .unwrap_or_else(|| "unknown".into())
     }
 
     fn version_row(&self) -> Element<'_, Message> {
         let (dot, note) = update_state(&self.update);
 
         let action = if self.updating {
-            action_msg("Updating…", true, Message::InstallUpdate)
+            let label = if matches!(self.update, update::Status::Installed(_)) {
+                "Restarting…"
+            } else {
+                "Updating…"
+            };
+            action_msg(label, true, Message::InstallUpdate)
         } else if matches!(self.update, update::Status::Installed(_)) {
             action_msg("Restart Flow", true, Message::RestartApp)
         } else if let update::Status::Available(tag) = &self.update {
@@ -78,10 +71,7 @@ impl Console {
                 Space::new().width(Fill),
                 pip(dot),
                 Space::new().width(7),
-                text(update::running())
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(MUTED),
+                text(update::running()).size(12).color(MUTED),
                 Space::new().width(12),
                 action,
             ]

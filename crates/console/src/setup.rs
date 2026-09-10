@@ -1,45 +1,39 @@
-//! First run: both models, one ring, then the console.
+//! First run, and repair: one model, one ring, then the console.
 //!
-//! A fresh install has neither model, and Flow is the pair - the recogniser
-//! writes down what you said, the cleanup model turns it into what you meant to
-//! type. So the window opens on this instead of on seven sections reporting
-//! nothing. It fetches both, starts the daemon, and fades into the Overview.
-//! There is nothing to read and nothing to press.
+//! A fresh install has no speech model on disk, and Flow cannot dictate
+//! without it - so the window opens on this instead of on seven sections
+//! reporting nothing. It fetches Nemotron, starts the daemon, and fades into
+//! the Overview. There is nothing to read and nothing to press.
 //!
-//! The cleanup model used to be left out of this and offered later, which put a
-//! 2.4 GB decision in front of someone who had not dictated a word yet. It is
-//! fetched here now, and the choice that remains is on the Style screen: how
-//! much of what you said Flow may change, including not at all.
+//! The same screen runs when a file the daemon pins goes missing or comes
+//! back the wrong length: `flow check --porcelain` finds that at launch, and
+//! Overview's banner offers the same download under a different name, Repair.
+//! Refining is not this screen's business - it lives behind an OpenRouter key
+//! on the Settings screen, and a missing key never blocks dictation the way a
+//! missing recogniser does.
 //!
 //! The download itself is `flow install --porcelain`, not a copy of it. The
-//! pinned revisions and sha256s live in the daemon's `install.rs` and are the
+//! pinned revision and sha256s live in the daemon's `install.rs` and are the
 //! reason an install can be trusted; a second downloader in the window would
-//! be a second place for them to be wrong. Sizes come from the same manifest,
-//! through `--plan`, for the same reason.
+//! be a second place for them to be wrong. The size comes from the same
+//! manifest, through `--plan`, for the same reason.
 
 use crate::theme::{ease_out, emerge, ACCENT, BG, ERR, FAINT, LINE, MUTED};
 use crate::Message;
 use iced::widget::canvas::{self, Canvas, Path, Stroke};
 use iced::widget::{column, container, stack, text, Space};
-use iced::{mouse, Element, Fill, Font, Length, Point, Radians, Rectangle, Renderer, Theme};
+use iced::{mouse, Element, Fill, Length, Point, Radians, Rectangle, Renderer, Theme};
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::process::{Command, Stdio};
 
 /// Whether this machine still needs setting up.
 ///
-/// Either model missing is enough. Flow is the pair, so a machine with only one
-/// of them is not a machine with a smaller Flow - it is an incomplete install,
-/// and the fix is the same as a first run. Checked here rather than reported in
-/// the window: a banner explaining that the product is half-installed is a
-/// worse answer than installing the other half.
-///
-/// Safe to be strict about because `flow install` hashes what is already on
-/// disk and fetches only what does not match - so setup triggered by a missing
-/// cleanup model re-verifies the recogniser in seconds rather than refetching
-/// it.
+/// The coarse check for a launch that should go straight to this screen with
+/// nothing clicked: no speech model directory at all. A directory that exists
+/// but holds a damaged file is not this - the console can still open, and the
+/// fix is offered from Overview's banner instead, under Repair.
 pub fn needed() -> bool {
-    !flow_paths::speech_model_dir().is_dir() || !flow_paths::refine_model_file().is_file()
+    !flow_paths::speech_model_dir().is_dir()
 }
 
 /// One line of `flow install --porcelain`, or the end of it.
@@ -59,38 +53,25 @@ pub enum Event {
     Failed(String),
 }
 
-/// A running install, and the handle that can stop it.
-///
-/// The child is shared rather than owned by the reader thread because stopping
-/// a download means killing curl's parent from the UI thread while that reader
-/// is still blocked on a line.
-#[derive(Clone, Default)]
-pub struct Handle(Arc<Mutex<Option<Child>>>);
-
-impl Handle {
-    /// Stop the install where it stands.
-    pub fn stop(&self) {
-        if let Ok(mut held) = self.0.lock() {
-            if let Some(child) = held.as_mut() {
-                let _ = child.kill();
-            }
-        }
-    }
-}
-
-/// Run the installer for one model and stream what it says.
+/// Run the installer and stream what it says.
 ///
 /// Same shape as `daemon::stream`: a blocking read on its own thread feeding an
 /// unbounded channel. The protocol is one short line per change and the reader
 /// has nothing else to do, so a thread is both less code and easier to follow
 /// than making this cooperate with the GUI executor.
-pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
+///
+/// There is no way to cancel this from the caller, and no `Drop` reaches back
+/// to kill it either - the model is not optional, so there is nothing a user
+/// could decide against once this has started. If the window closes
+/// mid-download, `flow install --porcelain` keeps running and finishes
+/// unattended: the fetch is idempotent and `curl -C -` resumes, so an orphaned
+/// install completing the thing Flow actually needs is the outcome, not a
+/// leak to guard against.
+pub fn install() -> impl iced::futures::Stream<Item = Event> {
     let (tx, rx) = iced::futures::channel::mpsc::unbounded();
-    let handle = Handle::default();
-    let held = handle.0.clone();
 
     std::thread::spawn(move || {
-        let child = Command::new("flow")
+        let mut child = match Command::new("flow")
             .args(["install", "--porcelain"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -98,9 +79,8 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
             // stream but not thrown away - a failed install without a reason
             // is the worst version of this screen.
             .stderr(Stdio::piped())
-            .spawn();
-
-        let mut child = match child {
+            .spawn()
+        {
             Ok(child) => child,
             Err(err) => {
                 let _ = tx.unbounded_send(Event::Failed(format!(
@@ -112,9 +92,6 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        if let Ok(mut slot) = held.lock() {
-            *slot = Some(child);
-        }
 
         if let Some(stdout) = stdout {
             for line in BufReader::new(stdout).lines() {
@@ -127,13 +104,9 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
         }
 
         // The reader ended, so the child has closed its stdout - either it
-        // finished, it failed, or it was killed because the user stopped the
-        // download. Only the exit status says which.
-        let status = held
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.as_mut().map(|c| c.wait()));
-        let ok = matches!(status, Some(Ok(status)) if status.success());
+        // finished or it failed. Only the exit status says which.
+        let status = child.wait();
+        let ok = matches!(status, Ok(status) if status.success());
 
         if !ok {
             let mut reason = String::new();
@@ -163,7 +136,7 @@ pub fn install() -> (impl iced::futures::Stream<Item = Event>, Handle) {
         }
     });
 
-    (rx, handle)
+    rx
 }
 
 /// One protocol line. An unparseable line is skipped rather than treated as a
@@ -188,17 +161,15 @@ fn parse(line: &str) -> Option<Event> {
 // State
 // ---------------------------------------------------------------------------
 
-/// One model coming down, whether that is first run or the Models screen.
+/// The model coming down, whether that is first run or a repair.
 pub struct State {
     pub total: u64,
     pub done: u64,
     /// Where the ring is actually drawn, which chases `done` rather than
-    /// matching it. Progress arrives in ~120ms steps of tens of megabytes; a
-    /// ring that jumped between them would tick like a clock instead of
-    /// filling.
+    /// matching it. Progress arrives in bursts of tens of megabytes; a ring
+    /// that jumped between them would tick like a clock instead of filling.
     pub shown: f32,
     pub phase: Phase,
-    pub handle: Handle,
     /// Seconds this screen has been up. See `FLOOR`.
     pub elapsed: f32,
     /// 0 to 1 as the byte figure arrives, on its own clock.
@@ -206,24 +177,21 @@ pub struct State {
     /// The line holds a non-breaking space until the installer reports a total,
     /// and until then there is no figure to show - so this cannot ride the
     /// intro's stagger, which by that point has usually finished. Without it
-    /// "0 MB of 3.1 GB" appeared at full strength in a column that had already
+    /// "0 MB of 2.6 GB" appeared at full strength in a column that had already
     /// settled, which is the one thing on this screen that still popped.
     pub count_in: f32,
     /// True once `flow install` has been spawned. The intro plays first so
-    /// hashing a 650 MB file cannot hitch the fade.
+    /// hashing what is already on disk cannot hitch the fade.
     pub spawned: bool,
     /// True once anything has actually come down the wire. Sticky, so the
     /// caption does not fall back to "checking" between the last byte and the
     /// daemon starting.
     pub fetching: bool,
-    /// True once the user stopped this download on purpose, which makes the
-    /// kill that follows an answer rather than a failure.
-    pub stopped: bool,
     /// Set after setup starts the daemon, so nothing issues that start twice.
     pub daemon_started: bool,
     /// True while systemd is starting Flow.
     pub starting_daemon: bool,
-    /// Starting the daemon is separate from installing a model. Its error
+    /// Starting the daemon is separate from installing the model. Its error
     /// lives here so setup can offer the right retry instead of downloading
     /// again.
     pub start_error: Option<String>,
@@ -240,18 +208,16 @@ pub enum Phase {
 }
 
 impl State {
-    pub fn new(handle: Handle) -> Self {
+    pub fn new() -> Self {
         Self {
             total: 0,
             done: 0,
             shown: 0.0,
             phase: Phase::Starting,
-            handle,
             elapsed: 0.0,
             count_in: 0.0,
             spawned: false,
             fetching: false,
-            stopped: false,
             daemon_started: false,
             starting_daemon: false,
             start_error: None,
@@ -275,11 +241,6 @@ impl State {
                 self.done = self.total;
                 self.phase = Phase::Done;
             }
-            // A kill we asked for is an answer, not a failure.
-            Event::Failed(_) if self.stopped => {
-                self.total = self.done;
-                self.phase = Phase::Done;
-            }
             Event::Failed(why) => self.phase = Phase::Failed(why),
         }
     }
@@ -294,7 +255,7 @@ impl State {
     /// exponential chase alone is at its fastest the instant the gap opens,
     /// which suits the small steps a live download arrives in and is wrong for
     /// the big ones: an install resuming onto a part file that is already three
-    /// quarters written, or the 652 MB recogniser reported in a single line
+    /// quarters written, or the whole recogniser reported in a single line
     /// after it hashes. Either moved most of the ring inside one frame, which
     /// reads as the ring having been redrawn rather than filled. `SPEED` is
     /// only a ceiling - fast enough that three quarters of the ring is crossed
@@ -374,11 +335,12 @@ impl State {
                 false => "Nothing to fix".to_string(),
             },
             // Hashing a missing file is microseconds, so on a first run this is
-            // a state no frame ever paints. On a repair with both models already
-            // on disk it is the whole screen - 3 GB of sha256 and nothing
-            // fetched - and calling that a download was why it read as a fault.
+            // a state no frame ever paints. On a repair with the model already
+            // on disk it is the whole screen - checking every file's length
+            // and hashing what claims to be right - and calling that a
+            // download was why it read as a fault.
             None if !self.fetching => "Checking files".to_string(),
-            None => "Downloading models".to_string(),
+            None => "Downloading the speech model".to_string(),
         }
     }
 
@@ -404,6 +366,21 @@ impl State {
             _ => None,
         }
     }
+}
+
+/// The label for the screen's one control, or `None` to render nothing.
+///
+/// Only a failure offers anything. The model is not optional, so a download
+/// in progress has nothing to decide against - there is no cancel to offer,
+/// only a retry once something has actually gone wrong.
+fn action_label(state: &State) -> Option<&'static str> {
+    state.failed().map(|_| {
+        if state.start_error.is_some() {
+            "Start Flow"
+        } else {
+            "Try again"
+        }
+    })
 }
 
 /// How quickly the drawn ring settles onto the real figure once it is within
@@ -504,7 +481,7 @@ const RING: f32 = 96.0;
 /// narrow enough that an error reads as a paragraph rather than a banner.
 const MEASURE: f32 = 380.0;
 
-/// The whole of first run: a ring, a line, and nothing to press.
+/// The whole of setup: a ring, a line, and nothing to press.
 ///
 /// `fade` is 1 while setup owns the window and falls to 0 as the console
 /// arrives underneath it. The veil covers first and the contents arrive over
@@ -592,42 +569,28 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
         // own arrival whenever the installer gets round to naming a total.
         text(count)
             .size(12)
-            .font(Font::MONOSPACE)
             .color(emerge(FAINT, count_lift * ease_out(state.count_in))),
     ]
     .align_x(iced::alignment::Horizontal::Center);
 
     // Always in the tree, on both paths. Gating it on the fade finishing popped
     // a fully painted button into a centred column and shoved everything else
-    // up; gating Stop on `downloading` did the same in reverse, whipping the
-    // button out of the layout the instant the last byte landed - which is the
-    // exact moment the outro was about to fade it.
+    // up.
+    //
+    // While downloading there is nothing to offer - the model is not
+    // optional, so there is nothing to decide against - and an empty, faded
+    // placeholder holds the row's height rather than leaving it out of the
+    // tree, which is what stops the ring above it jumping the instant a
+    // failure does give the user something to press.
     //
     // Outlined, not filled. The accent is green, and a saturated green button
     // is the brightest thing on a screen whose message is red - the eye landed
     // on the reassurance before the problem. Either way it is the only control
     // here, so it does not need a fill to be found.
     page = page.push(Space::new().height(22));
-    page = page.push(if failed.is_some() {
-        crate::control::action_faded(
-            if state.start_error.is_some() {
-                "Start Flow"
-            } else {
-                "Try again"
-            },
-            false,
-            button_lift,
-            Message::BeginSetup,
-        )
-    } else {
-        // Nothing to stop once the bytes are in and the daemon is coming up, so
-        // it goes quiet rather than leaving. It has a second or so left to live.
-        crate::control::action_faded(
-            "Stop",
-            false,
-            button_lift,
-            state.downloading().then_some(Message::StopDownload),
-        )
+    page = page.push(match action_label(state) {
+        Some(label) => crate::control::action_faded(label, false, button_lift, Message::BeginSetup),
+        None => crate::control::action_faded("", false, 0.0, None::<Message>),
     });
 
     over(veil, page)
@@ -747,8 +710,6 @@ const WIDTH: f32 = 4.0;
 const OPEN: f32 = 0.88;
 
 /// Bytes as a person reads them, in the decimal units a download is quoted in.
-/// The Models screen counts what is on disk and uses binary units for it; this
-/// counts what is coming over a wire, which is the other convention on purpose.
 pub fn bytes(value: u64) -> String {
     match value {
         0 => String::new(),
@@ -782,7 +743,7 @@ mod tests {
     }
 
     fn speech() -> State {
-        State::new(Handle::default())
+        State::new()
     }
 
     fn catch_up(state: &mut State) {
@@ -802,19 +763,19 @@ mod tests {
     #[test]
     fn protocol_lines_become_events() {
         assert!(matches!(
-            parse("total 3149465119"),
-            Some(Event::Total(3_149_465_119))
+            parse("total 2594569679"),
+            Some(Event::Total(2_594_569_679))
         ));
         assert!(matches!(parse("progress 12"), Some(Event::Progress(12))));
         assert!(matches!(parse("finished"), Some(Event::Finished)));
         assert!(matches!(
-            parse("installed tdt/vocab.txt"),
+            parse("installed nemotron/tokenizer.model"),
             Some(Event::Installed)
         ));
         // The dest is the first field; the size after it belongs to the ring's
         // total, not to the label.
         assert!(
-            matches!(parse("fetching tdt/vocab.txt 93939"), Some(Event::Fetching(d)) if d == "tdt/vocab.txt")
+            matches!(parse("fetching nemotron/tokenizer.model 406554"), Some(Event::Fetching(d)) if d == "nemotron/tokenizer.model")
         );
     }
 
@@ -826,18 +787,15 @@ mod tests {
         assert!(parse("total not-a-number").is_none());
     }
 
-    /// One model per run, so its own total is the whole story: no group to
-    /// unpick, no other model's bytes counted into this one's ring. The plan
-    /// line naming the other model is not even a line this parses.
+    /// One model per run, so its own total is the whole story: no other
+    /// asset's bytes counted into this ring.
     #[test]
-    fn one_run_measures_one_model() {
-        assert!(parse("group refine 2497281120").is_none());
-
+    fn one_run_measures_the_whole_install() {
         let mut state = speech();
-        state.apply(Event::Total(670_619_803));
-        state.apply(Event::Progress(335_309_901));
+        state.apply(Event::Total(2_594_569_679));
+        state.apply(Event::Progress(1_297_284_840));
 
-        assert_eq!(state.total, 670_619_803);
+        assert_eq!(state.total, 2_594_569_679);
         assert!((state.fraction() - 0.5).abs() < 0.001);
     }
 
@@ -855,29 +813,48 @@ mod tests {
         assert!(state.finished());
     }
 
-    /// A kill the user asked for ends the download quietly; one they did not
-    /// is a failure with something to say about it.
+    /// There is no voluntary stop that turns a `Failed` line into a quiet
+    /// finish instead - whatever the installer reports, it reports as a fault.
     #[test]
-    fn a_stop_is_not_a_failure() {
+    fn a_reported_failure_is_always_a_fault() {
         let mut state = State {
             total: 100,
             done: 30,
-            stopped: true,
             ..speech()
         };
-        state.apply(Event::Failed("killed".into()));
-        assert_eq!(state.phase, Phase::Done);
-        assert!(state.failed().is_none());
-        // The ring reads full because what was wanted arrived - not because
-        // the 70 that was deliberately dropped is counted as downloaded.
-        assert_eq!((state.total, state.done), (30, 30));
+        state.apply(Event::Failed("no route to host".into()));
+        assert_eq!(state.phase, Phase::Failed("no route to host".into()));
+        assert_eq!(state.failed(), Some("no route to host"));
+    }
 
-        let mut broken = State {
+    /// The model is not optional, so there is nothing to decide against while
+    /// it is still coming down - only a failure gives the user something to
+    /// press.
+    #[test]
+    fn a_download_in_progress_offers_no_action() {
+        let state = State {
             total: 100,
+            done: 30,
             ..speech()
         };
-        broken.apply(Event::Failed("no route to host".into()));
-        assert_eq!(broken.failed(), Some("no route to host"));
+        assert_eq!(action_label(&state), None);
+    }
+
+    #[test]
+    fn a_failure_offers_a_way_to_retry() {
+        let mut state = speech();
+        state.apply(Event::Failed("no route to host".into()));
+        assert_eq!(action_label(&state), Some("Try again"));
+    }
+
+    #[test]
+    fn a_daemon_start_failure_offers_to_start_rather_than_retry_the_fetch() {
+        let state = State {
+            phase: Phase::Done,
+            start_error: Some("systemd user session is unavailable".into()),
+            ..speech()
+        };
+        assert_eq!(action_label(&state), Some("Start Flow"));
     }
 
     /// The ring approaches the real figure and settles, rather than snapping
@@ -1019,7 +996,7 @@ mod closing_line {
             elapsed: FLOOR,
             phase: Phase::Done,
             fetching,
-            ..State::new(Handle::default())
+            ..State::new()
         }
     }
 
@@ -1038,8 +1015,8 @@ mod closing_line {
     #[test]
     fn nothing_fetched_yet_is_a_check_rather_than_a_download() {
         let checking = State {
-            phase: Phase::Verifying("tdt/vocab.txt".into()),
-            ..State::new(Handle::default())
+            phase: Phase::Verifying("nemotron/tokenizer.model".into()),
+            ..State::new()
         };
         assert_eq!(checking.caption(), "Checking files");
     }
@@ -1047,10 +1024,10 @@ mod closing_line {
     #[test]
     fn a_failure_outranks_the_closing_line() {
         let broken = State {
-            phase: Phase::Failed("the download stopped".into()),
+            phase: Phase::Failed("no route to host".into()),
             fetching: true,
             ..done(true)
         };
-        assert_eq!(broken.caption(), "the download stopped");
+        assert_eq!(broken.caption(), "no route to host");
     }
 }

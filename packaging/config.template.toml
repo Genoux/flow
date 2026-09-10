@@ -30,7 +30,7 @@
 # keeps the speakers out of the microphone; too low just mutes your music.
 # duck = 50
 
-# How much the local model may change what you said, matching the Style screen
+# How much the refining model may change what you said, matching the Style screen
 # in the Flow window:
 #
 #   none     types exactly what you said
@@ -45,10 +45,14 @@
 # the level you picked in the window.
 # refine = true
 
-# Which GPU runs the refining model. Left unset, Flow picks the discrete card with
-# the most free memory, and falls back to the CPU if none can hold the model.
-# Set an index only to override that; `flow daemon` logs the one it chose.
-# gpu = 0
+# The OpenRouter key every dictation is transcribed and refined through. There
+# is no default and no local fallback: without this, the hotkey has nothing to
+# talk to and the daemon says so rather than starting.
+#
+# Easier to paste into Settings than to type here - the window writes this file
+# 0600, which matters once it holds a credential you are billed for. If you set
+# it by hand, chmod it yourself.
+# openrouter_key = "sk-or-v1-..."
 
 # Run the microphone through noise suppression before the recogniser sees it.
 # Off because it is not free: it removes room noise, and it has also been caught

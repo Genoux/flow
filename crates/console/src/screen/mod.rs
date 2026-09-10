@@ -24,9 +24,9 @@ pub(crate) fn preload_images() -> Task<Message> {
 impl Console {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         // Setup takes the whole window, rail included. The rail is a way to
-        // move between seven screens that have nothing on them yet, and
-        // offering it here would be offering the user seven ways to watch the
-        // same download from somewhere it cannot be seen.
+        // move between sections that have nothing on them yet, and offering
+        // it here would be offering the user several ways to watch the same
+        // download from somewhere it cannot be seen.
         // The rail/pane divider is its own element: a container border applies
         // to all four sides, and only this edge should be drawn.
         let console = row![self.rail(), vertical_hairline(), self.pane()];

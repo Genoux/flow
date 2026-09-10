@@ -119,14 +119,9 @@ pub(crate) fn value_slider<'a>(
         .into()))
         .width(Length::Fixed(140.0)),
         Space::new().width(12),
-        container(
-            text(label.to_string())
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(MUTED)
-        )
-        .width(Length::Fixed(56.0))
-        .align_x(iced::alignment::Horizontal::Right),
+        container(text(label.to_string()).size(12).color(MUTED))
+            .width(Length::Fixed(56.0))
+            .align_x(iced::alignment::Horizontal::Right),
     ]
     .align_y(iced::Center)
     .into()
@@ -327,7 +322,7 @@ pub(crate) fn action_padded(
         } else {
             iced::font::Weight::Normal
         },
-        ..Font::DEFAULT
+        ..crate::theme::UI_FONT
     };
     crate::interaction::hover(move |warmth| {
         button(

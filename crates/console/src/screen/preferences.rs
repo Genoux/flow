@@ -28,7 +28,7 @@ use crate::format::clip_tail;
 use crate::theme::dissolve;
 use crate::*;
 use iced::widget::{column, mouse_area, row, stack, text, Space};
-use iced::{Element, Font, Length};
+use iced::{Element, Length};
 
 /// The dialog's own measure. Wide enough for a full PipeWire description at
 /// 13px, narrow enough that it still reads as a dialog on a 1040px window
@@ -39,9 +39,10 @@ impl Console {
     pub(super) fn preferences_section(&self) -> Element<'_, Message> {
         let body = column![
             group("General", self.general_rows()),
-            group("Build", self.channel_rows()),
             group("Shortcut", self.shortcut_rows()),
             group("Microphone", self.microphone_rows()),
+            group("OpenRouter", self.openrouter_rows()),
+            group("Build", self.channel_rows()),
         ];
 
         // No subtitle. It was a table of contents for three group headings
@@ -65,7 +66,7 @@ impl Console {
         }
         rows.push(setting(
             "Show tray icon",
-            "Flow keeps running when this is off.",
+            "",
             toggle(
                 self.settings.show_tray,
                 self.travel("show_tray"),
@@ -74,7 +75,7 @@ impl Console {
         ));
         rows.push(setting(
             "Sounds",
-            "Chime when dictation starts and stops.",
+            "",
             toggle(self.settings.sound, self.travel("sound"), Message::Sound),
         ));
         rows
@@ -88,56 +89,69 @@ impl Console {
         vec![
             setting(
                 "Hold to talk",
-                "Off: tap to start, tap to stop.",
+                "",
                 toggle(
                     self.settings.push_to_talk,
                     self.travel("push_to_talk"),
                     Message::PushToTalk,
                 ),
             ),
-            setting(
-                "Keys",
-                // No description: the value sitting beside this title is the
-                // keys. The line that used to be here said so a second time,
-                // and an older one before that sent people off to restart for
-                // a rebinding that has been live by the next press ever since
-                // `hotkey::spawn` started comparing the chord on every key.
-                "",
-                row![
-                    text(if self.capturing {
-                        "Press keys…".to_string()
-                    } else {
-                        self.settings.hotkey.replace('+', " ")
-                    })
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .color(if self.capturing { ACCENT } else { MUTED }),
-                    Space::new().width(12),
-                    // Reset earns its place only when the chord is not already
-                    // the default - offered next to a chord that is the default,
-                    // it is a button that does nothing.
-                    if !self.capturing && self.settings.hotkey != settings::DEFAULT_HOTKEY {
-                        row![
-                            action_msg("Reset", false, Message::ResetChord),
-                            Space::new().width(8)
-                        ]
-                        .into()
-                    } else {
-                        Element::from(Space::new().width(0))
-                    },
-                    if self.capturing {
-                        action_msg("Cancel", false, Message::CancelCapture)
-                    } else if self.can_capture {
-                        action_msg("Change", false, Message::CaptureChord)
-                    } else {
-                        // No readable keyboard, so offer the file instead of a
-                        // button that could only fail.
-                        action_msg("Open config", false, Message::OpenConfig)
-                    },
-                ]
-                .align_y(iced::Center)
-                .into(),
-            ),
+            column![
+                setting(
+                    "Keys",
+                    "",
+                    row![
+                        text(if self.capturing {
+                            "Press keys…".to_string()
+                        } else {
+                            self.settings.hotkey.replace('+', " ")
+                        })
+                        .size(12)
+                        .color(if self.capturing {
+                            ACCENT
+                        } else {
+                            MUTED
+                        }),
+                        Space::new().width(12),
+                        // Reset earns its place only when the chord is not already
+                        // the default - offered next to a chord that is the default,
+                        // it is a button that does nothing.
+                        if !self.capturing && self.settings.hotkey != settings::DEFAULT_HOTKEY {
+                            row![
+                                action_msg("Reset", false, Message::ResetChord),
+                                Space::new().width(8)
+                            ]
+                            .into()
+                        } else {
+                            Element::from(Space::new().width(0))
+                        },
+                        if self.capturing {
+                            action_msg("Cancel", false, Message::CancelCapture)
+                        } else if self.can_capture {
+                            action_msg("Change", false, Message::CaptureChord)
+                        } else {
+                            // No readable keyboard, so offer the file instead of a
+                            // button that could only fail.
+                            action_msg("Open config", false, Message::OpenConfig)
+                        },
+                    ]
+                    .align_y(iced::Center)
+                    .into(),
+                ),
+                text(self.chord_error.as_deref().unwrap_or(if self.capturing {
+                    "Press and release a key or shortcut. Esc cancels."
+                } else {
+                    ""
+                }))
+                .size(12)
+                .color(if self.chord_error.is_some() {
+                    ERR
+                } else {
+                    FAINT
+                })
+                .height(34),
+            ]
+            .into(),
         ]
     }
 
@@ -145,34 +159,114 @@ impl Console {
     /// Ducking belongs here rather than with the sounds Flow makes: it exists to
     /// keep your speakers out of the microphone, which is a fact about the
     /// input, not about the output.
+    /// Flow transcribes and refines through OpenRouter, so this key is not a
+    /// preference - without it the hotkey has nothing to talk to. The box is
+    /// secure and never shows the saved key back in full: what is on disk is a
+    /// credential, and re-displaying it only invites a shoulder-surf. A
+    /// fingerprint - the prefix and the last four characters - is the
+    /// exception: it says which key is saved without exposing enough of it to
+    /// use, which is the only thing worth reading here.
+    fn openrouter_rows(&self) -> Vec<Element<'_, Message>> {
+        let (note, tone) = self.key_note();
+        vec![crate::layout::setting_toned(
+            "API key",
+            note,
+            tone,
+            row![
+                crate::interaction::field(|amount| {
+                    iced::widget::text_input("sk-or-v1-…", &self.typing_key)
+                        .secure(true)
+                        .on_input(Message::TypingKey)
+                        .on_submit(Message::SaveKey)
+                        .size(13)
+                        .padding([10, 12])
+                        .width(Length::Fill)
+                        .style(move |theme, status| {
+                            super::editorial::input_style(theme, status, amount.get())
+                        })
+                        .into()
+                }),
+                Space::new().width(8),
+                // One slot, because a third control crowds the row: with
+                // nothing typed there is nothing to save, and the only thing
+                // left to do to a stored key is take it away.
+                if openrouter::can_save(&self.typing_key) {
+                    crate::control::action_padded(
+                        "Save",
+                        true,
+                        1.0,
+                        [10.0, 14.0],
+                        Some(Message::SaveKey),
+                    )
+                } else {
+                    crate::control::action_padded(
+                        "Remove",
+                        false,
+                        1.0,
+                        [10.0, 14.0],
+                        self.settings
+                            .openrouter_key
+                            .is_some()
+                            .then_some(Message::ClearKey),
+                    )
+                },
+            ]
+            .align_y(iced::Center)
+            .into(),
+        )]
+    }
+
+    /// The one line under "API key", and the colour to draw it in.
+    ///
+    /// Saving tests the key, so this says what happened rather than what could
+    /// be tried: a separate Test action asked for two presses to answer one
+    /// question, and put a button on a row of its own to do it.
+    fn key_note(&self) -> (String, Color) {
+        if let Some(error) = &self.key_error {
+            return (error.clone(), ERR);
+        }
+        if self.testing_key {
+            return ("Checking…".to_string(), MUTED);
+        }
+        match &self.key_test {
+            // Not the model name: which model refines is a fact about the
+            // build, not about the key, and it has already changed once.
+            Some(openrouter::Outcome::Accepted) => ("Active".to_string(), OK),
+            Some(openrouter::Outcome::Rejected(reason)) => (format!("Rejected: {reason}"), ERR),
+            Some(openrouter::Outcome::Unreachable(reason)) => {
+                (format!("No answer from OpenRouter: {reason}"), ERR)
+            }
+            Some(openrouter::Outcome::NoKey) | None => {
+                match self.settings.openrouter_key.as_deref() {
+                    Some(key) => (openrouter::fingerprint(key), FAINT),
+                    // Not "required" - dictation is on-device and works without
+                    // one - and not naming what it unlocks either. Cleanup is what
+                    // uses it today, which is not a reason to write that down here.
+                    None => ("Needed for cloud features.".to_string(), FAINT),
+                }
+            }
+        }
+    }
+
     fn channel_rows(&self) -> Vec<Element<'_, Message>> {
         let on = self.channel == crate::system::Channel::Experimental;
-        let mut rows = vec![setting(
+        // Once opted in, the running release is the only thing left to say:
+        // what the channel is was already answered by the switch being on, and
+        // the terms of it are what the off state is for.
+        let note = if self.updating {
+            "Downloading and verifying the release…".to_string()
+        } else if matches!(self.update, update::Status::Installed(_)) {
+            "Restart Flow to apply.".to_string()
+        } else if on {
+            update::running().to_string()
+        } else {
+            "Try upcoming changes before they reach stable. Experimental builds may be less reliable.".to_string()
+        };
+        vec![setting(
             "Experimental build",
-            if self.updating {
-                "Downloading and verifying the release…"
-            } else if on {
-                "MAI + Flash-Lite. Audio and text go to OpenRouter; an API key and usage charges apply. Restart Flow to apply."
-            } else {
-                "Opt in to MAI + Flash-Lite through OpenRouter. Audio leaves your device and usage charges apply. You can return to local dictation."
-            },
+            note,
             toggle(on, self.travel("channel"), Message::SetChannel),
-        )];
-        let pending = matches!(self.update, update::Status::Installed(_));
-        rows.push(setting(
-            "Selected release",
-            if pending {
-                "Restart to use the selected build."
-            } else {
-                "Updates stay within your selected channel."
-            },
-            if pending {
-                action_msg("Restart Flow", true, Message::RestartApp)
-            } else {
-                iced::widget::Space::new().width(110).into()
-            },
-        ));
-        rows
+        )]
     }
 
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {

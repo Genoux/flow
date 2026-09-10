@@ -40,6 +40,7 @@ fn file_overrides_every_key() {
             show_tray: true,
             record_debug: false,
             input_device: None,
+            openrouter_key: None,
         }
     );
 }
@@ -216,6 +217,7 @@ fn flags_win_over_the_file() {
         show_tray: true,
         record_debug: false,
         input_device: None,
+        openrouter_key: None,
     };
     let flags = ["daemon", "--raw", "--duck", "20", "--denoise"]
         .map(String::from)
@@ -255,6 +257,7 @@ fn absent_flags_leave_the_file_alone() {
         show_tray: true,
         record_debug: false,
         input_device: None,
+        openrouter_key: None,
     };
     assert_eq!(
         from_file.clone().overridden_by(&[String::from("daemon")]),
@@ -345,6 +348,19 @@ fn a_whole_file_is_still_read_strictly() {
     // `parse` is what the live reload and the tests above lean on: it says no
     // rather than guessing, which is what keeps a typo loud.
     assert!(Config::parse("from_a_newer_flow = 3\n").is_err());
+}
+
+#[test]
+fn openrouter_key_is_read_as_a_bare_string() {
+    assert_eq!(Config::default().openrouter_key, None);
+    let parsed = Config::parse("openrouter_key = sk-or-v1-example\n").expect("parse");
+    assert_eq!(parsed.openrouter_key.as_deref(), Some("sk-or-v1-example"));
+}
+
+#[test]
+fn a_blank_openrouter_key_is_no_key() {
+    let parsed = Config::parse("openrouter_key =\n").expect("parse");
+    assert_eq!(parsed.openrouter_key, None);
 }
 
 #[test]

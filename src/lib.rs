@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod notify;
 pub mod overlay;
 pub mod refine;
+pub mod router;
 pub mod status;
 pub mod stt;
 pub mod tray;

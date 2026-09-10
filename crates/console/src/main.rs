@@ -20,8 +20,8 @@ mod chord {
         false
     }
 
-    pub fn capture(_cancel: &dyn Fn() -> bool) -> Option<String> {
-        None
+    pub fn capture(_cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
+        Err("Shortcut capture is only available on Linux.".into())
     }
 }
 
@@ -32,10 +32,10 @@ mod daemon;
 mod dispatch;
 mod format;
 mod history;
-mod instructions;
 mod interaction;
 mod layout;
 mod motion;
+mod openrouter;
 mod screen;
 mod settings;
 mod setup;
@@ -62,10 +62,15 @@ use crate::theme::{
 use iced::{Color, Subscription, Task, Theme};
 
 fn main() -> iced::Result {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("flow-console {}", update::running());
+        return Ok(());
+    }
     iced::application(Console::new, Console::update, Console::view)
         .title("Flow")
         .antialiasing(true)
         .font(include_bytes!("../../../assets/NotoSerifDisplay-Regular.ttf").as_slice())
+        .default_font(theme::UI_FONT)
         .theme(theme)
         .subscription(subscription)
         .window(iced::window::Settings {
@@ -201,18 +206,20 @@ impl Section {
 
     /// Whether this screen still means something when Flow cannot run.
     ///
-    /// Both models are required, so a machine missing either has no daemon at
-    /// all - not a daemon doing less. That makes every screen that tunes
-    /// dictation a screen tuning nothing: Settings, Vocabulary and Style
-    /// all describe behaviour that has no process to belong to.
+    /// Without a key there is no daemon at all - not a daemon doing less - so
+    /// Vocabulary and Style describe behaviour with no process to belong to.
     ///
-    /// Overview survives because it is where the way out is, and About because
-    /// a version and a path are true whether or not anything is running.
+    /// Settings is the exception it did not used to be: it is where the key
+    /// goes, so disabling it would lock the one door out of this state.
+    /// Overview survives because it says what is wrong, and About because a
+    /// version and a path are true whether or not anything is running.
     ///
-    /// Disabled rather than hidden. A nav that grows items when a download
-    /// finishes is a nav that was lying about what the product is.
+    /// Disabled rather than hidden. A nav that grows items once setup runs is
+    /// a nav that was lying about what the product is. Only a missing or
+    /// damaged speech model gets here - a missing key does not, because
+    /// dictation does not need one.
     fn works_without_models(self) -> bool {
-        matches!(self, Section::Overview | Section::About)
+        matches!(self, Section::Overview | Section::About | Section::Settings)
     }
 
     fn label(self) -> &'static str {
@@ -275,6 +282,20 @@ impl Picker {
 
 #[derive(Debug, Clone)]
 enum Message {
+    TypingKey(String),
+    /// Switch which build runs on the next restart.
+    SetChannel(bool),
+    ChannelInstalled(Result<(), String>),
+    RestartApp,
+    AppRestarted(Result<(), String>),
+    SaveKey,
+    /// The Test action next to the key: ask the daemon binary to make a real
+    /// request with the saved key.
+    TestKey,
+    ClearKey,
+    /// `None` is `flow probe` not answering at all - no `flow` on PATH, or
+    /// past the budget - rather than any of the outcomes it can report.
+    KeyTested(Option<openrouter::Outcome>),
     Select(Section),
     BannersAllocated(Vec<Result<iced::advanced::image::Allocation, iced::advanced::image::Error>>),
     PushToTalk(bool),
@@ -298,7 +319,6 @@ enum Message {
     TrayStarted(Result<(), String>),
     Autostart(bool),
     AutostartFinished(Result<Option<bool>, String>),
-    InstallChecked(Option<usize>),
     PathOpened(Result<(), String>),
     HistoryLoaded(Vec<history::Entry>, Vec<history::Day>),
     Duck(u32),
@@ -315,7 +335,7 @@ enum Message {
     /// Start listening for the next chord the user presses.
     CaptureChord,
     /// A key arrived while capturing.
-    Captured(Option<String>),
+    Captured(u64, Result<Option<String>, String>),
     CancelCapture,
     /// Put the chord back to what a fresh install uses.
     ResetChord,
@@ -324,9 +344,6 @@ enum Message {
     HoverCleanup(Option<settings::Cleanup>),
     AddTerm,
     RemoveTerm(usize),
-    TypingInstruction(String),
-    AddInstruction,
-    RemoveInstruction(usize),
     Daemon(daemon::Event),
     /// A frame went by; only delivered while something is moving.
     Tick(std::time::Instant),
@@ -336,20 +353,18 @@ enum Message {
     HoverEntry(Option<usize>),
     /// Put one transcript on the clipboard.
     Copy(usize),
-    /// Start, or restart after a failure, the first-run install.
+    /// Start, or restart after a failure, the setup/repair screen - or, if the
+    /// only problem is a missing key, take the user to Settings instead.
     BeginSetup,
-    /// Stop the download that is running and throw away what it had.
-    StopDownload,
     /// One line from `flow install --porcelain`.
     SetupEvent(setup::Event),
     /// Automatic startup, or a retry from setup, finished.
     SetupStarted(Result<(), String>),
+    /// Whether the installed speech model is whole, asked of the daemon
+    /// binary at launch and again whenever setup ends.
+    InstallChecked(Option<usize>),
     CheckUpdate,
     UpdateChecked(update::Status),
-    SetChannel(bool),
-    ChannelInstalled(Result<(), String>),
-    RestartApp,
-    AppRestarted(Result<(), String>),
     InstallUpdate,
     UpdateInstalled(Result<String, String>),
 }
@@ -419,15 +434,15 @@ struct Console {
     /// window should not put a network call in the path of flipping a switch.
     update: update::Status,
     /// True while the release tarball is downloading and installing.
-    channel: system::Channel,
     updating: bool,
-    models: Vec<system::Model>,
+    restart_pending: bool,
     /// How many installed files are missing or the wrong length, asked of the
     /// daemon binary at launch and again whenever setup ends. `None` when
-    /// nothing could answer.
+    /// nothing could answer - `flow` not on PATH, or it did not reply inside
+    /// the launch budget.
     damage: Option<usize>,
-    /// The one model download that can be in flight, whether it is first
-    /// run's or one started from a row on the Models screen.
+    /// The one model download that can be in flight: first run's, or a repair
+    /// started from Overview's banner.
     download: Option<setup::State>,
     /// True while the setup screen owns the whole window - no rail, no
     /// sections.
@@ -440,14 +455,28 @@ struct Console {
     typing: String,
     term_query: String,
     term_error: Option<String>,
-    /// Standing instructions for the cleanup model, edited on the Style screen.
-    notes: Vec<String>,
-    note_typing: String,
-    note_error: Option<String>,
+    /// What is in the OpenRouter key box right now, which is not yet what is
+    /// saved. Typed keys are persisted on Enter, not per keystroke: a
+    /// half-pasted credential written to disk is a config file that fails
+    /// authentication until the paste finishes.
+    typing_key: String,
+    /// Why the last Save was refused, shown in place of the hint under the
+    /// field until the next keystroke or a save that succeeds.
+    key_error: Option<String>,
+    /// True while a Test request is in flight, so a second click cannot start
+    /// another one on top of it.
+    testing_key: bool,
+    /// The last Test result, cleared on every new save - a verdict about the
+    /// key that was saved when it ran, not about whatever replaces it.
+    key_test: Option<openrouter::Outcome>,
+    /// Which build the `flow` symlink points at, read at launch. The link is
+    /// the source of truth; this is only what the switch renders.
+    channel: system::Channel,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
     /// False when /dev/input cannot be read, so the chord cannot be captured.
     can_capture: bool,
+    capture_id: u64,
     cancel_capture: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Why the last attempted chord was rejected, shown in place of the hint.
     chord_error: Option<String>,
@@ -465,11 +494,18 @@ impl Console {
     fn new() -> (Self, Task<Message>) {
         let entries = history::recent();
 
-        // A machine with no speech model cannot dictate, so the window has
-        // nothing to report and one thing to do.
-        let first_run = setup::needed();
-
         let settings = settings::Settings::load();
+        // A machine whose speech model is missing or damaged cannot dictate,
+        // and one with no key cannot refine; either sends a fresh launch
+        // straight into `BeginSetup`, which resolves to whichever applies. The
+        // model faults block the console outright, the missing key does not -
+        // see `InstallProblem::blocks`.
+        //
+        // Asked once here rather than twice: a directory check alone called a
+        // truncated file healthy, which left the fault to a banner the user
+        // could dismiss on a Flow that could not transcribe.
+        let damage = system::startup_damage();
+        let first_run = model_is_broken(damage) || settings.openrouter_key.is_none();
         let cleanup_selection = settings::Cleanup::ALL.map(|level| {
             motion::Transition::new(if settings.cleanup == level { 1.0 } else { 0.0 })
         });
@@ -504,10 +540,9 @@ impl Console {
                 // yet" while a check was in flight and its button would fire a
                 // second one.
                 update: update::Status::Checking,
-                channel: system::channel(),
                 updating: false,
-                models: system::models(),
-                damage: system::startup_damage(),
+                restart_pending: false,
+                damage,
                 download: None,
                 showing_setup: first_run,
                 fading: None,
@@ -516,11 +551,14 @@ impl Console {
                 typing: String::new(),
                 term_query: String::new(),
                 term_error: None,
-                notes: instructions::load(),
-                note_typing: String::new(),
-                note_error: None,
+                typing_key: String::new(),
+                key_error: None,
+                testing_key: false,
+                key_test: None,
+                channel: system::channel(),
                 capturing: false,
                 can_capture: false,
+                capture_id: 0,
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
                 now: std::time::Instant::now(),
@@ -554,6 +592,12 @@ impl Console {
                 // service whenever the window opens, even if dictation cannot
                 // start or the user has chosen to leave it stopped.
                 Task::perform(async { system::start_tray() }, Message::TrayStarted),
+                // Whether the saved key still works, asked on open rather than
+                // only after a save: "Active" has to survive a restart or it
+                // is reporting this session's actions, not the key's state.
+                // Costs one small refining request per window, which is the
+                // price of the answer being current instead of remembered.
+                Task::done(Message::TestKey),
                 // Whether there is a newer Flow, asked without being asked.
                 // A release nobody knows about is a release nobody installs,
                 // and the answer belongs on screen before the question occurs
@@ -602,11 +646,21 @@ impl Console {
         let running = |since: std::time::Instant, ms: u64| {
             self.now.saturating_duration_since(since).as_millis() < ms as u128
         };
-        self.nav_motion.iter().chain(&self.cleanup_selection).chain(&self.cleanup_hover).any(|motion| motion.moving(self.now))
+        self.nav_motion
+            .iter()
+            .chain(&self.cleanup_selection)
+            .chain(&self.cleanup_hover)
+            .any(|motion| motion.moving(self.now))
             || self.page_motion.moving()
-            || self.entry_motion.values().any(|motion| motion.moving(self.now))
+            || self
+                .entry_motion
+                .values()
+                .any(|motion| motion.moving(self.now))
             || self.copied.is_some_and(|(_, at)| running(at, COPIED))
-            || self.toggle_motion.values().any(|motion| motion.moving(self.now))
+            || self
+                .toggle_motion
+                .values()
+                .any(|motion| motion.moving(self.now))
             || self
                 .picking_input
                 .is_some_and(|picker| running(picker.since(), FADE))
@@ -658,8 +712,8 @@ impl Console {
         state.start_error = None;
         // `restart`, not `start`. Two reasons, and both are the same reason.
         //
-        // A daemon that was already up started before these models existed, so
-        // it is running without the one setup just fetched - `start` on an
+        // A daemon that was already up started before this model existed, so
+        // it is running without what setup just fetched - `start` on an
         // active unit does nothing at all, and leaves it that way.
         //
         // And because it does nothing, the socket never drops, so the console
@@ -676,13 +730,11 @@ impl Console {
         let Some(state) = self.download.as_mut() else {
             return Task::none();
         };
-        if state.spawned || state.stopped || !state.intro_over() {
+        if state.spawned || !state.intro_over() {
             return Task::none();
         }
         state.spawned = true;
-        let (events, handle) = setup::install();
-        state.handle = handle;
-        Task::run(events, Message::SetupEvent)
+        Task::run(setup::install(), Message::SetupEvent)
     }
 
     /// The speech model is on disk, so Flow can dictate: start the daemon.
@@ -704,7 +756,7 @@ impl Console {
         }
 
         // Nothing came down the wire, so nothing on disk changed and the daemon
-        // is already running the files a restart would hand it. Restarting it
+        // is already running the file a restart would hand it. Restarting it
         // to prove a repair found nothing wrong is a dropped socket and a model
         // reloaded for no one. It only has to start if it is not running.
         let repaired_nothing = self.download.as_ref().is_some_and(|state| !state.fetching)
@@ -714,7 +766,7 @@ impl Console {
             if let Some(state) = self.download.as_mut() {
                 state.daemon_started = true;
             }
-            self.models = system::models();
+            self.damage = system::startup_damage();
             self.fading = Some(-setup::HOLD);
             return Task::none();
         }
@@ -722,46 +774,11 @@ impl Console {
         self.start_setup_daemon()
     }
 
-    /// Whether an install is missing a model it needs.
-    ///
-    /// Reachable only by stopping setup: `setup::needed` sends a half-installed
-    /// machine back through it, so the one way to sit here is to have said no.
-    /// That makes this a deferred choice rather than a fault - the window says
-    /// what is missing and offers to finish, and nothing starts in the
-    /// meantime.
-    fn incomplete(&self) -> bool {
-        match self.damage {
-            Some(count) => count > 0,
-            // No verdict. What the window can see for itself is whether the
-            // models are there at all, which is what it used to go on.
-            None => !self.models.iter().all(|model| model.installed),
-        }
-    }
-
-    /// Why the Overview banner is up, if it is.
-    ///
-    /// One banner, two situations, and they are not the same news. A machine
-    /// with nothing on it has not finished setting up - green, an invitation.
-    /// A machine that had both models and lost a file out of one is broken -
-    /// amber, and saying "setup isn't finished" to someone who finished it a
-    /// month ago is how a real fault gets read as a glitch.
-    fn install_problem(&self) -> Option<InstallProblem> {
-        if !self.incomplete() {
-            return None;
-        }
-        Some(if self.models.iter().any(|model| model.installed) {
-            InstallProblem::Damaged
-        } else {
-            InstallProblem::Unfinished
-        })
-    }
-
     /// Setup is over: the window becomes the console it was standing in for.
     fn leave_setup(&mut self) -> Task<Message> {
         self.showing_setup = false;
         self.fading = None;
         self.download = None;
-        self.models = system::models();
         self.autostart_pending = true;
         Task::batch([
             self.refresh_peripherals(),
@@ -772,6 +789,39 @@ impl Console {
                 Message::AutostartFinished,
             ),
         ])
+    }
+
+    /// Why the Overview banner is up, if it is.
+    ///
+    /// Two situations, and they read differently. A machine with no speech
+    /// model at all has not finished setting up - that is an invitation. One
+    /// whose model directory exists but lost a file to a wrong length or a
+    /// deletion is broken instead, and saying "setup isn't finished" to
+    /// someone who finished it a month ago is how a real fault gets read as a
+    /// glitch. Missing only a key is a third, milder thing: refining will not
+    /// run, but the recogniser still can, so it stops at a banner rather than
+    /// blocking the whole window.
+    fn incomplete(&self) -> bool {
+        self.install_problem().is_some()
+    }
+
+    fn install_problem(&self) -> Option<InstallProblem> {
+        let model_installed = flow_paths::speech_model_dir().is_dir();
+        if model_is_broken(self.damage) {
+            return Some(if model_installed {
+                InstallProblem::ModelDamaged
+            } else {
+                InstallProblem::ModelMissing
+            });
+        }
+        // A missing key is NOT an install problem. Dictation is on-device, so
+        // Flow works without one at `cleanup = none` - and treating the key as
+        // unfinished setup put "Setup unfinished" over a working product,
+        // disabled History, Vocabulary and Style in the nav, and hid the
+        // start/stop control. What the key gates is refining, which is said in
+        // the places that actually need it: the Style cards, the vocabulary
+        // header, and the key row itself.
+        None
     }
 }
 
@@ -786,16 +836,22 @@ fn believe_disconnect(activity: daemon::Activity) -> bool {
 /// The line and dot colour for each activity the daemon can report. Offline
 /// and Ready both read as calm (no accent) - the accent is reserved for the
 /// two states where Flow is actually doing something with your voice.
-fn activity_label(activity: daemon::Activity) -> (&'static str, Color) {
+///
+/// Ready is the one that had to change. "Running" was true of the process and
+/// silent about the only thing that decides whether the hotkey works: every
+/// dictation is an OpenRouter request now, so a daemon that is up with a dead
+/// network or a rejected key is running and useless. The word says which.
+fn activity_label(activity: daemon::Activity, reachable: Option<bool>) -> (&'static str, Color) {
     match activity {
         daemon::Activity::Offline => ("Not running", FAINT),
         daemon::Activity::Starting => ("Starting…", STARTING),
-        // Ready means the daemon is up and waiting for the hotkey, which is
-        // the state a person calls running - and a grey dot beside it read as
-        // "nothing is happening" rather than "everything is fine". Green here
-        // and green while listening are the same claim at two volumes: Flow is
-        // alive. The word beside it is what separates idle from live.
-        daemon::Activity::Ready => ("Running", OK),
+        // Unknown is not a failure and must not be coloured like one: the
+        // daemon is up and has simply not had a dictation to send yet.
+        daemon::Activity::Ready => match reachable {
+            Some(true) => ("Connected", OK),
+            Some(false) => ("Disconnected", ERR),
+            None => ("Running", OK),
+        },
         daemon::Activity::Listening => ("Listening", ACCENT),
         daemon::Activity::Working => ("Refining", ACCENT),
     }
@@ -828,21 +884,32 @@ fn update_state(status: &update::Status) -> (Color, String) {
     }
 }
 
+/// Whether the speech model on disk can be trusted.
+///
+/// `None` is no verdict from the daemon binary - a wedged or older `flow` - so
+/// the window falls back to the one thing it can see for itself.
+fn model_is_broken(damage: Option<usize>) -> bool {
+    match damage {
+        Some(count) => count > 0,
+        None => setup::needed(),
+    }
+}
+
 /// Why the Overview is showing a banner. See `Console::install_problem`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallProblem {
     /// Nothing installed: setup was never finished, or was stopped.
-    Unfinished,
+    ModelMissing,
     /// Installed, then a file went missing or came back the wrong length.
-    Damaged,
+    ModelDamaged,
 }
 
 impl InstallProblem {
     /// The line, the button, and the colour the banner is drawn in.
     fn banner(self) -> (&'static str, &'static str, Color) {
         match self {
-            Self::Unfinished => ("Setup isn't finished.", "Finish setup", ACCENT),
-            Self::Damaged => ("A file is missing or damaged.", "Repair", WARN),
+            Self::ModelMissing => ("Setup isn't finished.", "Finish setup", ACCENT),
+            Self::ModelDamaged => ("A speech model file is missing or damaged.", "Repair", WARN),
         }
     }
 }
@@ -874,7 +941,9 @@ fn status_of(incomplete: bool, activity: daemon::Activity) -> Status {
 
 /// Read the keyboard until a chord arrives, on whatever thread the runtime
 /// gives us. Split out so the async block above stays a one-liner.
-fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<String> {
+fn tokio_free_capture(
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Option<String>, String> {
     chord::capture(&|| cancelled.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -885,6 +954,51 @@ mod tests {
     };
     use crate::daemon;
     use crate::theme::STARTING;
+
+    #[test]
+    fn cancelled_capture_cannot_overwrite_a_new_shortcut() {
+        use super::{Console, Message};
+        let (mut console, _) = Console::new();
+        let original = console.settings.hotkey.clone();
+        let _ = console.update(Message::CaptureChord);
+        let first = console.capture_id;
+        let cancelled = console.cancel_capture.clone();
+        let _ = console.update(Message::CancelCapture);
+        let _ = console.update(Message::CaptureChord);
+        assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        let _ = console.update(Message::Captured(first, Ok(Some("ctrl+a".into()))));
+        assert!(console.capturing);
+        assert_eq!(console.settings.hotkey, original);
+        let saved = console.update(Message::Captured(
+            console.capture_id,
+            Ok(Some("rightctrl".into())),
+        ));
+        assert!(saved.units() > 0);
+        assert_eq!(console.settings.hotkey, "rightctrl");
+        assert!(!console.capturing);
+    }
+
+    #[test]
+    fn leaving_settings_cancels_capture_and_errors_are_visible() {
+        use super::{Console, Message};
+        let (mut console, _) = Console::new();
+        let _ = console.update(Message::CaptureChord);
+        let _ = console.update(Message::Captured(
+            console.capture_id,
+            Err("Keyboard disconnected".into()),
+        ));
+        assert_eq!(
+            console.chord_error.as_deref(),
+            Some("Keyboard disconnected")
+        );
+        assert!(!console.capturing);
+        let _ = console.update(Message::CaptureChord);
+        let _ = console.update(Message::Select(Section::Overview));
+        assert!(!console.capturing);
+        assert!(console
+            .cancel_capture
+            .load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     #[test]
     fn closing_waits_for_the_latest_settings_save() {
@@ -957,13 +1071,35 @@ mod tests {
     #[test]
     fn startup_is_named_once_in_the_status() {
         assert_eq!(
-            activity_label(daemon::Activity::Starting),
+            activity_label(daemon::Activity::Starting, None),
             ("Starting…", STARTING)
         );
         assert_eq!(service_action_label(false), "Start");
         // The action is the state it is not in - never a word that reads the
         // same either way.
         assert_eq!(service_action_label(true), "Stop");
+    }
+
+    /// "Running" said the process was up. It never said whether a dictation
+    /// could reach anything, which after the move to OpenRouter is the whole
+    /// question.
+    #[test]
+    fn ready_reports_the_connection_rather_than_the_process() {
+        assert_eq!(
+            activity_label(daemon::Activity::Ready, Some(true)).0,
+            "Connected"
+        );
+        assert_eq!(
+            activity_label(daemon::Activity::Ready, Some(false)).0,
+            "Disconnected"
+        );
+        // Nothing has been sent yet, so there is nothing to claim either way.
+        assert_eq!(activity_label(daemon::Activity::Ready, None).0, "Running");
+        // A daemon that is down is down, whatever the network is doing.
+        assert_eq!(
+            activity_label(daemon::Activity::Offline, Some(true)).0,
+            "Not running"
+        );
     }
 
     #[test]
@@ -980,19 +1116,39 @@ mod install_banner {
     use super::*;
 
     #[test]
-    fn a_lost_file_warns_in_amber_rather_than_inviting_in_green() {
-        let (line, offer, tone) = InstallProblem::Damaged.banner();
-        assert_eq!(tone, WARN, "a fault must not wear the invitation's colour");
-        assert_ne!(tone, ACCENT);
-        assert!(line.contains("damaged"), "{line}");
-        assert_eq!(offer, "Repair");
+    fn a_missing_model_reads_as_an_invitation_not_a_fault() {
+        let (_, _, tone) = InstallProblem::ModelMissing.banner();
+        assert_eq!(tone, ACCENT, "nothing is broken - setup just has not run");
     }
 
     #[test]
-    fn an_unfinished_setup_stays_an_invitation() {
-        let (line, offer, tone) = InstallProblem::Unfinished.banner();
-        assert_eq!(tone, ACCENT);
-        assert!(line.contains("Setup isn't finished"), "{line}");
-        assert_eq!(offer, "Finish setup");
+    fn a_damaged_model_reads_as_a_fault_offering_a_repair() {
+        let (line, offer, tone) = InstallProblem::ModelDamaged.banner();
+        assert_eq!(tone, WARN, "something that was working broke");
+        assert!(line.contains("missing or damaged"), "{line}");
+        assert_eq!(offer, "Repair");
+    }
+
+    /// The regression that made the whole nav look broken: dictation is
+    /// on-device, so a machine with no key is a working machine with one
+    /// feature unconfigured - not an unfinished install.
+    #[test]
+    fn no_banner_ever_asks_for_a_key() {
+        for problem in [InstallProblem::ModelMissing, InstallProblem::ModelDamaged] {
+            let (line, offer, _) = problem.banner();
+            assert!(
+                !line.to_lowercase().contains("key"),
+                "a banner gates the nav and the start control; the key gates neither: {line}"
+            );
+            assert!(!offer.to_lowercase().contains("settings"), "{offer}");
+        }
+    }
+
+    /// The fault that used to slip through: a file inside an existing model
+    /// directory came back the wrong length, so the directory check said fine.
+    #[test]
+    fn a_wrong_length_file_counts_as_broken() {
+        assert!(model_is_broken(Some(1)));
+        assert!(!model_is_broken(Some(0)));
     }
 }

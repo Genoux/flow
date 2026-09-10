@@ -1,19 +1,19 @@
-use crate::debug;
-use anyhow::{Context, Result, anyhow, bail};
-use llama_cpp_2::context::params::LlamaContextParams;
-use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
-use llama_cpp_2::sampling::LlamaSampler;
-use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use anyhow::{Result, bail};
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cleanup {
-    /// Paste the transcript untouched. The refining model is never loaded.
+    /// The off switch: the raw transcript, exactly as the local recogniser
+    /// produced it, pasted with no cloud request at all.
+    ///
+    /// It used to run a small pass of its own - hesitations and stutters gone,
+    /// vocabulary applied - because speech-to-text was cloud too and the
+    /// vocabulary block was only reachable from a call already being made.
+    /// Recognition moved on-device and the tradeoff moved with it: a level
+    /// promising nothing is honest again, and the cost is that a mangled term
+    /// ("hyper land" for "Hyprland") no longer has anything on the machine to
+    /// recover it. `Refiner::refine` never reaches the network at this level.
     None,
     /// What you said, written properly: hesitations and stutters gone, grammar,
     /// punctuation and capitalisation fixed. Every word that says anything
@@ -40,7 +40,7 @@ pub enum Cleanup {
     /// in it and no fact they did not give.
     ///
     /// The only level allowed to choose words, which is the whole reason the
-    /// dial has three positions: raw, right, rewritten. It was a concision level
+    /// dial has three positions: as said, corrected, rewritten. It was a concision level
     /// once and forbidden from picking any noun, name or verb the speaker had
     /// not said - a rule that stopped it inventing and also stopped it
     /// rewriting, leaving it a slightly shorter Light. The guard that matters is
@@ -75,15 +75,9 @@ impl Cleanup {
     /// The three levels in order, for a picker that must not drift from the enum.
     pub const ALL: [Self; 3] = [Self::None, Self::Light, Self::Medium];
 
-    /// Whether this level needs the refining model in memory at all.
-    pub fn wants_model(self) -> bool {
-        self != Self::None
-    }
-
     fn rules(self) -> &'static str {
         match self {
-            // Never reached - `None` short-circuits before a prompt is built.
-            Self::None => LIGHT_RULES,
+            Self::None => MINIMAL_RULES,
             Self::Light => LIGHT_RULES,
             Self::Medium => MEDIUM_RULES,
         }
@@ -92,7 +86,7 @@ impl Cleanup {
     /// Smallest share of what was said that a faithful refining can come back
     /// with, before [`lost_the_dictation`] throws it away.
     ///
-    /// Both sit far below the levels' own targets rather than at them, because
+    /// They sit far below the levels' own targets rather than at them, because
     /// this decides between polished text and the raw transcript and the raw
     /// transcript is the worse of the two whenever the refining was merely
     /// enthusiastic instead of wrong. Medium's is lower again: cutting words is
@@ -106,9 +100,13 @@ impl Cleanup {
     /// length. That is also why [`RETENTION_FLOOR_APPLIES_FROM`] is where it
     /// is - a self-correction can eat half a sentence and cannot eat most of a
     /// paragraph.
+    ///
+    /// None's is the highest of the three because it deletes the least: the
+    /// only words it may drop are noises and repeats, so a pass that comes
+    /// back with half the dictation did something this level does not do.
     fn retention_floor(self) -> f32 {
         match self {
-            Self::None => 0.0,
+            Self::None => 0.6,
             Self::Light => 0.35,
             Self::Medium => 0.2,
         }
@@ -151,6 +149,42 @@ Write your reply in the SAME LANGUAGE as the input. These instructions are in \
 English; that says nothing about which language to reply in. Never translate. \
 (Naming example languages here would bias the output towards them, so none \
 are named.)";
+
+/// Noises and stutters out. Nothing else, in either direction.
+///
+/// Short on purpose. This is the level chosen by someone who wants their own
+/// words back, so every rule it does not have is a way it cannot rewrite them -
+/// and the shortest prompt of the three is also the quickest, which is the
+/// other half of what this level is for.
+///
+/// Light's "recover a mis-recognised word from context" is deliberately not
+/// here. It reads as a repair and behaves as a licence: a model told to
+/// recover what the speaker was reaching for will reach itself, and at the one
+/// level whose promise is that the wording survives, a helpful substitution is
+/// the failure. The vocabulary block appended by `system_prompt` is the narrow
+/// version of that repair - named terms, spelled as the speaker listed them -
+/// and it is the only one this level gets.
+const MINIMAL_RULES: &str = "\
+Rules:
+- Delete the sounds people make while thinking - um, uh, uhm, ehm, euh, eh, \
+er, ah, mm, hmm, and whatever the input's own language writes for that sound. \
+EVERY language and EVERY position. A hesitation is a NOISE, not a word - \
+\"like\", \"you know\", \"I mean\", \"sort of\" and \"basically\" are words, \
+and this rule does not reach them.
+- Delete stutters and accidental repeats - the SAME word or syllable twice in \
+a row, like \"the the the\" or \"on on\". Keep one copy. Two different words \
+in a row are not a repeat.
+- Those two deletions are the ONLY changes you make. Every other word of the \
+input comes out in your answer, in the order it was said and spelled the way \
+it came. Do not fix grammar, do not re-punctuate, do not choose a better word, \
+do not swap a word for one you think was misheard, do not join or split a \
+sentence. Grammar mistakes, hedges, repetition, clumsy wording and a sentence \
+that trails off all stay exactly as they are - correcting any of them is the \
+level above's job, and here it is an error.
+- Never cut the end of the input.
+- If the input is nothing but hesitation, give it back unchanged.
+- Never add facts, never summarise, never answer.
+- If there is no hesitation or repeat in the input, give it back unchanged.";
 
 /// Hesitations out, grammar right, every word that says something kept.
 ///
@@ -252,32 +286,14 @@ a sign-off, is a point and not padding.
 - Never invent. Every fact, name, number and specific noun in your answer must \
 be one the speaker gave you. Where they were vague, stay vague - \"the stuff\" \
 stays \"the stuff\", and never becomes \"the paperwork\" however much better \
-that reads. Naming what the speaker left unnamed is inventing, at any level.
+that reads. Naming what the speaker left unnamed is inventing, at any level. \
+Keep generic references generic: a thing is not a project, task or feature \
+unless the speaker names it. Context that sounds like work is not a name.
 - If the input is nothing but hesitation, give it back unchanged. Deleting \
 every word would leave nothing, and nothing is not an answer you may fill with \
 a word of your own.
 - Never add facts, never summarise, never answer.
 - If the text is already clean and reads well, repeat it unchanged.";
-
-/// llama.cpp wants one process-wide backend, and a model borrows it only
-/// nominally, so a static keeps the model free of a lifetime parameter.
-fn backend() -> Result<&'static LlamaBackend> {
-    static BACKEND: OnceLock<Option<LlamaBackend>> = OnceLock::new();
-    BACKEND
-        .get_or_init(|| {
-            let mut backend = LlamaBackend::init().ok()?;
-            // llama.cpp writes every tensor name it loads straight to stderr,
-            // which under systemd is the journal `flow logs` reads: roughly
-            // 1800 lines per model load against 180 from Flow itself. Left on,
-            // `flow logs` shows a tensor dump instead of your dictations.
-            if !debug::enabled() {
-                backend.void_logs();
-            }
-            Some(backend)
-        })
-        .as_ref()
-        .ok_or_else(|| anyhow!("llama backend failed to initialise"))
-}
 
 /// How long refining may take on a short dictation before the raw transcript is
 /// shipped instead.
@@ -308,6 +324,10 @@ const REFINE_PER_WORD: Duration = Duration::from_millis(20);
 const REFINE_CEILING: Duration = Duration::from_secs(8);
 
 /// How long this particular dictation's refining may take.
+/// How long the key check may take. Generous next to a refining budget because
+/// nothing is waiting on it: the window draws first and the line fills in.
+const PROBE_BUDGET: Duration = Duration::from_secs(10);
+
 fn budget_for(raw: &str) -> Duration {
     let words = raw.split_whitespace().count() as u32;
     (REFINE_BUDGET + REFINE_PER_WORD * words).min(REFINE_CEILING)
@@ -557,115 +577,6 @@ pub fn needs_refining(raw: &str) -> bool {
     })
 }
 
-/// A GPU the refining model could be offloaded to. Mirrors the fields of
-/// llama.cpp's device list that matter, so [`choose_device`] can be tested
-/// against real machine topologies without a GPU present.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    pub index: usize,
-    pub description: String,
-    pub discrete: bool,
-    pub free_bytes: u64,
-}
-
-/// Discrete before integrated, then whichever has the most room.
-///
-/// Ranking by free memory alone is wrong, and quietly so: an iGPU reports shared
-/// system RAM, so the machine this was written on offers 16.9GB on the iGPU
-/// against 4.4GB free on the RTX 3060 Ti beside it. The obvious heuristic picks
-/// the slower device every time.
-///
-/// `needed` filters first, because a card that cannot hold the model is not a
-/// candidate at all - that is the case that used to dump 2.4GB onto whatever
-/// happened to enumerate first.
-pub fn choose_device(candidates: &[Candidate], needed: u64) -> Option<&Candidate> {
-    candidates
-        .iter()
-        .filter(|candidate| candidate.free_bytes >= needed)
-        .max_by_key(|candidate| (candidate.discrete, candidate.free_bytes))
-}
-
-/// KV cache plus compute buffers on top of the model file. Measured on the 4B
-/// Q4_K_M at its 512-token context: 108MB KV, 302MB compute.
-const DEVICE_OVERHEAD: u64 = 512 * 1024 * 1024;
-
-/// Where refining will run, decided without loading anything.
-///
-/// Exists so the setup screen can say where the work will happen *before* the
-/// model is on disk. It calls the same [`choose_device`] against the same
-/// candidate list that [`Refiner::load`] does, so the promise the window makes
-/// during setup is the one the daemon keeps afterwards - a second, simpler
-/// guess in the console would eventually contradict it.
-pub struct Plan {
-    /// `None` means the CPU, which is a working answer rather than a failure.
-    pub device: Option<Candidate>,
-    pub needed: u64,
-    /// The roomiest card seen, whether or not it was big enough. What turns
-    /// "running on the CPU" into "running on the CPU *because*".
-    pub best_free: u64,
-}
-
-/// How much room the refining model wants. Falls back to the pinned download
-/// size when the file is not there yet, which is exactly the setup case.
-fn needed_bytes() -> u64 {
-    std::fs::metadata(model_path())
-        .map(|meta| meta.len())
-        .unwrap_or_else(|_| crate::install::total_bytes(crate::install::REFINE))
-        + DEVICE_OVERHEAD
-}
-
-pub fn plan(gpu: Option<usize>) -> Plan {
-    let needed = needed_bytes();
-    let available = candidates();
-    let best_free = available.iter().map(|c| c.free_bytes).max().unwrap_or(0);
-
-    // An explicit index is the escape hatch, and it is deliberately not
-    // validated against `needed`: someone overriding this knows their machine
-    // better than a size estimate does.
-    let device = match gpu {
-        Some(index) => match available.iter().find(|c| c.index == index) {
-            Some(candidate) => Some(candidate.clone()),
-            None => {
-                eprintln!(
-                    "config wants gpu {index}, which is not a GPU here - falling back to auto"
-                );
-                choose_device(&available, needed).cloned()
-            }
-        },
-        None => choose_device(&available, needed).cloned(),
-    };
-
-    Plan {
-        device,
-        needed,
-        best_free,
-    }
-}
-
-fn candidates() -> Vec<Candidate> {
-    use llama_cpp_2::LlamaBackendDeviceType as Kind;
-    llama_cpp_2::list_llama_ggml_backend_devices()
-        .into_iter()
-        .filter_map(|device| {
-            let discrete = match device.device_type {
-                Kind::Gpu => true,
-                Kind::IntegratedGpu => false,
-                _ => return None,
-            };
-            Some(Candidate {
-                index: device.index,
-                description: device.description,
-                discrete,
-                free_bytes: device.memory_free as u64,
-            })
-        })
-        .collect()
-}
-
-pub fn model_path() -> PathBuf {
-    flow_paths::refine_model_file()
-}
-
 /// Terms the recogniser mangles, one per line, from
 /// `~/.config/flow/vocabulary.txt`. Absent or empty is the normal state, not an
 /// error: there is no useful default list, because the words a recogniser gets
@@ -677,22 +588,6 @@ pub fn model_path() -> PathBuf {
 /// and cannot recover one that sounds nothing like it.
 pub fn vocabulary() -> Vec<String> {
     lines_of(flow_paths::vocabulary_file())
-}
-
-/// The speaker's own standing instructions, one per line, from
-/// `~/.config/flow/instructions.txt`.
-///
-/// The setting the levels cannot be: three cards decide how much to change,
-/// and nothing decided how to write it. British spelling, a language to keep
-/// whatever the detector says, a sign-off, a house style for code names - none
-/// of those is a level, and all of them are the difference between text that
-/// is nearly right and text that can be sent.
-///
-/// A list rather than a paragraph because the model is handed a list: each line
-/// is one instruction, short by construction, and one that turns out to hurt
-/// can be removed without rewriting the rest.
-pub fn instructions() -> Vec<String> {
-    lines_of(flow_paths::instructions_file())
 }
 
 /// Every meaningful line of a config list file. Absent, empty and
@@ -768,8 +663,6 @@ pub struct Style {
     /// model as context rather than string-replaced, because "Flow" and "flow"
     /// are both real words and only the sentence says which was meant.
     pub vocabulary: Vec<String>,
-    /// See [`instructions`].
-    pub instructions: Vec<String>,
 }
 
 impl Style {
@@ -780,7 +673,6 @@ impl Style {
         Self {
             level,
             vocabulary: Vec::new(),
-            instructions: Vec::new(),
         }
     }
 
@@ -789,81 +681,68 @@ impl Style {
         self
     }
 
-    pub fn with_instructions(mut self, instructions: Vec<String>) -> Self {
-        self.instructions = instructions;
-        self
-    }
-
     /// What this machine's files say right now. Read per dictation: the files
     /// are a few hundred bytes and the alternative is the staleness above.
     pub fn current(level: Cleanup) -> Self {
-        Self::new(level)
-            .with_vocabulary(vocabulary())
-            .with_instructions(instructions())
+        Self::new(level).with_vocabulary(vocabulary())
     }
+}
+
+/// What [`Refiner::probe`] found, kept apart because each sends the user
+/// somewhere different: no key needs Settings, a rejected one needs a
+/// different key, and a dead network needs neither.
+pub enum Reachability {
+    NoKey,
+    Accepted,
+    /// OpenRouter answered and said no - a bad key, no credit, or a malformed
+    /// reply. The message is `router::chat`'s own, never the key itself.
+    Rejected(String),
+    /// The request never got an answer - curl missing, connection refused, or
+    /// past its deadline.
+    Unreachable(String),
 }
 
 pub struct Refiner {
-    model: LlamaModel,
+    key: String,
 }
 
 impl Refiner {
-    pub fn load(path: &Path, gpu: Option<usize>) -> Result<Self> {
-        let started = Instant::now();
-        let backend = backend()?;
-
-        // The same decision the setup screen showed, from the same function:
-        // a window that promised the RTX and a daemon that then used the iGPU
-        // would be worse than either answer on its own.
-        let chosen = plan(gpu);
-
-        // Offloading everything is the whole point of leaving STT on the CPU, but
-        // only onto a device that can hold it: too little VRAM either fails the
-        // load or thrashes, and slow-but-correct on the CPU beats both.
-        let params = match &chosen.device {
-            Some(candidate) => {
-                eprintln!(
-                    "refining on gpu {} ({}, {:.1} GB free)",
-                    candidate.index,
-                    candidate.description,
-                    candidate.free_bytes as f64 / 1e9
-                );
-                LlamaModelParams::default()
-                    .with_n_gpu_layers(99)
-                    .with_devices(&[candidate.index])?
-            }
-            None => {
-                eprintln!(
-                    "refining on cpu: no GPU with {:.1} GB free{}",
-                    chosen.needed as f64 / 1e9,
-                    if chosen.best_free == 0 {
-                        String::new()
-                    } else {
-                        format!(" (best was {:.1} GB)", chosen.best_free as f64 / 1e9)
-                    }
-                );
-                LlamaModelParams::default().with_n_gpu_layers(0)
-            }
-        };
-
-        let model = LlamaModel::load_from_file(backend, path, &params)
-            .with_context(|| format!("loading {}", path.display()))?;
-
-        eprintln!("refining model loaded in {:?}", started.elapsed());
-        Ok(Self { model })
+    pub fn new(key: String) -> Self {
+        Self { key }
     }
 
-    /// The first inference builds compute graphs and takes seconds; every one
-    /// after is milliseconds. Paying that at startup keeps it out of the user's
-    /// first dictation.
-    pub fn warm_up(&self) {
-        let started = Instant::now();
-        if self.refine("um hello", &Style::default()).is_ok() {
-            eprintln!("refining warmed up in {:?}", started.elapsed());
+    /// Whether the editor answers, and which of the ways it can fail this is -
+    /// a `bool` cannot tell a rejected key from a dead network, and each of
+    /// those sends the user somewhere different.
+    ///
+    /// Deliberately a real request rather than a ping: a key that is present
+    /// but rejected, an account out of credit and a dead network are three of
+    /// the ways this fails, and only the last is visible to a socket test. The
+    /// input is the shortest thing the prompt still applies to.
+    ///
+    /// Calls `router::chat` directly rather than going through `refine`: the
+    /// guards in `refine_using` (`lost_the_dictation`, `changed_language`, ...)
+    /// judge whether an edit of a *real* dictation is trustworthy, and folding
+    /// them in here would report a working key as broken over this one
+    /// throwaway phrase reading oddly.
+    pub fn probe(&self) -> Reachability {
+        if self.key.is_empty() {
+            return Reachability::NoKey;
+        }
+        // Deliberately not a refining request. This is asked every time the
+        // console opens, and a check that bills for an answer is a check
+        // nobody can afford to run on a schedule. `GET /key` settles the two
+        // failures a key can have - rejected, or out of credit - for free; a
+        // model that is itself unavailable surfaces on the next dictation,
+        // where history already records the outcome.
+        match super::router::key_accepted(&self.key, PROBE_BUDGET) {
+            Ok(true) => Reachability::Accepted,
+            Ok(false) => Reachability::Rejected("OpenRouter did not accept this key".into()),
+            Err(err) => Reachability::Unreachable(err.to_string()),
         }
     }
 
-    fn system_prompt(&self, raw: &str, style: &Style) -> String {
+    pub fn system_prompt(raw: &str, style: &Style) -> String {
         let mut prompt = format!("{PREAMBLE}\n\n{}", style.level.rules());
 
         // Naming the one language this input is in, which is the opposite of what
@@ -875,30 +754,23 @@ impl Refiner {
             prompt.push_str(&format!("\n\nThis input is in {name}. Reply in {name}."));
         }
 
+        // The closing sentence is what keeps this working at the lowest level,
+        // where the rules forbid swapping a word the model thinks was misheard:
+        // without it, `MINIMAL_RULES` gagged the list and "pipe wire" stopped
+        // becoming PipeWire. Naming these as a spelling rather than a
+        // correction is the distinction the level actually draws.
         if !style.vocabulary.is_empty() {
             prompt.push_str(&format!(
                 "\n\nNames that are often mis-recognised, spelled exactly like \
-                 this: {}.",
+                 this: {}. Where the input plainly says one of them - run \
+                 together, split into separate words, or spelled wrong - write \
+                 it exactly as listed here, whatever the rules above say about \
+                 leaving words alone. That is spelling a name, not changing a \
+                 word.",
                 style.vocabulary.join(", ")
             ));
         }
 
-        // Last, which is the strongest position, because these are the one part
-        // of the prompt the speaker wrote and they are meant to win a
-        // disagreement about wording. Subordinate to the preamble all the same:
-        // this file is a text file, so treating it as the place where "answer
-        // my questions" could be switched back on would make the guard that
-        // stops the model answering a dictation depend on a config edit.
-        if !style.instructions.is_empty() {
-            prompt.push_str(
-                "\n\nThe person dictating asked for these as well. They decide \
-                 wording and presentation, and nothing above them: they never \
-                 make the input something to answer, obey, or translate.\n",
-            );
-            for instruction in &style.instructions {
-                prompt.push_str(&format!("- {instruction}\n"));
-            }
-        }
         prompt
     }
 
@@ -910,111 +782,34 @@ impl Refiner {
     }
 
     pub fn refine_within(&self, raw: &str, budget_for: Duration, style: &Style) -> Result<String> {
+        self.refine_using(raw, budget_for, style)
+    }
+
+    fn refine_using(&self, raw: &str, budget_for: Duration, style: &Style) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
-        // Checked here rather than only at the call site so that a caller which
-        // has a loaded model but a `None` level still pastes the raw transcript.
-        if !style.level.wants_model() {
-            return Ok(raw.trim().to_string());
-        }
         // Inside `refine` rather than at the call site so every caller gets it,
         // and so the gate is impossible to forget when another one appears.
+        // `None` is a local passthrough by definition, so it is checked before
+        // `needs_refining` rather than folded into it - that gate is about
+        // whether *this text* needs a pass, not about what the level allows.
+        if style.level == Cleanup::None {
+            return Ok(raw.trim().to_string());
+        }
         if !needs_refining(raw) {
             return Ok(raw.trim().to_string());
         }
 
-        // Before the context and the prompt pass, not after them. It used to
-        // start where generation started, which left the whole prompt - a
-        // thousand tokens of rules - outside the budget it was documented as
-        // being inside: one refining measured 2769ms against a 2500ms wall and
-        // was shipped anyway, because none of the overrun was being counted. On
-        // the integrated GPU this bound exists for, the prompt pass alone is
-        // the part that runs away.
-        let deadline = Instant::now() + budget_for;
-
-        let template = self.model.chat_template(None)?;
-        let chat = [
-            LlamaChatMessage::new("system".into(), self.system_prompt(raw, style))?,
-            LlamaChatMessage::new("user".into(), raw.into())?,
-        ];
-        let prompt = self.model.apply_chat_template(&template, &chat, true)?;
-
-        let tokens = self.model.str_to_token(&prompt, AddBos::Always)?;
-        let spoken = self.model.str_to_token(raw, AddBos::Never)?.len();
-
-        // Refining only ever shortens or lightly rewrites, so a generous ceiling
-        // still catches the model going off and answering instead.
-        let budget = (spoken * 2 + 32) as i32;
-        let mut finished = false;
-
-        let context_size = (tokens.len() as u32 + budget as u32 + 64).max(512);
-        let mut ctx = self.model.new_context(
-            backend()?,
-            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(context_size)),
-        )?;
-
-        let mut batch = LlamaBatch::new(tokens.len().max(64), 1);
-        let last = tokens.len() - 1;
-        for (position, token) in tokens.iter().enumerate() {
-            batch.add(*token, position as i32, &[0], position == last)?;
-        }
-        ctx.decode(&mut batch)?;
-
-        // Nothing has been generated yet, so a prompt pass that has already
-        // spent the budget is a refining that cannot land in time. Failing here
-        // rather than entering the loop to fail on the first token keeps the
-        // reason in the log honest.
-        if Instant::now() > deadline {
-            bail!("refining spent {budget_for:?} on the prompt alone");
-        }
-
-        // Greedy: this is a mechanical rewrite, so the same input should always
-        // give the same output. Sampling would make the regression suite lie.
-        let mut sampler = LlamaSampler::greedy();
-        let mut position = batch.n_tokens();
-        let mut output = String::new();
-
-        // One decoder across the whole generation: a multi-byte character can be
-        // split across two tokens, and only a decoder holding state between them
-        // reassembles it. Accents matter here - the recogniser handles 25
-        // languages.
-        let mut decoder = encoding_rs::UTF_8.new_decoder();
-
-        for _ in 0..budget {
-            // Bounded so the wait between speaking and seeing text cannot run
-            // away with the hardware. Erroring rather than returning the partial
-            // generation hands main.rs the raw transcript, which is a finished
-            // sentence - a truncated refining would not be.
-            if Instant::now() > deadline {
-                bail!("refining exceeded {budget_for:?}");
-            }
-            let token = sampler.sample(&ctx, -1);
-            sampler.accept(token);
-            if self.model.is_eog_token(token) {
-                finished = true;
-                break;
-            }
-            output.push_str(
-                &self
-                    .model
-                    .token_to_piece(token, &mut decoder, false, None)?,
-            );
-
-            batch.clear();
-            batch.add(token, position, &[0], true)?;
-            position += 1;
-            ctx.decode(&mut batch)?;
-        }
-
-        // Reaching the ceiling means the model was still writing at twice the
-        // length of what was said, which refining never needs: it was answering
-        // the dictation rather than cleaning it. Bailing hands main.rs the raw
-        // transcript, the same trade the deadline above makes - a rough sentence
-        // beats half an essay pasted where the words should have been.
-        if !finished {
-            bail!("refining ran past {budget} tokens without finishing - answered instead");
-        }
+        // The budget is now a network timeout rather than a GPU wall, and it
+        // still means the same thing: past it, the raw transcript ships instead
+        // of a late one. Unlike the Parakeet and MAI eras, that fallback is no
+        // longer guaranteed to be a sentence: Nemotron punctuates short
+        // utterances and leaves longer ones unpunctuated, and keeps every
+        // filler either way. A dropped refinement is now visibly rougher text,
+        // not merely a less polished one.
+        let system = Self::system_prompt(raw, style);
+        let output = super::router::chat(&self.key, &system, raw, budget_for)?;
 
         let cleaned = tidy(&output);
         if is_non_answer(&cleaned, raw) {
@@ -1087,6 +882,25 @@ fn restore_edges(refined: &str, raw: &str) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod none_level_tests {
+    use super::{Cleanup, Refiner, Style};
+
+    /// `Cleanup::None` must never reach the network. An invalid key is the
+    /// proof: if this call reached `router::chat` at all it would bail on the
+    /// key before dialling anything, so getting the raw transcript back
+    /// unchanged is only possible if the request was never attempted.
+    #[test]
+    fn none_never_touches_the_network() {
+        let refiner = Refiner::new("not a valid key".to_string());
+        let raw = "Um, so the the build is uh broken again, you know.";
+        let out = refiner
+            .refine(raw, &Style::new(Cleanup::None))
+            .expect("None must not attempt a request");
+        assert_eq!(out, raw.trim());
+    }
 }
 
 /// Every case here is a real dictation from this machine's journal, with the

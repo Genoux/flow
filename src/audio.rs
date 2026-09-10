@@ -571,6 +571,14 @@ impl Capture {
         Some(samples.drain(..at).collect())
     }
 
+    pub fn stream_chunk(&self, offset: usize, size: usize) -> Option<Vec<f32>> {
+        let samples = self.samples.lock().unwrap();
+        if !self.live.load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(samples.get(offset..offset.checked_add(size)?)?.to_vec())
+    }
+
     pub fn end(&self) -> Vec<f32> {
         wait_for(&self.heard, POST_ROLL, POST_ROLL_CAP);
         self.abandon()

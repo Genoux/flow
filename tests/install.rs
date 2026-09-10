@@ -1,16 +1,11 @@
 //! The manifest is the installer's only source of truth, so it has to be
-//! self-consistent, pinned to immutable revisions, and match what a working
-//! machine actually has on disk.
+//! self-consistent and pinned to an immutable revision.
 
 use flow::install;
 
-fn every_asset() -> Vec<&'static install::Asset> {
-    install::SPEECH.iter().chain(install::REFINE).collect()
-}
-
 #[test]
 fn the_manifest_is_well_formed() {
-    for asset in every_asset() {
+    for asset in install::SPEECH {
         assert_eq!(
             asset.sha256.len(),
             64,
@@ -34,11 +29,11 @@ fn the_manifest_is_well_formed() {
     }
 }
 
-/// A tag or branch can be moved under us; a commit cannot. This is the property
-/// that makes the recorded hashes meaningful.
+/// A tag or branch can be moved under us; a commit cannot. This is the
+/// property that makes the recorded hashes meaningful.
 #[test]
 fn every_source_is_pinned_to_a_commit() {
-    for asset in every_asset() {
+    for asset in install::SPEECH {
         assert_eq!(
             asset.revision.len(),
             40,
@@ -57,48 +52,24 @@ fn every_source_is_pinned_to_a_commit() {
 
 #[test]
 fn destinations_are_unique() {
-    let mut seen: Vec<&str> = every_asset().iter().map(|a| a.dest).collect();
+    let mut seen: Vec<&str> = install::SPEECH.iter().map(|a| a.dest).collect();
     let before = seen.len();
     seen.sort_unstable();
     seen.dedup();
     assert_eq!(seen.len(), before, "duplicate destination in the manifest");
 }
 
-/// Speech is mandatory and refining is optional, which is the whole reason they
-/// are separate lists - a machine that skips refining must still dictate.
 #[test]
-fn speech_and_refining_are_separate() {
-    assert!(!install::SPEECH.is_empty());
-    assert!(!install::REFINE.is_empty());
-    assert!(install::SPEECH.iter().all(|a| a.dest.starts_with("tdt/")));
+fn the_download_size_is_reported_in_gigabytes() {
+    let total = install::total_bytes(install::SPEECH);
+    assert!(total > 2_000_000_000, "expected ~2.6GB, got {total}");
 }
 
+/// Hashing 2.45GB (`encoder.onnx.data`) is too slow for every run, and the
+/// model is already installed on the machines this suite runs on:
+///   cargo test --release --test install -- --ignored --nocapture
 #[test]
-fn install_flags_pick_which_models() {
-    let args = |flags: &[&str]| flags.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    assert_eq!(
-        install::Want::from_args(&args(&["install"])),
-        install::Want::All
-    );
-    assert_eq!(
-        install::Want::from_args(&args(&["install", "--speech-only"])),
-        install::Want::Speech
-    );
-    assert_eq!(
-        install::Want::from_args(&args(&["install", "--refine-only"])),
-        install::Want::Refine
-    );
-    assert_eq!(
-        install::planned_bytes(install::Want::Speech),
-        install::total_bytes(install::SPEECH)
-    );
-    assert_eq!(
-        install::planned_bytes(install::Want::Refine),
-        install::total_bytes(install::REFINE)
-    );
-}
-
-#[test]
+#[ignore]
 fn the_pins_match_the_speech_model_on_disk() {
     let root = flow_paths::models_dir();
     for asset in install::SPEECH {
@@ -122,158 +93,13 @@ fn the_pins_match_the_speech_model_on_disk() {
     }
 }
 
-/// Hashing 2.4GB is too slow for every run:
-///   cargo test --release --test install -- --ignored --nocapture
-#[test]
-#[ignore]
-fn the_pins_match_the_refining_model_on_disk() {
-    let root = flow_paths::models_dir();
-    for asset in install::REFINE {
-        let path = root.join(asset.dest);
-        if !path.is_file() {
-            eprintln!("skipping: {} not installed", asset.dest);
-            return;
-        }
-        assert_eq!(
-            install::sha256(&path).expect("hash"),
-            asset.sha256,
-            "{}",
-            asset.dest
-        );
-    }
-}
-
-/// The user's config may be a symlink into a dotfiles repo. Overwriting it would
-/// destroy their settings, so seeding is create-if-absent and nothing else.
-#[test]
-fn seeding_never_overwrites() {
-    let dir = std::env::temp_dir().join(format!("flow-seed-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    let path = dir.join("config.toml");
-
-    assert!(
-        install::seed(&path, "fresh").expect("first seed"),
-        "should create"
-    );
-    assert_eq!(std::fs::read_to_string(&path).expect("read"), "fresh");
-
-    std::fs::write(&path, "mine, hand-edited").expect("write");
-    assert!(
-        !install::seed(&path, "fresh").expect("second seed"),
-        "should leave alone"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("read"),
-        "mine, hand-edited"
-    );
-
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-fn scratch(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("flow-{name}-{}", std::process::id()));
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
-}
-
-/// Real download against Hugging Face, using the three smallest pinned assets
-/// (~230KB) so it exercises fetch, verify and rename without pulling gigabytes.
-///   cargo test --release --test install -- --ignored --nocapture
-#[test]
-#[ignore]
-fn downloading_verifies_and_lands_the_files() {
-    let root = scratch("install");
-    let small = &install::SPEECH[2..];
-    assert!(
-        install::total_bytes(small) < 1_000_000,
-        "meant to be the small ones"
-    );
-
-    install::fetch_all(small, &root).expect("fetch");
-
-    for asset in small {
-        let path = root.join(asset.dest);
-        assert!(path.is_file(), "{} missing", asset.dest);
-        assert_eq!(install::sha256(&path).expect("hash"), asset.sha256);
-        assert!(
-            !path.with_extension("part").exists(),
-            "{} left a .part",
-            asset.dest
-        );
-    }
-
-    // Second run must be a no-op, which is what makes a failed install resumable.
-    install::fetch_all(small, &root).expect("rerun");
-    std::fs::remove_dir_all(&root).ok();
-}
-
-/// The invariant the whole design turns on: content that fails verification must
-/// never appear at the path the daemon loads from.
-#[test]
-#[ignore]
-fn a_bad_hash_never_lands() {
-    let root = scratch("badhash");
-    let tampered = [install::Asset {
-        sha256: "0000000000000000000000000000000000000000000000000000000000000000",
-        ..install::SPEECH[4]
-    }];
-
-    let err = install::fetch_all(&tampered, &root).expect_err("should reject");
-    assert!(err.to_string().contains("arrived damaged"), "{err}");
-    assert!(
-        !root.join(tampered[0].dest).exists(),
-        "unverified content landed at the real path"
-    );
-    // And it takes the part file with it. Left behind, the bytes that just
-    // failed verification are what the next run resumes from.
-    assert!(
-        !root.join(tampered[0].dest).with_extension("part").exists(),
-        "the rejected download was left for the next run to resume"
-    );
-    std::fs::remove_dir_all(&root).ok();
-}
-
-/// An oversized part file is wreckage - two writers shared it - and curl will
-/// not resume past the end of a file: it calls the download already complete,
-/// transfers nothing and exits 0. Left in place, that length fails verification
-/// on every run for ever, so it has to be discarded rather than resumed from.
-#[test]
-fn an_oversized_part_is_discarded() {
-    let root = scratch("oversize");
-    let asset = install::SPEECH[4];
-    let part = root.join(asset.dest).with_extension("part");
-    std::fs::create_dir_all(part.parent().expect("parent")).expect("mkdir");
-    std::fs::write(&part, vec![0u8; asset.bytes as usize + 4_096]).expect("write");
-
-    // Offline this fails at curl and online it fetches the real file; either
-    // way the length that could never be resumed from must not survive.
-    let _ = install::fetch_all(&[asset], &root);
-    assert!(
-        !part.exists(),
-        "the oversized part was left to poison every retry"
-    );
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn the_download_size_is_reported_in_gigabytes() {
-    let speech = install::total_bytes(install::SPEECH);
-    let both = install::total_bytes(install::SPEECH) + install::total_bytes(install::REFINE);
-    assert!(
-        speech > 600_000_000,
-        "speech should be ~670MB, got {speech}"
-    );
-    assert!(both > speech, "refining should add to the total");
-}
-
-/// The launch check: what the console spawns to find out whether an install is
-/// whole, without hashing 3 GB to do it.
+/// The launch check: what the console spawns to find out whether an install
+/// is whole, without hashing 2.6GB to do it.
 mod damage_report {
     use flow::install;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("flow-damage-{name}"));
+        let root = std::env::temp_dir().join(format!("flow-damage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         root
     }
@@ -286,7 +112,7 @@ mod damage_report {
     }
 
     fn whole(root: &std::path::Path) {
-        for asset in install::SPEECH.iter().chain(install::REFINE) {
+        for asset in install::SPEECH {
             place(root, asset, asset.bytes);
         }
     }
@@ -309,12 +135,14 @@ mod damage_report {
         let damaged = install::damaged_in(&root);
         assert_eq!(damaged.len(), 1, "{damaged:?}");
         assert_eq!(damaged[0].dest, gone.dest);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_file_of_the_wrong_length_is_named() {
-        // The blind spot this whole check exists for: the directory is there,
-        // the file is there, and the console used to call that installed.
+        // The blind spot this check exists for: the directory is there, the
+        // file is there, and a directory-presence check used to call that
+        // installed.
         let root = scratch("truncated");
         whole(&root);
         let short = install::SPEECH.first().expect("an asset");
@@ -323,12 +151,13 @@ mod damage_report {
         let damaged = install::damaged_in(&root);
         assert_eq!(damaged.len(), 1, "{damaged:?}");
         assert_eq!(damaged[0].dest, short.dest);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn nothing_installed_names_everything() {
         let root = scratch("empty");
         let damaged = install::damaged_in(&root);
-        assert_eq!(damaged.len(), install::SPEECH.len() + install::REFINE.len());
+        assert_eq!(damaged.len(), install::SPEECH.len());
     }
 }

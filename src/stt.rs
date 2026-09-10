@@ -1,33 +1,74 @@
 use anyhow::{Context, Result};
-use parakeet_rs::{ParakeetTDT, Transcriber};
-use std::path::{Path, PathBuf};
+use parakeet_rs::Nemotron;
+use std::path::Path;
 use std::time::Instant;
 
-pub fn model_dir() -> PathBuf {
-    flow_paths::speech_model_dir()
-}
-
 pub struct Stt {
-    model: ParakeetTDT,
+    model: Nemotron,
 }
 
 impl Stt {
-    /// Runs on CPU. Measured at ~23x realtime with the int8 TDT model on 16 cores,
-    /// which leaves the whole GPU free for the refining model. The `cuda` feature is
-    /// deliberately not enabled: ort falls back to CPU silently when the CUDA runtime
-    /// is absent, so enabling it buys a misleading log line and a 3-5GB build dep.
     pub fn load(dir: &Path) -> Result<Self> {
         let started = Instant::now();
-        let model = ParakeetTDT::from_pretrained(dir, None)
-            .with_context(|| format!("loading model from {}", dir.display()))?;
-        eprintln!("model loaded in {:?}", started.elapsed());
+        let model = Nemotron::from_pretrained(dir, None)
+            .with_context(|| format!("loading speech model from {}", dir.display()))?;
+        eprintln!(
+            "speech model loaded in {:?} (nemotron, cpu, {}ms streaming chunks)",
+            started.elapsed(),
+            model.chunk_samples() * 1000 / crate::audio::SAMPLE_RATE as usize
+        );
         Ok(Self { model })
     }
 
+    pub fn chunk_samples(&self) -> usize {
+        self.model.chunk_samples()
+    }
+
+    pub fn start_stream(&mut self) {
+        self.model.reset();
+    }
+
+    pub fn stream_chunk(&mut self, audio: &[f32]) -> Result<()> {
+        anyhow::ensure!(
+            audio.len() == self.chunk_samples(),
+            "incorrect streaming chunk size"
+        );
+        self.model.transcribe_chunk(audio)?;
+        Ok(())
+    }
+
+    pub fn finish_stream(&mut self, audio: &[f32]) -> Result<String> {
+        let size = self.chunk_samples();
+        let mut chunks = audio.chunks_exact(size);
+        for chunk in &mut chunks {
+            self.stream_chunk(chunk)?;
+        }
+        let remainder = chunks.remainder();
+        if !remainder.is_empty() {
+            // parakeet-rs 0.3.7 has no flush API and decodes only full chunks.
+            let mut padded = vec![0.0; size];
+            padded[..remainder.len()].copy_from_slice(remainder);
+            self.stream_chunk(&padded)?;
+        }
+        Ok(self.model.get_transcript().trim().to_string())
+    }
+
     pub fn transcribe(&mut self, audio: Vec<f32>) -> Result<String> {
-        let result = self
-            .model
-            .transcribe_samples(audio, super::audio::SAMPLE_RATE, 1, None)?;
-        Ok(result.text.trim().to_string())
+        self.model.reset();
+        Ok(self.model.transcribe_audio(&audio)?.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_model_directory_is_a_clear_error_not_a_panic() {
+        let dir = std::env::temp_dir().join(format!("flow-no-such-model-{}", std::process::id()));
+        let Err(err) = Stt::load(&dir) else {
+            panic!("a missing model directory must not load successfully");
+        };
+        assert!(err.to_string().contains("loading speech model"), "{err}");
     }
 }

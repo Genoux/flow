@@ -10,7 +10,13 @@
 //! screen that happens to use it first is a colour the next screen invents
 //! again slightly differently.
 
-use iced::Color;
+use iced::{Color, Font};
+
+// The face the desktop is already wearing: the same family the bar, launcher
+// and lock screen name, so the window does not read as a visitor. A family
+// name rather than a vendored file because it is not ours to ship; where it
+// is missing, iced falls back to the system sans on its own.
+pub(crate) const UI_FONT: Font = Font::with_name("SF Pro Text");
 
 // Every grey here leans a little cool and none of them lean far. The lean used
 // to be twice this: `MUTED` and `FAINT` sat 16 and 17 points of blue above their

@@ -18,6 +18,12 @@ impl Console {
         }
     }
 
+    fn cancel_chord_capture(&mut self) {
+        self.capturing = false;
+        self.cancel_capture
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub(crate) fn refresh_peripherals(&mut self) -> Task<Message> {
         if self.peripherals_pending {
             return Task::none();
@@ -52,6 +58,7 @@ impl Console {
                 self.page_motion.reveal();
             }
             Message::Select(section) => {
+                self.cancel_chord_capture();
                 if self.section != section && self.banners_ready {
                     self.now = std::time::Instant::now();
                     self.page_motion.reveal();
@@ -140,6 +147,9 @@ impl Console {
                 if std::mem::take(&mut self.save_dirty) {
                     return self.persist();
                 }
+                if std::mem::take(&mut self.restart_pending) && self.save_error.is_none() {
+                    return self.update(Message::RestartApp);
+                }
                 if let Some(window) = self.closing_window.take() {
                     if self.save_error.is_none() {
                         return iced::window::close(window);
@@ -147,6 +157,7 @@ impl Console {
                 }
             }
             Message::CloseRequested(window) => {
+                self.cancel_chord_capture();
                 if self.save_pending {
                     self.closing_window = Some(window);
                 } else {
@@ -171,6 +182,151 @@ impl Console {
                 self.animate_toggle("denoise", self.settings.denoise, on);
                 self.settings.denoise = on;
                 return self.persist();
+            }
+            Message::HistoryLoaded(entries, days) => {
+                self.history_pending = false;
+                self.entries = entries;
+                self.days = days;
+                self.copied = None;
+                self.entry_motion.clear();
+                if std::mem::take(&mut self.history_dirty) {
+                    return self.refresh_history();
+                }
+            }
+            Message::SetChannel(experimental) => {
+                if self.updating {
+                    return Task::none();
+                }
+                let wanted = if experimental {
+                    system::Channel::Experimental
+                } else {
+                    system::Channel::Stable
+                };
+                self.updating = true;
+                self.save_error = None;
+                return Task::perform(
+                    async move { update::join_channel(wanted) },
+                    Message::ChannelInstalled,
+                );
+            }
+            Message::ChannelInstalled(result) => {
+                self.updating = false;
+                match result {
+                    Ok(()) => {
+                        self.channel = system::channel();
+                        self.update = update::Status::Installed(self.channel.suffix().into());
+                    }
+                    Err(error) => self.save_error = Some(error),
+                }
+            }
+            // The banner's one action. A missing key just needs Settings; a
+            // missing or damaged speech model needs the actual download, so
+            // that is the only case that opens the setup screen.
+            Message::BeginSetup => {
+                if self.install_problem().is_none() {
+                    self.section = Section::Settings;
+                    return Task::none();
+                }
+                // Already on setup (a failed fetch, Try again): the veil is
+                // up, so skip the intro and start fetching.
+                let skip = self.showing_setup && self.download.is_some();
+                let mut state = setup::State::new();
+                if skip {
+                    state.skip_intro();
+                }
+                self.download = Some(state);
+                self.showing_setup = true;
+                return Task::none();
+            }
+            Message::SetupEvent(event) => {
+                if let Some(state) = self.download.as_mut() {
+                    state.apply(event);
+                }
+
+                let over = !self
+                    .download
+                    .as_ref()
+                    .is_some_and(setup::State::downloading);
+
+                // Setup keeps its state until it has faded out; anything else
+                // is done with the moment it stops, and what is on disk has
+                // just changed.
+                if over && !self.showing_setup {
+                    self.download = None;
+                    self.damage = system::startup_damage();
+                }
+
+                return self.setup_usable();
+            }
+            Message::SetupStarted(result) => {
+                let started = result.is_ok();
+                if let Some(state) = self.download.as_mut() {
+                    state.starting_daemon = false;
+                    match result {
+                        Ok(()) => {
+                            state.daemon_started = true;
+                            state.start_error = None;
+                        }
+                        Err(err) => state.start_error = Some(err),
+                    }
+                }
+
+                if started {
+                    self.daemon.activity = daemon::Activity::Starting;
+                    // What the veil is about to reveal has to be true before it
+                    // starts moving, not after. `damage` was refreshed only in
+                    // `leave_setup`, which runs when the fade ends - so Overview
+                    // spent the whole dissolve showing the "setup isn't
+                    // finished" banner for the setup that had just finished,
+                    // then dropped it as the veil landed.
+                    self.damage = system::startup_damage();
+                    // Setup's whole job is done, so it dissolves rather than
+                    // waiting to be dismissed - after the beat its closing line
+                    // needs to be read. Negative, so the screen stands still
+                    // for `HOLD` and then runs the usual outro.
+                    self.fading = Some(-setup::HOLD);
+                }
+            }
+            Message::InstallChecked(damage) => self.damage = damage,
+            Message::TypingKey(value) => {
+                self.typing_key = value;
+                self.key_error = None;
+            }
+            Message::SaveKey => match openrouter::validate(&self.typing_key) {
+                Ok(key) => {
+                    self.settings.openrouter_key = Some(key);
+                    self.typing_key.clear();
+                    self.key_error = None;
+                    self.key_test = None;
+                    // Saving a credential and finding out whether it works are
+                    // one intention, so the save starts the check itself.
+                    return Task::batch([self.persist(), Task::done(Message::TestKey)]);
+                }
+                Err(err) => self.key_error = Some(err),
+            },
+            Message::ClearKey => {
+                self.settings.openrouter_key = None;
+                self.typing_key.clear();
+                self.key_error = None;
+                self.key_test = None;
+                // A level that needs a key it no longer has would keep being
+                // selected while silently pasting the raw transcript, so the
+                // level comes down with the key rather than being left to fail.
+                if self.settings.cleanup.needs_key() {
+                    self.settings.cleanup = crate::settings::Cleanup::None;
+                }
+                return self.persist();
+            }
+            Message::TestKey => {
+                if self.testing_key || self.settings.openrouter_key.is_none() {
+                    return Task::none();
+                }
+                self.testing_key = true;
+                return Task::perform(async { system::probe_router() }, Message::KeyTested);
+            }
+            Message::KeyTested(outcome) => {
+                self.testing_key = false;
+                self.key_test = outcome;
             }
             Message::Sound(on) => {
                 self.animate_toggle("sound", self.settings.sound, on);
@@ -296,70 +452,39 @@ impl Console {
                     }
                 }
             }
-            Message::TypingInstruction(text) => {
-                self.note_typing = text;
-                self.note_error = None;
-            }
-            Message::AddInstruction => {
-                match instructions::validate(&self.note_typing, &self.notes) {
-                    Ok(instruction) => {
-                        let mut notes = self.notes.clone();
-                        notes.push(instruction);
-                        match instructions::save(&notes) {
-                            Ok(()) => {
-                                self.notes = notes;
-                                self.note_typing.clear();
-                                self.note_error = None;
-                                return iced::widget::operation::focus("instruction-entry");
-                            }
-                            Err(err) => self.note_error = Some(err.to_string()),
-                        }
-                    }
-                    Err(why) => self.note_error = Some(why),
-                }
-            }
-            Message::RemoveInstruction(index) => {
-                if index < self.notes.len() {
-                    let mut notes = self.notes.clone();
-                    notes.remove(index);
-                    match instructions::save(&notes) {
-                        Ok(()) => {
-                            self.notes = notes;
-                            self.note_error = None;
-                        }
-                        Err(err) => self.note_error = Some(err.to_string()),
-                    }
-                }
-            }
             Message::CaptureChord => {
+                self.cancel_chord_capture();
+                self.capture_id = self.capture_id.wrapping_add(1);
+                let id = self.capture_id;
                 self.capturing = true;
                 self.chord_error = None;
+                self.cancel_capture =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let cancelled = std::sync::Arc::clone(&self.cancel_capture);
-                cancelled.store(false, std::sync::atomic::Ordering::Relaxed);
-                // Off the UI thread: this blocks on the keyboard until a chord
-                // arrives or the user gives up.
                 return Task::perform(
                     async move { tokio_free_capture(cancelled) },
-                    Message::Captured,
+                    move |result| Message::Captured(id, result),
                 );
             }
             Message::ResetChord => {
+                self.cancel_chord_capture();
                 self.settings.hotkey = settings::DEFAULT_HOTKEY.to_string();
                 self.chord_error = None;
                 return self.persist();
             }
-            Message::CancelCapture => {
-                self.capturing = false;
-                self.cancel_capture
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            Message::Captured(captured) => {
-                self.capturing = false;
-                // A None is a cancel, or no readable keyboard. The control is
-                // hidden in the second case, so it is nearly always the first.
-                if let Some(chord) = captured {
-                    self.settings.hotkey = chord;
-                    return self.persist();
+            Message::CancelCapture => self.cancel_chord_capture(),
+            Message::Captured(id, captured) => {
+                if !self.capturing || id != self.capture_id {
+                    return Task::none();
+                }
+                self.cancel_chord_capture();
+                match captured {
+                    Ok(Some(chord)) => {
+                        self.settings.hotkey = chord;
+                        return self.persist();
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.chord_error = Some(error),
                 }
             }
             Message::Service(verb) => {
@@ -390,17 +515,6 @@ impl Console {
                             self.daemon = daemon::State::default();
                         }
                     }
-                }
-            }
-            Message::InstallChecked(damage) => self.damage = damage,
-            Message::HistoryLoaded(entries, days) => {
-                self.history_pending = false;
-                self.entries = entries;
-                self.days = days;
-                self.copied = None;
-                self.entry_motion.clear();
-                if std::mem::take(&mut self.history_dirty) {
-                    return self.refresh_history();
                 }
             }
             Message::PeripheralsLoaded(peripherals) => {
@@ -448,33 +562,6 @@ impl Console {
                     Err(error) => self.save_error = Some(error),
                 }
             }
-
-            Message::SetChannel(experimental) => {
-                if self.updating {
-                    return Task::none();
-                }
-                let wanted = if experimental {
-                    system::Channel::Experimental
-                } else {
-                    system::Channel::Stable
-                };
-                self.updating = true;
-                self.save_error = None;
-                return Task::perform(
-                    async move { update::join_channel(wanted) },
-                    Message::ChannelInstalled,
-                );
-            }
-            Message::ChannelInstalled(result) => {
-                self.updating = false;
-                match result {
-                    Ok(()) => {
-                        self.channel = system::channel();
-                        self.update = update::Status::Installed(self.channel.suffix().into());
-                    }
-                    Err(error) => self.save_error = Some(error),
-                }
-            }
             Message::InstallUpdate => {
                 if let (false, update::Status::Available(tag)) = (self.updating, &self.update) {
                     let tag = tag.clone();
@@ -489,104 +576,15 @@ impl Console {
             Message::UpdateInstalled(result) => {
                 self.updating = false;
                 match result {
-                    Ok(tag) => self.update = update::Status::Installed(tag),
-                    Err(err) => self.save_error = Some(err),
-                }
-            }
-            Message::BeginSetup => {
-                // Already on setup (a failed fetch, Try again): the veil is
-                // up, so skip the intro and start fetching.
-                let skip = self.showing_setup && self.download.is_some();
-                let mut state = setup::State::new(setup::Handle::default());
-                if skip {
-                    state.skip_intro();
-                }
-                self.download = Some(state);
-                self.showing_setup = true;
-                return Task::none();
-            }
-            Message::StopDownload => {
-                if let Some(state) = self.download.as_mut() {
-                    state.stopped = true;
-                    state.handle.stop();
-                    // Stopped before the installer was even spawned, so no
-                    // `Failed` line is coming to carry the handover. Nothing was
-                    // fetched this run either - and a part file here belongs to
-                    // an earlier one, which is exactly what a resume is for.
-                    if !state.spawned {
-                        return self.leave_setup();
-                    }
-                }
-            }
-            Message::SetupEvent(event) => {
-                if let Some(state) = self.download.as_mut() {
-                    state.apply(event);
-                }
-
-                let over = !self
-                    .download
-                    .as_ref()
-                    .is_some_and(setup::State::downloading);
-                let stopped = over && self.download.as_ref().is_some_and(|state| state.stopped);
-
-                // What was downloaded stays downloaded. Stopping used to delete
-                // the part file, on the reasoning that bytes of a model someone
-                // had decided against would sit there with nothing on screen
-                // ever mentioning them - but neither half of that is true any
-                // more. Flow needs both models, so there is no deciding against
-                // one; and Overview carries a banner saying setup is unfinished
-                // with the button that finishes it. The bytes are accounted for.
-                //
-                // What is left is a 2.4 GB download where Stop threw away
-                // everything already fetched. `curl -C -` resumes, so keeping
-                // the file makes Stop mean "not now" instead of "start again".
-                //
-                // It still hands the window over rather than holding them on a
-                // ring that failed: the console opens, incomplete, saying what
-                // is missing and offering to finish. Treating a stop as a
-                // failure would put a Try again in front of the one person who
-                // has already said no.
-                if stopped {
-                    return self.leave_setup();
-                }
-
-                // Setup keeps its state until it has faded out; anything else
-                // is done with the moment it stops, and what is on disk has
-                // just changed.
-                if over && !self.showing_setup {
-                    self.download = None;
-                    self.models = system::models();
-                }
-
-                return self.setup_usable();
-            }
-            Message::SetupStarted(result) => {
-                let started = result.is_ok();
-                if let Some(state) = self.download.as_mut() {
-                    state.starting_daemon = false;
-                    match result {
-                        Ok(()) => {
-                            state.daemon_started = true;
-                            state.start_error = None;
+                    Ok(tag) => {
+                        self.update = update::Status::Installed(tag);
+                        if self.save_pending {
+                            self.restart_pending = true;
+                        } else {
+                            return self.update(Message::RestartApp);
                         }
-                        Err(err) => state.start_error = Some(err),
                     }
-                }
-
-                if started {
-                    self.daemon.activity = daemon::Activity::Starting;
-                    // What the veil is about to reveal has to be true before it
-                    // starts moving, not after. `models` was refreshed only in
-                    // `leave_setup`, which runs when the fade ends - so Overview
-                    // spent the whole dissolve showing the "setup isn't
-                    // finished" banner for the setup that had just finished,
-                    // then dropped it as the veil landed.
-                    self.models = system::models();
-                    // Setup's whole job is done, so it dissolves rather than
-                    // waiting to be dismissed - after the beat its closing line
-                    // needs to be read. Negative, so the screen stands still
-                    // for `HOLD` and then runs the usual outro.
-                    self.fading = Some(-setup::HOLD);
+                    Err(err) => self.save_error = Some(err),
                 }
             }
         }

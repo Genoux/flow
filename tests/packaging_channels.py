@@ -64,6 +64,33 @@ class Channels(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(subprocess.check_output([str(self.bin / "flow")], text=True).strip(), "legacy-local")
 
+    def test_update_repairs_mixed_channel_links(self):
+        for selected in ("stable", "experimental"):
+            with self.subTest(selected=selected):
+                self.assertEqual(self.install("stable").returncode, 0)
+                self.assertEqual(self.install("experimental", "--no-activate").returncode, 0)
+                other = "experimental" if selected == "stable" else "stable"
+                for name, channel in (("flow", selected), ("flow-console", other)):
+                    self.bin.joinpath(name).unlink()
+                    self.bin.joinpath(name).symlink_to(f"{name}-{channel}")
+                result = self.install(selected)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for name in ("flow", "flow-console"):
+                    self.assertEqual(self.bin.joinpath(name).readlink(), Path(f"{name}-{selected}"))
+
+    def test_update_replaces_an_executing_binary(self):
+        self.assertEqual(self.install("stable").returncode, 0)
+        shutil.copyfile("/bin/sleep", self.bin / "flow-stable")
+        process = subprocess.Popen([str(self.bin / "flow"), "30"])
+        try:
+            result = self.install("stable")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNone(process.poll())
+            self.assertEqual(subprocess.check_output([str(self.bin / "flow")], text=True).strip(), "stable")
+        finally:
+            process.terminate()
+            process.wait()
+
     def test_cloud_package_cannot_install_as_stable(self):
         result = self.install("experimental", "--channel", "stable")
         self.assertNotEqual(result.returncode, 0)

@@ -160,73 +160,104 @@ fn trigger_word(key: KeyCode) -> Option<String> {
     let name = format!("{key:?}");
     let bare = name.strip_prefix("KEY_")?.to_lowercase();
 
+    let function = bare.strip_prefix('f').and_then(|n| n.parse::<u8>().ok());
     let usable = bare.len() == 1 && bare.chars().all(|c| c.is_ascii_alphanumeric())
-        || matches!(bare.as_str(), "space" | "enter" | "tab")
-        || (bare.starts_with('f')
-            && bare.len() <= 3
-            && bare[1..].chars().all(|c| c.is_ascii_digit())
-            && !bare[1..].is_empty());
+        || matches!(bare.as_str(), "space" | "enter" | "tab" | "capslock")
+        || function.is_some_and(|n| (1..=12).contains(&n))
+        || modifier_word(key).is_some();
 
     usable.then_some(bare)
 }
 
-/// Watch every keyboard until a chord is pressed, then return its spelling.
-///
-/// A chord is at least one modifier held plus a normal key. Modifiers alone
-/// are ignored rather than accepted, because a binding whose trigger is a
-/// modifier can never complete - the key that fires it is the key holding it.
-///
-/// `cancel` is checked between reads so closing the window or pressing Cancel
-/// stops this promptly rather than leaving a thread on the keyboard.
-pub fn capture(cancel: &dyn Fn() -> bool) -> Option<String> {
+#[derive(Default)]
+struct Capture {
+    held: HashSet<KeyCode>,
+    binding: Option<String>,
+}
+
+impl Capture {
+    fn apply(&mut self, key: KeyCode, value: i32) -> Result<Option<Option<String>>, String> {
+        if value == 1 && key == KeyCode::KEY_ESC {
+            return Ok(Some(None));
+        }
+        if value == 0 {
+            if self.held.remove(&key) {
+                return self
+                    .binding
+                    .take()
+                    .map(|binding| Some(Some(binding)))
+                    .ok_or_else(|| {
+                        "Add a letter or number to that combination, or use one modifier.".into()
+                    });
+            }
+            return Ok(None);
+        }
+        if value != 1 || !self.held.insert(key) {
+            return Ok(None);
+        }
+        if trigger_word(key).is_none() {
+            return Err("That key is not supported. Try another shortcut.".into());
+        }
+        let triggers: Vec<_> = self
+            .held
+            .iter()
+            .filter(|k| modifier_word(**k).is_none())
+            .collect();
+        let mut words: Vec<_> = self.held.iter().filter_map(|k| modifier_word(*k)).collect();
+        words.sort_by_key(|word| ORDER.iter().position(|o| o == word).unwrap_or(9));
+        words.dedup();
+        self.binding = match triggers.as_slice() {
+            [trigger] => {
+                let trigger = trigger_word(**trigger).expect("supported key");
+                Some(if words.is_empty() {
+                    trigger
+                } else {
+                    format!("{}+{trigger}", words.join("+"))
+                })
+            }
+            [] if self.held.len() == 1 => trigger_word(key),
+            [] => None,
+            _ => return Err("Use one key with any Ctrl, Alt, Shift or Super modifiers.".into()),
+        };
+        Ok(None)
+    }
+}
+
+pub fn capture(cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
     let mut devices = keyboards();
     if devices.is_empty() {
-        return None;
+        return Err("No readable keyboard. Reconnect it and try again.".into());
     }
     for device in &mut devices {
-        // Non-blocking so no single quiet keyboard can hold up the others, and
-        // so cancelling is noticed straight away.
-        let _ = device.set_nonblocking(true);
+        device
+            .set_nonblocking(true)
+            .map_err(|e| format!("Cannot read keyboard: {e}"))?;
     }
-
-    let mut held: HashSet<KeyCode> = HashSet::new();
-
+    let mut states: Vec<_> = devices.iter().map(|_| Capture::default()).collect();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         if cancel() {
-            return None;
+            return Ok(None);
         }
-
-        for device in &mut devices {
-            let Ok(events) = device.fetch_events() else {
-                continue; // nothing pending on this one
+        if std::time::Instant::now() >= deadline {
+            return Err("No shortcut detected. Click Change to try again.".into());
+        }
+        for (device, state) in devices.iter_mut().zip(&mut states) {
+            let events = match device.fetch_events() {
+                Ok(events) => events,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(_) => return Err("Keyboard disconnected. Reconnect it and try again.".into()),
             };
             for event in events {
                 let EventSummary::Key(_, key, value) = event.destructure() else {
                     continue;
                 };
-                // 1 is press, 2 is autorepeat, 0 is release.
-                if value == 0 {
-                    held.remove(&key);
-                    continue;
+                if let Some(binding) = state.apply(key, value)? {
+                    return Ok(binding);
                 }
-                if modifier_word(key).is_some() {
-                    held.insert(key);
-                    continue;
-                }
-
-                let mut words: Vec<&str> = held.iter().filter_map(|k| modifier_word(*k)).collect();
-                words.sort_by_key(|word| ORDER.iter().position(|o| o == word).unwrap_or(9));
-                words.dedup();
-                if words.is_empty() {
-                    continue; // a bare key is not a chord to hold
-                }
-
-                let trigger = trigger_word(key)?;
-                return Some(format!("{}+{trigger}", words.join("+")));
             }
         }
-
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
@@ -269,9 +300,49 @@ B: EV=21
 B: SW=140
 ";
 
-    /// The device probe the window's startup used to pay 1.4s for, now answered
-    /// from one file read: one keyboard out of three devices that all report
-    /// key events.
+    #[test]
+    fn single_keys_and_modifiers_are_captured_on_release() {
+        for (key, spelling) in [
+            (KeyCode::KEY_D, "d"),
+            (KeyCode::KEY_RIGHTCTRL, "rightctrl"),
+            (KeyCode::KEY_CAPSLOCK, "capslock"),
+        ] {
+            let mut capture = Capture::default();
+            assert_eq!(capture.apply(key, 1), Ok(None));
+            assert_eq!(capture.apply(key, 2), Ok(None));
+            assert_eq!(capture.apply(key, 0), Ok(Some(Some(spelling.into()))));
+        }
+    }
+
+    #[test]
+    fn a_remapped_trigger_can_arrive_before_its_modifiers() {
+        let mut capture = Capture::default();
+        for key in [
+            KeyCode::KEY_D,
+            KeyCode::KEY_RIGHTSHIFT,
+            KeyCode::KEY_LEFTMETA,
+        ] {
+            assert_eq!(capture.apply(key, 1), Ok(None));
+        }
+        assert_eq!(
+            capture.apply(KeyCode::KEY_RIGHTSHIFT, 0),
+            Ok(Some(Some("super+shift+d".into())))
+        );
+    }
+
+    #[test]
+    fn unsupported_keys_and_modifier_combinations_explain_the_failure() {
+        assert!(Capture::default().apply(KeyCode::KEY_F13, 1).is_err());
+        let mut capture = Capture::default();
+        capture.apply(KeyCode::KEY_LEFTCTRL, 1).unwrap();
+        capture.apply(KeyCode::KEY_LEFTSHIFT, 1).unwrap();
+        assert!(capture.apply(KeyCode::KEY_LEFTSHIFT, 0).is_err());
+        assert_eq!(
+            Capture::default().apply(KeyCode::KEY_ESC, 1),
+            Ok(Some(None))
+        );
+    }
+
     #[test]
     fn only_real_keyboards_are_read_from_the_listing() {
         let found = listed_keyboards(LISTING);
@@ -305,6 +376,7 @@ B: SW=140
         assert_eq!(trigger_word(KeyCode::KEY_5).as_deref(), Some("5"));
         assert_eq!(trigger_word(KeyCode::KEY_SPACE).as_deref(), Some("space"));
         assert_eq!(trigger_word(KeyCode::KEY_F9).as_deref(), Some("f9"));
+        assert_eq!(trigger_word(KeyCode::KEY_F13), None);
         // No spelling in the daemon's parser, so not offered at all.
         assert_eq!(trigger_word(KeyCode::KEY_LEFTBRACE), None);
         assert_eq!(trigger_word(KeyCode::KEY_KPPLUS), None);
@@ -326,7 +398,7 @@ B: SW=140
             KeyCode::KEY_A,
             KeyCode::KEY_LEFTCTRL,
             KeyCode::KEY_LEFTSHIFT,
-            KeyCode::KEY_F13,
+            KeyCode::KEY_F12,
         ] {
             keys.insert(key);
         }
@@ -350,8 +422,8 @@ B: SW=140
         for (key, value) in [
             (KeyCode::KEY_LEFTCTRL, 1),
             (KeyCode::KEY_LEFTSHIFT, 1),
-            (KeyCode::KEY_F13, 1),
-            (KeyCode::KEY_F13, 0),
+            (KeyCode::KEY_F12, 1),
+            (KeyCode::KEY_F12, 0),
             (KeyCode::KEY_LEFTSHIFT, 0),
             (KeyCode::KEY_LEFTCTRL, 0),
         ] {
@@ -360,8 +432,27 @@ B: SW=140
         }
 
         assert_eq!(
-            captured.join().expect("capture thread").as_deref(),
-            Some("ctrl+shift+f13")
+            captured
+                .join()
+                .expect("capture thread")
+                .expect("capture")
+                .as_deref(),
+            Some("ctrl+shift+f12")
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let captured = std::thread::spawn(move || capture(&|| Instant::now() > deadline));
+        std::thread::sleep(Duration::from_millis(100));
+        device
+            .emit(&[*KeyEvent::new(KeyCode::KEY_LEFTCTRL, 1)])
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        device
+            .emit(&[*KeyEvent::new(KeyCode::KEY_LEFTCTRL, 0)])
+            .unwrap();
+        assert_eq!(
+            captured.join().unwrap().unwrap().as_deref(),
+            Some("leftctrl")
         );
     }
 

@@ -1,5 +1,5 @@
 use crate::*;
-use iced::widget::{button, column, container, responsive, row, text, text_input, tooltip, Space};
+use iced::widget::{button, column, container, responsive, row, text, Space};
 use iced::{Background, Border, Element, Fill};
 
 impl Console {
@@ -41,117 +41,10 @@ impl Console {
                 Space::new().height(24),
                 cards,
                 Space::new().height(20),
-                text("The same thought, with a different amount of cleanup.")
+                text("The same thought, with a different amount of polish.")
                     .size(12)
                     .color(MUTED),
-                Space::new().height(36),
-                self.instructions_editor(wide),
             ])
-        })
-        .into()
-    }
-
-    /// The cards decide how much of what you said is changed. This decides how
-    /// the result is written, which is the part no level can know.
-    fn instructions_editor(&self, wide: bool) -> Element<'_, Message> {
-        let error = self.note_error.as_deref();
-        let note = error.unwrap_or(
-            "For example, “Use British spelling.” or “Keep code names exactly as I say them.”",
-        );
-
-        let list = self
-            .notes
-            .iter()
-            .enumerate()
-            .fold(column![].spacing(8), |list, (index, _)| {
-                list.push(self.instruction_row(index))
-            });
-
-        column![
-            text("Your instructions").size(15).color(FG),
-            Space::new().height(4),
-            text("Followed on every dictation, at every level above Off.")
-                .size(12)
-                .color(MUTED),
-            Space::new().height(14),
-            list,
-            Space::new().height(if self.notes.is_empty() { 0 } else { 12 }),
-            row![
-                crate::interaction::field(|amount| text_input(
-                    "e.g. Use British spelling.",
-                    &self.note_typing
-                )
-                .on_input(Message::TypingInstruction)
-                .on_submit(Message::AddInstruction)
-                .id("instruction-entry")
-                .size(13)
-                .padding([10, 12])
-                .style(move |theme, status| super::editorial::input_style(
-                    theme,
-                    status,
-                    amount.get()
-                ))
-                .into()),
-                crate::control::action_padded(
-                    if wide { "Add instruction" } else { "Add" },
-                    true,
-                    1.0,
-                    [10.0, 14.0],
-                    (!self.note_typing.trim().is_empty()).then_some(Message::AddInstruction)
-                ),
-            ]
-            .spacing(10)
-            .align_y(iced::Center),
-            Space::new().height(8),
-            // Reserved whether or not anything is being said, so adding an
-            // instruction cannot move the page under the pointer.
-            container(
-                text(note)
-                    .size(12)
-                    .line_height(1.5)
-                    .color(if error.is_some() { ERR } else { MUTED })
-            )
-            .height(40),
-        ]
-        .into()
-    }
-
-    fn instruction_row(&self, index: usize) -> Element<'_, Message> {
-        let remove = crate::interaction::hover(move |amount| {
-            button(text("×").size(20))
-                .padding([2, 8])
-                .on_press(Message::RemoveInstruction(index))
-                .style(move |_, _| button::Style {
-                    text_color: mix(MUTED, FG, amount.get()),
-                    background: None,
-                    ..Default::default()
-                })
-                .into()
-        });
-
-        container(
-            row![
-                text(&self.notes[index]).size(14).color(FG).width(Fill),
-                tooltip(
-                    remove,
-                    container(text("Remove instruction").size(12))
-                        .padding(8)
-                        .style(container::dark),
-                    tooltip::Position::Top
-                ),
-            ]
-            .spacing(12)
-            .align_y(iced::Center),
-        )
-        .padding([12, 14])
-        .width(Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(mix(BG, theme::RAISED, 0.65))),
-            border: Border {
-                radius: CARD_RADIUS.into(),
-                ..Default::default()
-            },
-            ..Default::default()
         })
         .into()
     }
@@ -159,8 +52,11 @@ impl Console {
     fn cleanup_card(&self, level: settings::Cleanup, height: f32) -> Element<'_, Message> {
         let (title, blurb) = level.describe();
         let chosen = self.settings.cleanup == level;
+        let locked = level.needs_key() && self.settings.openrouter_key.is_none();
         let selected = self.cleanup_selection[level as usize].value(self.now);
-        let warmth = if chosen {
+        // A card that cannot be picked must not light up under the pointer:
+        // the glow is the only thing on it that claims it is pressable.
+        let warmth = if chosen || locked {
             0.0
         } else {
             self.cleanup_hover[level as usize].value(self.now)
@@ -196,7 +92,7 @@ impl Console {
 
         let body = column![
             row![
-                text(title).size(19).color(FG),
+                text(title).size(19).color(if locked { MUTED } else { FG }),
                 Space::new().width(Fill),
                 indicator,
             ]
@@ -209,14 +105,23 @@ impl Console {
                 .line_height(0.8)
                 .color(mix(MUTED, ACCENT, selected * 0.5)),
             Space::new().height(6),
-            text(level.example()).size(14).line_height(1.5).color(FG),
+            // The example is what this level would write. A locked one has
+            // written nothing, so the slot says why instead of promising it.
+            text(if locked {
+                "Needs an OpenRouter key."
+            } else {
+                level.example()
+            })
+            .size(14)
+            .line_height(1.5)
+            .color(if locked { MUTED } else { FG }),
         ];
 
         iced::widget::mouse_area(
             button(container(body).padding(20).width(Fill).height(height))
                 .padding(0)
                 .width(Fill)
-                .on_press_maybe((!chosen).then_some(Message::SetCleanup(level)))
+                .on_press_maybe((!chosen && !locked).then_some(Message::SetCleanup(level)))
                 .style(move |_, status| button::Style {
                     background: Some(Background::Color(
                         if chosen || status == button::Status::Pressed {

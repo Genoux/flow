@@ -89,32 +89,37 @@ done
 
 say "Installing the $channel build into $bin_dir"
 mkdir -p "$bin_dir"
-install -m755 "$daemon" "$bin_dir/flow-$channel"
-install -m755 "$console" "$bin_dir/flow-console-$channel"
+stage="$(mktemp -d "$bin_dir/.flow-install.XXXXXXXX")"
+trap 'rm -rf "$stage"' EXIT
+install -m755 "$daemon" "$stage/flow-$channel"
+install -m755 "$console" "$stage/flow-console-$channel"
 
-# The service runs `flow`, never `flow-stable`, so the unit file never has to
-# know which channel is live. Older installs put a real binary at this path;
-# preserve that local build before replacing its path with a link.
+current="$(readlink "$bin_dir/flow" 2>/dev/null || true)"
+selected=stable
+case "$current" in
+  *flow-experimental) selected=experimental ;;
+esac
+if [ ! -e "$bin_dir/flow" ]; then selected="$channel"; fi
+
 for name in flow flow-console; do
   link="$bin_dir/$name"
-  if [ -e "$link" ] && [ ! -L "$link" ]; then
-    if [ "$channel" = experimental ]; then
-      if [ ! -e "$bin_dir/$name-stable" ]; then
-        install -m755 "$link" "$bin_dir/$name-stable"
-      fi
-      ln -sfn "$name-stable" "$bin_dir/.$name-migrate"
-      mv -Tf "$bin_dir/.$name-migrate" "$link"
+  if [ -e "$link" ] && [ ! -L "$link" ] && [ "$channel" = experimental ]; then
+    if [ ! -e "$bin_dir/$name-stable" ]; then
+      install -m755 "$link" "$bin_dir/$name-stable"
     fi
+    ln -s "$name-stable" "$stage/$name-legacy"
+    mv -Tf "$stage/$name-legacy" "$link"
   fi
-  # Only claim the link if nothing has it yet, or if it already points at this
-  # channel. Reinstalling stable must not drag someone off experimental.
-  current="$(readlink "$link" 2>/dev/null || true)"
-  if "$activate" && { [ -z "$current" ] || [ "$current" = "$name-$channel" ]; }; then
-    ln -sfn "$name-$channel" "$link"
-  else
-    echo "left $name pointing at $current - switch channels in Settings"
-  fi
+  mv -Tf "$stage/$name-$channel" "$bin_dir/$name-$channel"
 done
+
+# Choose once from the daemon: independent choices left stable and experimental mixed.
+if "$activate" && [ "$selected" = "$channel" ]; then
+  for name in flow flow-console; do
+    ln -s "$name-$channel" "$stage/$name"
+    mv -Tf "$stage/$name" "$bin_dir/$name"
+  done
+fi
 
 say "Installing the service, desktop entry and icon"
 mkdir -p "$units" "$apps" "$icons"
@@ -142,13 +147,8 @@ command -v update-desktop-database >/dev/null && update-desktop-database "$apps"
 command -v gtk-update-icon-cache >/dev/null &&
   gtk-update-icon-cache -qtf "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 
-# Seeds the config templates. There are no models to fetch any more:
-# transcription and refining are OpenRouter requests, and the key that pays for
-# them is typed into the console's Settings screen.
-if [ "$channel" = experimental ]; then
-  say "Seeding config"
-  "$bin_dir/flow-$channel" install
-elif "$models"; then
+# The console handles first-run model setup unless a headless install opts in.
+if "$models"; then
   "$bin_dir/flow-$channel" install
 fi
 

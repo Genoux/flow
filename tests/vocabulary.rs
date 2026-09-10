@@ -15,17 +15,16 @@ const MANGLED: &[&str] = &[
 #[test]
 #[ignore]
 fn compare_with_and_without_vocabulary() {
-    let path = flow::refine::model_path();
-    if !path.is_file() {
-        eprintln!("skipping: no refining model");
+    let Some(key) = flow::config::Config::load().openrouter_key else {
+        eprintln!("skipping: no OpenRouter key configured");
         return;
-    }
-
-    // One load for both halves of the comparison. Two concurrent loads on the
-    // same Vulkan device segfault, and the vocabulary is a property of the
-    // prompt rather than of the model, so there was never a reason for the
-    // list to be baked into the weights being loaded.
-    let refiner = flow::refine::Refiner::load(&path, None).expect("load");
+    };
+    let refiner = flow::refine::Refiner::new(key);
+    // At Light, where `LIGHT_RULES` otherwise forbids swapping a word the
+    // model merely thinks was misheard. The vocabulary block is the one
+    // substitution that survives that rule, and this is where it has to prove
+    // it still does. Not `Cleanup::None`: that level is a local passthrough
+    // now and never reaches this model at all, so it has no vocabulary to test.
     let bare = Style::new(Cleanup::Light);
     let informed = bare.clone().with_vocabulary(
         ["Flow", "Hyprland", "Neovim", "PipeWire"]
