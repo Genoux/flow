@@ -65,6 +65,8 @@ OpenRouter request. `flow install` fetches the speech model.
 - `keyboards()` probes for `KEY_A`, not a modifier — testing for `KEY_RIGHTCTRL` would skip boards that lack it.
 - `tests/chord_live.rs` (ignored) creates its own uinput keyboard and presses itself, which is the only check that the reader, the keycodes and the chord all agree. Stop `flow.service` first or it dictates into the focused window.
 
+- The shortcut picker accepts the same triggers as the daemon, including single modifiers, and commits on release so a remapper can deliver the trigger before its modifiers. F13–F24 are not supported by the daemon and must not be offered. Each capture owns a cancellation token and generation; a cancelled worker must never save over a newer capture. Capture errors occupy reserved space instead of silently returning to the old binding.
+
 ## Text injection
 
 - Modifier state comes from EVENTS, not `get_key_state`. `EVIOCGKEY` goes stale: a Keychron board reports LALT+LSHIFT held with nothing pressed and keyd mirrors it as LMETA+LSHIFT — two thirds of the chord — so device state answered "held" forever and every paste timed out with the text left on the clipboard. Typing still worked, which proves the compositor disagreed, so the devices were simply the wrong oracle. `observed()` starts empty each start; device state is the fallback only when nothing is watching events (`WATCHING == false`).

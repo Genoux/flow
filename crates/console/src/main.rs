@@ -20,8 +20,8 @@ mod chord {
         false
     }
 
-    pub fn capture(_cancel: &dyn Fn() -> bool) -> Option<String> {
-        None
+    pub fn capture(_cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
+        Err("Shortcut capture is only available on Linux.".into())
     }
 }
 
@@ -335,7 +335,7 @@ enum Message {
     /// Start listening for the next chord the user presses.
     CaptureChord,
     /// A key arrived while capturing.
-    Captured(Option<String>),
+    Captured(u64, Result<Option<String>, String>),
     CancelCapture,
     /// Put the chord back to what a fresh install uses.
     ResetChord,
@@ -476,6 +476,7 @@ struct Console {
     capturing: bool,
     /// False when /dev/input cannot be read, so the chord cannot be captured.
     can_capture: bool,
+    capture_id: u64,
     cancel_capture: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Why the last attempted chord was rejected, shown in place of the hint.
     chord_error: Option<String>,
@@ -557,6 +558,7 @@ impl Console {
                 channel: system::channel(),
                 capturing: false,
                 can_capture: false,
+                capture_id: 0,
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 chord_error: None,
                 now: std::time::Instant::now(),
@@ -939,7 +941,9 @@ fn status_of(incomplete: bool, activity: daemon::Activity) -> Status {
 
 /// Read the keyboard until a chord arrives, on whatever thread the runtime
 /// gives us. Split out so the async block above stays a one-liner.
-fn tokio_free_capture(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<String> {
+fn tokio_free_capture(
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Option<String>, String> {
     chord::capture(&|| cancelled.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -950,6 +954,51 @@ mod tests {
     };
     use crate::daemon;
     use crate::theme::STARTING;
+
+    #[test]
+    fn cancelled_capture_cannot_overwrite_a_new_shortcut() {
+        use super::{Console, Message};
+        let (mut console, _) = Console::new();
+        let original = console.settings.hotkey.clone();
+        let _ = console.update(Message::CaptureChord);
+        let first = console.capture_id;
+        let cancelled = console.cancel_capture.clone();
+        let _ = console.update(Message::CancelCapture);
+        let _ = console.update(Message::CaptureChord);
+        assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        let _ = console.update(Message::Captured(first, Ok(Some("ctrl+a".into()))));
+        assert!(console.capturing);
+        assert_eq!(console.settings.hotkey, original);
+        let saved = console.update(Message::Captured(
+            console.capture_id,
+            Ok(Some("rightctrl".into())),
+        ));
+        assert!(saved.units() > 0);
+        assert_eq!(console.settings.hotkey, "rightctrl");
+        assert!(!console.capturing);
+    }
+
+    #[test]
+    fn leaving_settings_cancels_capture_and_errors_are_visible() {
+        use super::{Console, Message};
+        let (mut console, _) = Console::new();
+        let _ = console.update(Message::CaptureChord);
+        let _ = console.update(Message::Captured(
+            console.capture_id,
+            Err("Keyboard disconnected".into()),
+        ));
+        assert_eq!(
+            console.chord_error.as_deref(),
+            Some("Keyboard disconnected")
+        );
+        assert!(!console.capturing);
+        let _ = console.update(Message::CaptureChord);
+        let _ = console.update(Message::Select(Section::Overview));
+        assert!(!console.capturing);
+        assert!(console
+            .cancel_capture
+            .load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     #[test]
     fn closing_waits_for_the_latest_settings_save() {

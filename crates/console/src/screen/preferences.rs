@@ -66,7 +66,7 @@ impl Console {
         }
         rows.push(setting(
             "Show tray icon",
-            "Flow keeps running when this is off.",
+            "",
             toggle(
                 self.settings.show_tray,
                 self.travel("show_tray"),
@@ -75,7 +75,7 @@ impl Console {
         ));
         rows.push(setting(
             "Sounds",
-            "Chime when dictation starts and stops.",
+            "",
             toggle(self.settings.sound, self.travel("sound"), Message::Sound),
         ));
         rows
@@ -89,55 +89,69 @@ impl Console {
         vec![
             setting(
                 "Hold to talk",
-                "Off: tap to start, tap to stop.",
+                "",
                 toggle(
                     self.settings.push_to_talk,
                     self.travel("push_to_talk"),
                     Message::PushToTalk,
                 ),
             ),
-            setting(
-                "Keys",
-                // No description: the value sitting beside this title is the
-                // keys. The line that used to be here said so a second time,
-                // and an older one before that sent people off to restart for
-                // a rebinding that has been live by the next press ever since
-                // `hotkey::spawn` started comparing the chord on every key.
-                "",
-                row![
-                    text(if self.capturing {
-                        "Press keys…".to_string()
-                    } else {
-                        self.settings.hotkey.replace('+', " ")
-                    })
-                    .size(12)
-                    .color(if self.capturing { ACCENT } else { MUTED }),
-                    Space::new().width(12),
-                    // Reset earns its place only when the chord is not already
-                    // the default - offered next to a chord that is the default,
-                    // it is a button that does nothing.
-                    if !self.capturing && self.settings.hotkey != settings::DEFAULT_HOTKEY {
-                        row![
-                            action_msg("Reset", false, Message::ResetChord),
-                            Space::new().width(8)
-                        ]
-                        .into()
-                    } else {
-                        Element::from(Space::new().width(0))
-                    },
-                    if self.capturing {
-                        action_msg("Cancel", false, Message::CancelCapture)
-                    } else if self.can_capture {
-                        action_msg("Change", false, Message::CaptureChord)
-                    } else {
-                        // No readable keyboard, so offer the file instead of a
-                        // button that could only fail.
-                        action_msg("Open config", false, Message::OpenConfig)
-                    },
-                ]
-                .align_y(iced::Center)
-                .into(),
-            ),
+            column![
+                setting(
+                    "Keys",
+                    "",
+                    row![
+                        text(if self.capturing {
+                            "Press keys…".to_string()
+                        } else {
+                            self.settings.hotkey.replace('+', " ")
+                        })
+                        .size(12)
+                        .color(if self.capturing {
+                            ACCENT
+                        } else {
+                            MUTED
+                        }),
+                        Space::new().width(12),
+                        // Reset earns its place only when the chord is not already
+                        // the default - offered next to a chord that is the default,
+                        // it is a button that does nothing.
+                        if !self.capturing && self.settings.hotkey != settings::DEFAULT_HOTKEY {
+                            row![
+                                action_msg("Reset", false, Message::ResetChord),
+                                Space::new().width(8)
+                            ]
+                            .into()
+                        } else {
+                            Element::from(Space::new().width(0))
+                        },
+                        if self.capturing {
+                            action_msg("Cancel", false, Message::CancelCapture)
+                        } else if self.can_capture {
+                            action_msg("Change", false, Message::CaptureChord)
+                        } else {
+                            // No readable keyboard, so offer the file instead of a
+                            // button that could only fail.
+                            action_msg("Open config", false, Message::OpenConfig)
+                        },
+                    ]
+                    .align_y(iced::Center)
+                    .into(),
+                ),
+                text(self.chord_error.as_deref().unwrap_or(if self.capturing {
+                    "Press and release a key or shortcut. Esc cancels."
+                } else {
+                    ""
+                }))
+                .size(12)
+                .color(if self.chord_error.is_some() {
+                    ERR
+                } else {
+                    FAINT
+                })
+                .height(34),
+            ]
+            .into(),
         ]
     }
 

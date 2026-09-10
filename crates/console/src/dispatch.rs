@@ -18,6 +18,12 @@ impl Console {
         }
     }
 
+    fn cancel_chord_capture(&mut self) {
+        self.capturing = false;
+        self.cancel_capture
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub(crate) fn refresh_peripherals(&mut self) -> Task<Message> {
         if self.peripherals_pending {
             return Task::none();
@@ -52,6 +58,7 @@ impl Console {
                 self.page_motion.reveal();
             }
             Message::Select(section) => {
+                self.cancel_chord_capture();
                 if self.section != section && self.banners_ready {
                     self.now = std::time::Instant::now();
                     self.page_motion.reveal();
@@ -150,6 +157,7 @@ impl Console {
                 }
             }
             Message::CloseRequested(window) => {
+                self.cancel_chord_capture();
                 if self.save_pending {
                     self.closing_window = Some(window);
                 } else {
@@ -445,34 +453,38 @@ impl Console {
                 }
             }
             Message::CaptureChord => {
+                self.cancel_chord_capture();
+                self.capture_id = self.capture_id.wrapping_add(1);
+                let id = self.capture_id;
                 self.capturing = true;
                 self.chord_error = None;
+                self.cancel_capture =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let cancelled = std::sync::Arc::clone(&self.cancel_capture);
-                cancelled.store(false, std::sync::atomic::Ordering::Relaxed);
-                // Off the UI thread: this blocks on the keyboard until a chord
-                // arrives or the user gives up.
                 return Task::perform(
                     async move { tokio_free_capture(cancelled) },
-                    Message::Captured,
+                    move |result| Message::Captured(id, result),
                 );
             }
             Message::ResetChord => {
+                self.cancel_chord_capture();
                 self.settings.hotkey = settings::DEFAULT_HOTKEY.to_string();
                 self.chord_error = None;
                 return self.persist();
             }
-            Message::CancelCapture => {
-                self.capturing = false;
-                self.cancel_capture
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            Message::Captured(captured) => {
-                self.capturing = false;
-                // A None is a cancel, or no readable keyboard. The control is
-                // hidden in the second case, so it is nearly always the first.
-                if let Some(chord) = captured {
-                    self.settings.hotkey = chord;
-                    return self.persist();
+            Message::CancelCapture => self.cancel_chord_capture(),
+            Message::Captured(id, captured) => {
+                if !self.capturing || id != self.capture_id {
+                    return Task::none();
+                }
+                self.cancel_chord_capture();
+                match captured {
+                    Ok(Some(chord)) => {
+                        self.settings.hotkey = chord;
+                        return self.persist();
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.chord_error = Some(error),
                 }
             }
             Message::Service(verb) => {
