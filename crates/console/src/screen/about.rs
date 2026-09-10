@@ -64,14 +64,14 @@ impl Console {
         container(
             row![
                 column![
-                    text("Version").size(13.5).color(FG),
+                    text("Version").size(BODY).color(FG),
                     Space::new().height(LABEL_GAP),
-                    text(note).size(12).color(FAINT),
+                    text(note).size(MICRO).color(FAINT),
                 ],
                 Space::new().width(Fill),
                 pip(dot),
                 Space::new().width(7),
-                text(update::running()).size(12).color(MUTED),
+                text(update::running()).size(MICRO).color(MUTED),
                 Space::new().width(12),
                 action,
             ]

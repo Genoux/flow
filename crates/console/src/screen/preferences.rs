@@ -96,62 +96,52 @@ impl Console {
                     Message::PushToTalk,
                 ),
             ),
-            column![
-                setting(
-                    "Keys",
-                    "",
-                    row![
-                        text(if self.capturing {
-                            "Press keys…".to_string()
-                        } else {
-                            self.settings.hotkey.replace('+', " ")
-                        })
-                        .size(12)
-                        .color(if self.capturing {
-                            ACCENT
-                        } else {
-                            MUTED
-                        }),
-                        Space::new().width(12),
-                        // Reset earns its place only when the chord is not already
-                        // the default - offered next to a chord that is the default,
-                        // it is a button that does nothing.
-                        if !self.capturing && self.settings.hotkey != settings::DEFAULT_HOTKEY {
-                            row![
-                                action_msg("Reset", false, Message::ResetChord),
-                                Space::new().width(8)
-                            ]
-                            .into()
-                        } else {
-                            Element::from(Space::new().width(0))
-                        },
-                        if self.capturing {
-                            action_msg("Cancel", false, Message::CancelCapture)
-                        } else if self.can_capture {
-                            action_msg("Change", false, Message::CaptureChord)
-                        } else {
-                            // No readable keyboard, so offer the file instead of a
-                            // button that could only fail.
-                            action_msg("Open config", false, Message::OpenConfig)
-                        },
-                    ]
-                    .align_y(iced::Center)
-                    .into(),
-                ),
-                text(self.chord_error.as_deref().unwrap_or(if self.capturing {
+            crate::layout::setting_toned(
+                "Keys",
+                self.chord_error.as_deref().unwrap_or(if self.capturing {
                     "Press and release a key or shortcut. Esc cancels."
                 } else {
                     ""
-                }))
-                .size(12)
-                .color(if self.chord_error.is_some() {
+                }),
+                if self.chord_error.is_some() {
                     ERR
                 } else {
                     FAINT
-                })
-                .height(34),
-            ]
-            .into(),
+                },
+                row![
+                    text(if self.capturing {
+                        "Press keys…".to_string()
+                    } else {
+                        self.settings.hotkey.replace('+', " ")
+                    })
+                    .size(MICRO)
+                    .color(if self.capturing { ACCENT } else { MUTED }),
+                    Space::new().width(12),
+                    // Reset earns its place only when the chord is not already
+                    // the default - offered next to a chord that is the default,
+                    // it is a button that does nothing.
+                    if !self.capturing && self.settings.hotkey != settings::DEFAULT_HOTKEY {
+                        row![
+                            action_msg("Reset", false, Message::ResetChord),
+                            Space::new().width(8)
+                        ]
+                        .into()
+                    } else {
+                        Element::from(Space::new().width(0))
+                    },
+                    if self.capturing {
+                        action_msg("Cancel", false, Message::CancelCapture)
+                    } else if self.can_capture {
+                        action_msg("Change", false, Message::CaptureChord)
+                    } else {
+                        // No readable keyboard, so offer the file instead of a
+                        // button that could only fail.
+                        action_msg("Open config", false, Message::OpenConfig)
+                    },
+                ]
+                .align_y(iced::Center)
+                .into(),
+            ),
         ]
     }
 
@@ -178,7 +168,7 @@ impl Console {
                         .secure(true)
                         .on_input(Message::TypingKey)
                         .on_submit(Message::SaveKey)
-                        .size(13)
+                        .size(BODY)
                         .padding([10, 12])
                         .width(Length::Fill)
                         .style(move |theme, status| {
@@ -415,14 +405,14 @@ impl Console {
                 // the row is `Fill`, so the close button keeps the corner.
                 iced::widget::container(column![
                     row![
-                        text("Microphone").size(15).color(dissolve(FG, lift)),
+                        text("Microphone").size(HEAD).color(dissolve(FG, lift)),
                         Space::new().width(Length::Fill),
                         close_btn(lift),
                     ]
                     .align_y(iced::Center),
                     Space::new().height(4),
                     text("Flow records from this. Your system default stays as it is.")
-                        .size(12)
+                        .size(MICRO)
                         .color(dissolve(FAINT, lift)),
                 ])
                 .padding(iced::Padding::ZERO.left(11)),

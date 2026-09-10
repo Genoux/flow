@@ -18,7 +18,7 @@
 //! be a second place for them to be wrong. The size comes from the same
 //! manifest, through `--plan`, for the same reason.
 
-use crate::theme::{ease_out, emerge, ACCENT, BG, ERR, FAINT, LINE, MUTED};
+use crate::theme::{ease_out, emerge, ACCENT, BG, BODY, ERR, FAINT, LINE, MICRO, MUTED};
 use crate::Message;
 use iced::widget::canvas::{self, Canvas, Path, Stroke};
 use iced::widget::{column, container, stack, text, Space};
@@ -555,7 +555,7 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
         // than the ring's own column keeps it a paragraph.
         container(
             text(caption)
-                .size(13)
+                .size(BODY)
                 .width(Fill)
                 .align_x(iced::Center)
                 .color(emerge(
@@ -568,7 +568,7 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
         // Two fades multiplied: the line's place in the intro, and the figure's
         // own arrival whenever the installer gets round to naming a total.
         text(count)
-            .size(12)
+            .size(MICRO)
             .color(emerge(FAINT, count_lift * ease_out(state.count_in))),
     ]
     .align_x(iced::alignment::Horizontal::Center);

@@ -56,7 +56,7 @@ impl Console {
 
     fn rail(&self) -> Element<'_, Message> {
         let mut items = column![
-            container(text("Flow").size(14).color(FG)).padding([0, 9]),
+            container(text("Flow").size(BODY).color(FG)).padding([0, 9]),
             Space::new().height(14)
         ]
         .spacing(2);
@@ -75,9 +75,9 @@ impl Console {
                 // A debug build says so, and says when it was made. See
                 // `update::dev_note`.
                 container(column![
-                    text(update::running()).size(11).color(FAINT),
+                    text(update::running()).size(MICRO).color(FAINT),
                     text(update::dev_note().unwrap_or_default())
-                        .size(10)
+                        .size(MICRO)
                         .color(FAINT),
                 ])
                 .padding([0, 9]),

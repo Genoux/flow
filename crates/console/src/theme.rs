@@ -160,9 +160,23 @@ pub(crate) const HAIRLINE: f32 = 1.0;
 /// having been measured against the other by eye.
 pub(crate) const CONTROL_PAD: [f32; 2] = [7.0, 14.0];
 
+/// The type scale. Five steps, because eleven sizes spread over 4px - which is
+/// what this crate had - is not a hierarchy, it is noise: nothing reads as
+/// deliberately smaller than anything else, it just reads as inconsistent.
+/// MICRO is the floor at 12: below that the timestamps and legend labels were
+/// unreadable at normal viewing distance. Nothing above TITLE belongs here -
+/// hero numerals and display serif set their own size at the call site because
+/// they are art, not text.
+pub(crate) const MICRO: f32 = 12.0;
+pub(crate) const LABEL: f32 = 13.0;
+pub(crate) const BODY: f32 = 14.0;
+pub(crate) const HEAD: f32 = 16.0;
+pub(crate) const DISPLAY: f32 = 20.0;
+pub(crate) const TITLE: f32 = 22.0;
+
 /// The text inside a control. One size, so a row's button and a row's dropdown
 /// do not read as two different weights of the same decision.
-pub(crate) const CONTROL_TEXT: f32 = 13.0;
+pub(crate) const CONTROL_TEXT: f32 = BODY;
 
 pub(crate) const RAIL_WIDTH: f32 = 176.0;
 

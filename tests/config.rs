@@ -368,3 +368,9 @@ fn experimental_key_does_not_prevent_local_rollback() {
     let config = Config::parse("openrouter_key = sk-or-test\ncleanup = light\n").unwrap();
     assert_eq!(config.cleanup, flow::refine::Cleanup::Light);
 }
+
+#[test]
+fn modifier_only_shortcuts_are_valid_config() {
+    Config::parse("hotkey = ctrl+shift\n").unwrap();
+    Config::parse("hotkey = super+alt+shift\n").unwrap();
+}

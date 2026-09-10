@@ -5,8 +5,8 @@
 //! position, and the travel is the part that acknowledges the click.
 
 use crate::theme::{
-    dissolve, mix, ACCENT, BG, CONTROL_PAD, CONTROL_TEXT, EDGE, FG, HAIRLINE, LINE, MUTED,
-    ON_ACCENT, RADIUS, RAIL_ON,
+    dissolve, mix, ACCENT, BG, BODY, CONTROL_PAD, CONTROL_TEXT, EDGE, FG, HAIRLINE, LINE, MICRO,
+    MUTED, ON_ACCENT, RADIUS, RAIL_ON,
 };
 use crate::Message;
 use iced::widget::{button, canvas, column, container, row, slider, text, Canvas, Space};
@@ -119,7 +119,7 @@ pub(crate) fn value_slider<'a>(
         .into()))
         .width(Length::Fixed(140.0)),
         Space::new().width(12),
-        container(text(label.to_string()).size(12).color(MUTED))
+        container(text(label.to_string()).size(MICRO).color(MUTED))
             .width(Length::Fixed(56.0))
             .align_x(iced::alignment::Horizontal::Right),
     ]
@@ -148,7 +148,7 @@ pub(crate) fn option_row(
 ) -> Element<'static, Message> {
     let ink = if current { FG } else { MUTED };
     let mut block = column![text(title.to_string())
-        .size(13)
+        .size(BODY)
         .color(dissolve(ink, fade))
         .wrapping(text::Wrapping::None)];
     if !note.is_empty() {
@@ -159,7 +159,7 @@ pub(crate) fn option_row(
         // is not what it looks like - that the pinned microphone is unplugged -
         // so it is text rather than decoration and gets a colour that clears
         // the bar: 4.60:1 on that fill, 5.59:1 on the panel.
-        block = block.push(text(note).size(11.5).color(dissolve(MUTED, fade)));
+        block = block.push(text(note).size(MICRO).color(dissolve(MUTED, fade)));
     }
 
     // The mark, not the fill, is what says which microphone is on. `RAIL_ON`

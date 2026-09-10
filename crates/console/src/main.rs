@@ -55,9 +55,9 @@ use crate::layout::{
     scroll_inset, section_shell, setting,
 };
 use crate::theme::{
-    mix, progress, ACCENT, BG, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, ENTRY_INSET, ERR,
-    FADE, FAINT, FG, GAP, HAIRLINE, LABEL_GAP, MUTED, OK, PAGE_TOP, PANE_INSET, RAIL_WIDTH,
-    ROW_PAD, STARTING, WARN,
+    mix, progress, ACCENT, BG, BODY, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, DISPLAY,
+    ENTRY_INSET, ERR, FADE, FAINT, FG, GAP, HAIRLINE, HEAD, LABEL, LABEL_GAP, MICRO, MUTED, OK,
+    PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD, STARTING, TITLE, WARN,
 };
 use iced::{Color, Subscription, Task, Theme};
 

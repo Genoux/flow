@@ -1,6 +1,6 @@
 //! Shared surfaces and editorial data blocks.
 
-use crate::theme::{dissolve, mix, EDGE, FG, HAIRLINE, MUTED, RAISED};
+use crate::theme::{dissolve, mix, EDGE, FG, HAIRLINE, LABEL, MICRO, MUTED, RAISED};
 use crate::Message;
 use iced::widget::{column, container, text, Space};
 use iced::{Background, Border, Color, Element, Fill};
@@ -44,7 +44,7 @@ pub(crate) fn panel_at<'a>(fade: f32, content: Element<'a, Message>) -> Element<
 
 pub(crate) fn card<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
     container(column![
-        text(title).size(12.5).color(MUTED),
+        text(title).size(LABEL).color(MUTED),
         Space::new().height(12),
         content,
     ])
@@ -59,11 +59,11 @@ pub(crate) fn stat_tile(
 ) -> Element<'static, Message> {
     let (note, colour) = note;
     container(column![
-        text(label).size(12).color(MUTED),
+        text(label).size(MICRO).color(MUTED),
         Space::new().height(9),
         text(value).size(32).color(FG),
         Space::new().height(5),
-        text(note).size(11).color(colour),
+        text(note).size(MICRO).color(colour),
     ])
     .width(Fill)
     .into()

@@ -19,11 +19,11 @@ impl Console {
             activity_label(self.daemon.activity, self.daemon.reachable)
         };
         let mut header = row![
-            text("Overview").size(22).color(FG),
+            text("Overview").size(TITLE).color(FG),
             Space::new().width(Fill),
             pip(dot),
             Space::new().width(9),
-            text(label).size(12).color(dot),
+            text(label).size(MICRO).color(dot),
         ]
         .align_y(iced::Center);
         if !needs_setup {
@@ -89,7 +89,7 @@ impl Console {
         }
         for (colour, note) in self.attention() {
             page = page
-                .push(text(note).size(12).color(colour))
+                .push(text(note).size(MICRO).color(colour))
                 .push(Space::new().height(10));
         }
         scroll(page.push(column![
@@ -115,7 +115,7 @@ impl Console {
         Some(
             container(
                 row![
-                    text(line).size(12.5).color(tone),
+                    text(line).size(LABEL).color(tone),
                     Space::new().width(Fill),
                     action_msg(offer, inviting, Message::BeginSetup),
                 ]

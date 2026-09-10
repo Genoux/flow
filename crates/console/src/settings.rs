@@ -335,6 +335,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn modifier_only_shortcuts_survive_saving() {
+        let settings = Settings {
+            hotkey: "ctrl+shift".into(),
+            ..Settings::default()
+        };
+        assert_eq!(Settings::parse(&settings.render("")).hotkey, "ctrl+shift");
+    }
+
+    #[test]
     fn commented_defaults_are_not_settings() {
         // The shipped template is almost entirely commented explanation.
         let template = "# duck = 50\n# refine = true\n";
