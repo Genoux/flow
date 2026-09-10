@@ -1,3 +1,4 @@
+use crate::theme::LINE;
 use crate::*;
 use iced::widget::{button, column, container, responsive, row, text, text_input, tooltip, Space};
 use iced::{Background, Border, Element, Fill};
@@ -14,9 +15,7 @@ impl Console {
             return Some("Not applied - these are spelled by the refining model, which needs an OpenRouter key.".to_string());
         }
         if !self.settings.cleanup.needs_key() {
-            return Some(
-                "Not applied at cleanup = none. Choose Light or Medium in Style.".to_string(),
-            );
+            return Some("Not applied while cleanup is Off - change it in Style.".to_string());
         }
         None
     }
@@ -33,7 +32,7 @@ impl Console {
             let search = crate::interaction::field(|amount| {
                 text_input("Find a word…", &self.term_query)
                     .on_input(Message::FilterTerms)
-                    .size(12)
+                    .size(MICRO)
                     .padding([8, 12])
                     .width(if wide { 230 } else { 160 })
                     .style(move |theme, status| {
@@ -50,14 +49,31 @@ impl Console {
             };
             let header = row![
                 column![
-                    text("Your vocabulary").size(15).color(FG),
-                    text(subtitle).size(12).color(tone)
+                    text("Your vocabulary").size(HEAD).color(FG),
+                    text(subtitle).size(MICRO).color(tone)
                 ]
                 .spacing(4),
                 Space::new().width(Fill),
                 search,
             ]
             .align_y(iced::Center);
+
+            // The empty state takes whatever the pane has left rather than
+            // sitting in a short box with a hole under it. It cannot ask for
+            // Fill: this whole page is inside a scrollable, which lays its
+            // content out in unbounded height, and Fill against infinity
+            // resolves to shrink. The pane height from `responsive` is the only
+            // real number available here, so the rest of the stack is
+            // subtracted from it.
+            // ponytail: the two block heights are measured, not derived - they
+            // drift if the banner or the editor is restyled. The floor keeps a
+            // drifted number from collapsing the box; derive them from layout
+            // if this ever needs to be exact.
+            const BANNER_HEIGHT: f32 = 180.0;
+            const EDITOR_HEIGHT: f32 = 114.0;
+            let above =
+                PAGE_TOP * 2.0 + 47.0 + BANNER_HEIGHT + 24.0 + EDITOR_HEIGHT + 12.0 + 40.0 + 14.0;
+            let empty_height = (size.height - above).max(150.0);
 
             let mut list = column![].spacing(8);
             if entries.is_empty() {
@@ -75,15 +91,25 @@ impl Console {
                 list = list.push(
                     container(
                         column![
-                            text(title)
-                                .size(19)
-                                .font(iced::Font::with_name("Noto Serif Display"))
-                                .color(FG),
-                            text(detail).size(12).color(MUTED),
+                            text(title).size(BODY).color(FG),
+                            text(detail).size(MICRO).color(MUTED),
                         ]
-                        .spacing(8),
+                        .spacing(6)
+                        .align_x(iced::Center),
                     )
-                    .padding([24, 0]),
+                    .padding([32, 24])
+                    .width(Fill)
+                    .height(empty_height)
+                    .align_x(iced::Center)
+                    .align_y(iced::Center)
+                    .style(|_: &iced::Theme| container::Style {
+                        border: Border {
+                            color: LINE,
+                            width: HAIRLINE,
+                            radius: CARD_RADIUS.into(),
+                        },
+                        ..Default::default()
+                    }),
                 );
             } else {
                 for group in entries.chunks(if wide { 2 } else { 1 }) {
@@ -103,7 +129,7 @@ impl Console {
                 "For example, “hyper land” can become “Hyprland” when the sounds are close.",
             );
             let editor = column![
-                text("Add a word or phrase").size(14).color(FG),
+                text("Add a word or phrase").size(BODY).color(FG),
                 Space::new().height(10),
                 row![
                     crate::interaction::field(|amount| text_input(
@@ -113,7 +139,7 @@ impl Console {
                     .on_input(Message::TypingTerm)
                     .on_submit(Message::AddTerm)
                     .id("vocabulary-entry")
-                    .size(13)
+                    .size(BODY)
                     .padding([10, 12])
                     .style(move |theme, status| super::editorial::input_style(
                         theme,
@@ -134,7 +160,7 @@ impl Console {
                 Space::new().height(8),
                 container(
                     text(note)
-                        .size(12)
+                        .size(MICRO)
                         .line_height(1.5)
                         .color(if error.is_some() { ERR } else { MUTED })
                 )
@@ -175,10 +201,10 @@ impl Console {
         });
         container(
             row![
-                text(&self.terms[index]).size(14).color(FG).width(Fill),
+                text(&self.terms[index]).size(BODY).color(FG).width(Fill),
                 tooltip(
                     remove,
-                    container(text("Remove word").size(12))
+                    container(text("Remove word").size(MICRO))
                         .padding(8)
                         .style(container::dark),
                     tooltip::Position::Top

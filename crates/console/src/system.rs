@@ -308,6 +308,9 @@ pub fn restart_app() -> Result<(), String> {
 /// thing on - especially when it is not running, which is the one state where
 /// the keybinding cannot help you.
 pub fn service(verb: &str) -> Result<(), String> {
+    if verb == "start" && daemon_listening(&flow_paths::socket()) {
+        return Ok(());
+    }
     let output = run("systemctl", &["--user", verb, "flow.service"])
         .ok_or_else(|| "systemctl did not respond".to_string())?;
     if !output.status.success() {
@@ -325,6 +328,10 @@ pub fn service(verb: &str) -> Result<(), String> {
         terminate_daemon();
         Ok(())
     }
+}
+
+fn daemon_listening(path: &std::path::Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
 /// Ensure the independent tray controller exists. Starting an already active
@@ -548,6 +555,19 @@ const OPENER: &str = if cfg!(target_os = "macos") {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_existing_daemon_is_detected_but_a_stale_socket_is_not() {
+        let dir = std::env::temp_dir().join(format!("flow-startup-test-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let socket = dir.join("flow.sock");
+        assert!(!super::daemon_listening(&socket));
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(super::daemon_listening(&socket));
+        drop(listener);
+        assert!(!super::daemon_listening(&socket));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// The link is the setting, so reading it back is the only check that
     /// matters: a switch that reported success while the link stayed put would
     /// be a window lying about which binary is about to run.

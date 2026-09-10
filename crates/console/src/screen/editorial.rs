@@ -1,4 +1,4 @@
-use crate::theme::{BANNER_CORNER, BG};
+use crate::theme::{BANNER_CORNER, BG, BODY, MICRO};
 use crate::Message;
 use iced::widget::{canvas, column, container, image, stack, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Font, Task};
@@ -77,7 +77,7 @@ pub(super) fn banner(
                 .color(Color::from_rgb8(245, 242, 232)),
             Space::new().height(14),
             text(description.into())
-                .size(13)
+                .size(BODY)
                 .line_height(1.55)
                 .color(Color::from_rgb8(208, 206, 194)),
         ]
@@ -122,7 +122,7 @@ pub(super) fn summary_banner(
         });
     let copy = container(column![
         text("Words this week")
-            .size(13)
+            .size(BODY)
             .color(Color::from_rgb8(224, 222, 212)),
         Space::new().height(8),
         text(words)
@@ -132,7 +132,7 @@ pub(super) fn summary_banner(
             .color(Color::from_rgb8(245, 242, 232)),
         Space::new().height(14),
         text(comparison)
-            .size(12)
+            .size(MICRO)
             .color(Color::from_rgb8(208, 206, 194)),
     ])
     .padding(if wide { 28 } else { 24 })

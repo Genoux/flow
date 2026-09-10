@@ -469,17 +469,12 @@ fn a_bad_binding_says_which_part_is_wrong() {
     let err = Chord::parse("super+shft+d").expect_err("typo");
     assert!(err.to_string().contains("shft"), "{err}");
 
-    let err = Chord::parse("super+shift").expect_err("no trigger");
-    assert!(err.to_string().contains("shift"), "{err}");
-
     assert!(Chord::parse("").is_err());
     assert!(Chord::parse("super+shift+dd").is_err());
 }
 
-/// A chord that is only modifiers can never fire, because the last one pressed
-/// would have to be both trigger and modifier.
 #[test]
-fn a_modifier_cannot_also_be_the_trigger() {
+fn duplicate_modifiers_are_rejected() {
     assert!(Chord::parse("super+super+d").is_err());
     assert!(Chord::parse("shift+shift").is_err());
 }
@@ -542,4 +537,37 @@ fn the_modifier_check_is_not_a_device_scan() {
         each < Duration::from_millis(5),
         "{each:?} per call - rediscovering or reopening devices?"
     );
+}
+
+#[test]
+fn modifier_combinations_work_on_both_sides_in_either_order() {
+    for keys in [
+        [KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT],
+        [KeyCode::KEY_RIGHTCTRL, KeyCode::KEY_RIGHTSHIFT],
+        [KeyCode::KEY_RIGHTSHIFT, KeyCode::KEY_LEFTCTRL],
+    ] {
+        let chord = Chord::parse("ctrl+shift").unwrap();
+        assert_eq!(chord.to_string(), "ctrl+shift");
+        assert!(chord.keys().contains(&KeyCode::KEY_RIGHTSHIFT));
+        let mut state = PttState::new(chord);
+        assert_eq!(state.apply(keys[0], true), None);
+        assert_eq!(state.apply(keys[1], true), Some(Event::Pressed));
+        assert!(matches!(
+            state.apply(keys[0], false),
+            Some(Event::Released { .. })
+        ));
+        assert_eq!(state.apply(keys[1], false), None);
+    }
+}
+
+#[test]
+fn modifier_combinations_cancel_when_used_for_another_shortcut() {
+    let mut state = PttState::new(Chord::parse("ctrl+shift").unwrap());
+    assert_eq!(state.apply(KeyCode::KEY_LEFTCTRL, true), None);
+    assert_eq!(
+        state.apply(KeyCode::KEY_LEFTSHIFT, true),
+        Some(Event::Pressed)
+    );
+    assert_eq!(state.apply(KeyCode::KEY_V, true), Some(Event::Cancelled));
+    assert_eq!(state.apply(KeyCode::KEY_LEFTSHIFT, false), None);
 }

@@ -87,6 +87,7 @@ impl Modifier {
 pub struct Chord {
     pub trigger: KeyCode,
     pub modifiers: Vec<Modifier>,
+    trigger_modifier: Option<Modifier>,
 }
 
 impl Default for Chord {
@@ -101,6 +102,7 @@ impl Default for Chord {
         Self {
             trigger: KeyCode::KEY_D,
             modifiers: vec![Modifier::Super, Modifier::Shift],
+            trigger_modifier: None,
         }
     }
 }
@@ -111,12 +113,12 @@ impl Chord {
         Self {
             trigger,
             modifiers: Vec::new(),
+            trigger_modifier: None,
         }
     }
 
-    /// Modifiers make a press unambiguous, so it needs no minimum hold.
     pub fn deliberate(&self) -> bool {
-        !self.modifiers.is_empty()
+        !self.modifiers.is_empty() && !MODIFIERS.contains(&self.trigger)
     }
 
     pub fn parse(text: &str) -> Result<Self> {
@@ -142,18 +144,25 @@ impl Chord {
             modifiers.push(modifier);
         }
 
-        // A trailing modifier name would mean the chord can never complete: the
-        // key that triggers it would also be the one holding it.
-        if Modifier::parse(last).is_some() && !modifiers.is_empty() {
-            return Err(anyhow!(
-                "{last:?} is a modifier, so there is no key to press"
-            ));
+        let trigger_modifier = Modifier::parse(last);
+        if trigger_modifier.is_some_and(|modifier| modifiers.contains(&modifier)) {
+            return Err(anyhow!("{last:?} is listed twice"));
         }
-
+        let trigger = match trigger_modifier {
+            Some(modifier) => modifier.keys()[0],
+            None => trigger_key(last)?,
+        };
         Ok(Self {
-            trigger: trigger_key(last)?,
+            trigger,
             modifiers,
+            trigger_modifier,
         })
+    }
+
+    fn trigger_keys(&self) -> [KeyCode; 2] {
+        self.trigger_modifier
+            .map(Modifier::keys)
+            .unwrap_or([self.trigger; 2])
     }
 
     fn satisfied(&self, held: &HashSet<KeyCode>) -> bool {
@@ -164,7 +173,7 @@ impl Chord {
 
     /// Every key of the chord is physically down, in any order.
     fn fully_held(&self, held: &HashSet<KeyCode>) -> bool {
-        held.contains(&self.trigger) && self.satisfied(held)
+        self.trigger_keys().iter().any(|key| held.contains(key)) && self.satisfied(held)
     }
 
     /// Every key this chord could involve, both sides of each modifier. What the
@@ -172,7 +181,7 @@ impl Chord {
     /// super/shift/d, so any other configured hotkey was invisible to it and the
     /// recording died 40ms after it started.
     pub fn keys(&self) -> HashSet<KeyCode> {
-        let mut keys = HashSet::from([self.trigger]);
+        let mut keys = HashSet::from(self.trigger_keys());
         for modifier in &self.modifiers {
             keys.extend(modifier.keys());
         }
@@ -180,7 +189,7 @@ impl Chord {
     }
 
     fn contains(&self, key: KeyCode) -> bool {
-        key == self.trigger || self.modifiers.iter().any(|m| m.keys().contains(&key))
+        self.trigger_keys().contains(&key) || self.modifiers.iter().any(|m| m.keys().contains(&key))
     }
 }
 
@@ -189,7 +198,10 @@ impl std::fmt::Display for Chord {
         for modifier in &self.modifiers {
             write!(f, "{}+", modifier.name())?;
         }
-        f.write_str(&trigger_name(self.trigger))
+        match self.trigger_modifier {
+            Some(modifier) => f.write_str(modifier.name()),
+            None => f.write_str(&trigger_name(self.trigger)),
+        }
     }
 }
 

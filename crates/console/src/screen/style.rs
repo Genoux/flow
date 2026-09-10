@@ -42,7 +42,7 @@ impl Console {
                 cards,
                 Space::new().height(20),
                 text("The same thought, with a different amount of polish.")
-                    .size(12)
+                    .size(MICRO)
                     .color(MUTED),
             ])
         })
@@ -92,13 +92,15 @@ impl Console {
 
         let body = column![
             row![
-                text(title).size(19).color(if locked { MUTED } else { FG }),
+                text(title)
+                    .size(DISPLAY)
+                    .color(if locked { MUTED } else { FG }),
                 Space::new().width(Fill),
                 indicator,
             ]
             .align_y(iced::Center),
             Space::new().height(10),
-            container(text(blurb).size(12).line_height(1.5).color(MUTED)).height(54),
+            container(text(blurb).size(MICRO).line_height(1.5).color(MUTED)).height(60),
             Space::new().height(16),
             text("“")
                 .size(32)
@@ -112,7 +114,7 @@ impl Console {
             } else {
                 level.example()
             })
-            .size(14)
+            .size(BODY)
             .line_height(1.5)
             .color(if locked { MUTED } else { FG }),
         ];

@@ -22,6 +22,8 @@ fn keyboard() -> VirtualDevice {
         KeyCode::KEY_C,
         KeyCode::KEY_LEFTMETA,
         KeyCode::KEY_LEFTSHIFT,
+        KeyCode::KEY_RIGHTCTRL,
+        KeyCode::KEY_RIGHTSHIFT,
     ] {
         keys.insert(key);
     }
@@ -130,4 +132,31 @@ fn a_stray_key_mid_hold_does_not_lose_the_recording() {
     press(&mut device, KeyCode::KEY_LEFTSHIFT, false);
     press(&mut device, KeyCode::KEY_LEFTMETA, false);
     eprintln!("stray key survived, recording still ended cleanly");
+}
+
+#[test]
+#[ignore = "requires uinput; stop flow.service before running"]
+fn modifier_only_combo_reaches_the_daemon() {
+    let mut device = keyboard();
+    std::thread::sleep(Duration::from_millis(400));
+    let (events, incoming) = std::sync::mpsc::channel();
+    hotkey::spawn(
+        events,
+        Arc::new(Mutex::new(Chord::parse("ctrl+shift").unwrap())),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    press(&mut device, KeyCode::KEY_RIGHTSHIFT, true);
+    assert!(incoming.recv_timeout(Duration::from_millis(30)).is_err());
+    press(&mut device, KeyCode::KEY_RIGHTCTRL, true);
+    press(&mut device, KeyCode::KEY_RIGHTSHIFT, false);
+    press(&mut device, KeyCode::KEY_RIGHTCTRL, false);
+    assert_eq!(
+        incoming.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Event::Pressed
+    );
+    assert!(matches!(
+        incoming.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Event::Released { .. }
+    ));
 }

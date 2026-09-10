@@ -65,7 +65,7 @@ OpenRouter request. `flow install` fetches the speech model.
 - `keyboards()` probes for `KEY_A`, not a modifier — testing for `KEY_RIGHTCTRL` would skip boards that lack it.
 - `tests/chord_live.rs` (ignored) creates its own uinput keyboard and presses itself, which is the only check that the reader, the keycodes and the chord all agree. Stop `flow.service` first or it dictates into the focused window.
 
-- The shortcut picker accepts the same triggers as the daemon, including single modifiers, and commits on release so a remapper can deliver the trigger before its modifiers. F13–F24 are not supported by the daemon and must not be offered. Each capture owns a cancellation token and generation; a cancelled worker must never save over a newer capture. Capture errors occupy reserved space instead of silently returning to the old binding.
+- The shortcut picker accepts the same triggers as the daemon, including single modifiers and modifier-only combinations, and commits on release so a remapper can deliver the trigger before its modifiers. F13–F24 are not supported by the daemon and must not be offered. Modifier-only combinations cancel if another key is pressed, so ordinary shortcuts do not dictate. Each capture owns a cancellation token and generation; a cancelled worker must never save over a newer capture. Capture errors occupy reserved space instead of silently returning to the old binding.
 
 ## Text injection
 

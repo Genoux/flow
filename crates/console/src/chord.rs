@@ -186,9 +186,7 @@ impl Capture {
                     .binding
                     .take()
                     .map(|binding| Some(Some(binding)))
-                    .ok_or_else(|| {
-                        "Add a letter or number to that combination, or use one modifier.".into()
-                    });
+                    .ok_or_else(|| "No shortcut detected. Try again.".into());
             }
             return Ok(None);
         }
@@ -216,7 +214,7 @@ impl Capture {
                 })
             }
             [] if self.held.len() == 1 => trigger_word(key),
-            [] => None,
+            [] => Some(words.join("+")),
             _ => return Err("Use one key with any Ctrl, Alt, Shift or Super modifiers.".into()),
         };
         Ok(None)
@@ -331,12 +329,15 @@ B: SW=140
     }
 
     #[test]
-    fn unsupported_keys_and_modifier_combinations_explain_the_failure() {
+    fn unsupported_keys_explain_the_failure_and_modifier_combinations_work() {
         assert!(Capture::default().apply(KeyCode::KEY_F13, 1).is_err());
         let mut capture = Capture::default();
         capture.apply(KeyCode::KEY_LEFTCTRL, 1).unwrap();
         capture.apply(KeyCode::KEY_LEFTSHIFT, 1).unwrap();
-        assert!(capture.apply(KeyCode::KEY_LEFTSHIFT, 0).is_err());
+        assert_eq!(
+            capture.apply(KeyCode::KEY_LEFTSHIFT, 0),
+            Ok(Some(Some("ctrl+shift".into())))
+        );
         assert_eq!(
             Capture::default().apply(KeyCode::KEY_ESC, 1),
             Ok(Some(None))
@@ -453,6 +454,22 @@ B: SW=140
         assert_eq!(
             captured.join().unwrap().unwrap().as_deref(),
             Some("leftctrl")
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let captured = std::thread::spawn(move || capture(&|| Instant::now() > deadline));
+        std::thread::sleep(Duration::from_millis(100));
+        for (key, value) in [
+            (KeyCode::KEY_LEFTSHIFT, 1),
+            (KeyCode::KEY_LEFTCTRL, 1),
+            (KeyCode::KEY_LEFTSHIFT, 0),
+            (KeyCode::KEY_LEFTCTRL, 0),
+        ] {
+            device.emit(&[*KeyEvent::new(key, value)]).unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert_eq!(
+            captured.join().unwrap().unwrap().as_deref(),
+            Some("ctrl+shift")
         );
     }
 

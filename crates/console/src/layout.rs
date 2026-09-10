@@ -8,8 +8,8 @@
 use crate::control::{copy_btn, hairline};
 use crate::format::{clip_tail, display_path};
 use crate::theme::{
-    mix, BG, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, GROUP_GAP, GROUP_PAD, LABEL_GAP, MUTED,
-    PAGE_TOP, RADIUS, RAIL_ON, ROW_PAD, SCROLL_PAD,
+    mix, BG, BODY, CONTENT_RIGHT, ENTRY_INSET, FAINT, FG, GROUP_GAP, GROUP_PAD, LABEL_GAP, MICRO,
+    MUTED, PAGE_TOP, RADIUS, RAIL_ON, ROW_PAD, SCROLL_PAD, TITLE,
 };
 use crate::{history, Message, Section};
 use iced::widget::{button, column, container, responsive, row, scrollable, text, Space};
@@ -33,19 +33,21 @@ pub(crate) fn entry_row<'a>(
     let duration = history::duration(entry.spoken);
     let words = crate::format::plural(entry.text.split_whitespace().count() as u32, "word");
     let copy = copy_btn(index, copied, 0.65 + warmth * 0.35);
-    let transcript = text(&entry.text).size(13).line_height(1.65).color(FG);
+    let transcript = text(&entry.text).size(BODY).line_height(1.65).color(FG);
     // Same small print as the time and the word count, and in the same colour:
     // this answers "why does this one still have my stumbles in it", which is a
     // fact about the dictation rather than a fault to alarm anybody with.
     let cleanup = entry.cleanup.as_ref().map(|cleanup| {
-        let label = text(format!("· {}", cleanup.label())).size(11).color(FAINT);
+        let label = text(format!("· {}", cleanup.label()))
+            .size(MICRO)
+            .color(FAINT);
         match cleanup.detail() {
             // The guard that refused the model's answer, which is the whole
             // reason this line exists: "cleanup skipped" on its own leaves the
             // same question it was added to answer.
             Some(why) => Element::from(iced::widget::tooltip(
                 label,
-                container(text(why).size(12))
+                container(text(why).size(MICRO))
                     .padding(8)
                     .style(container::dark),
                 iced::widget::tooltip::Position::Top,
@@ -55,9 +57,9 @@ pub(crate) fn entry_row<'a>(
     });
     let content = column![
         row![
-            text(when).size(11).color(MUTED),
+            text(when).size(MICRO).color(MUTED),
             text(format!("· {duration} · {words}"))
-                .size(11)
+                .size(MICRO)
                 .color(FAINT),
         ]
         .extend(cleanup)
@@ -156,10 +158,10 @@ pub(crate) fn scroll_inset<'a>(
 /// that shape now, so the gap has to go with the sentence rather than being
 /// held open for one that is not coming.
 pub(crate) fn heading<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
-    let mut block = column![text(title).size(22).color(FG)];
+    let mut block = column![text(title).size(TITLE).color(FG)];
     if !subtitle.is_empty() {
         block = block.push(Space::new().height(10));
-        block = block.push(text(subtitle).size(13).color(MUTED));
+        block = block.push(text(subtitle).size(BODY).color(MUTED));
     }
     block.push(Space::new().height(SCROLL_PAD)).into()
 }
@@ -199,7 +201,7 @@ fn hairlined<'a>(rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
 pub(crate) fn group<'a>(label: &'a str, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     column![
         Space::new().height(GROUP_PAD),
-        text(label).size(11.5).color(MUTED),
+        text(label).size(MICRO).color(MUTED),
         Space::new().height(GROUP_GAP),
         hairlined(rows),
     ]
@@ -239,7 +241,7 @@ pub(crate) fn nav(
     // nothing here yet, and a greyed item that lights up on hover is an item
     // still promising something.
     if !enabled {
-        return button(text(section.label()).size(13).color(mix(BG, MUTED, 0.45)))
+        return button(text(section.label()).size(BODY).color(mix(BG, MUTED, 0.45)))
             .width(Fill)
             .padding([6, 9])
             .style(|_theme, _status| button::Style {
@@ -261,7 +263,7 @@ pub(crate) fn nav(
     let fill = if selected { 1.0 } else { warmth * 0.7 };
 
     iced::widget::mouse_area(
-        button(text(section.label()).size(13).color(colour))
+        button(text(section.label()).size(BODY).color(colour))
             .width(Fill)
             .padding([6, 9])
             .style(move |_theme, _status| button::Style {
@@ -306,10 +308,10 @@ pub(crate) fn setting_toned<'a>(
     control: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let description = description.into();
-    let mut text_block = column![text(label).size(13.5).color(FG)];
+    let mut text_block = column![text(label).size(BODY).color(FG)];
     if !description.is_empty() {
         text_block = text_block.push(Space::new().height(LABEL_GAP));
-        text_block = text_block.push(text(description).size(12).color(tone));
+        text_block = text_block.push(text(description).size(MICRO).color(tone));
     }
 
     container(
@@ -330,9 +332,9 @@ pub(crate) fn setting_toned<'a>(
 pub(crate) fn fact_row(label: &'static str, value: impl Into<String>) -> Element<'static, Message> {
     container(
         row![
-            text(label).size(13.5).color(FG),
+            text(label).size(BODY).color(FG),
             Space::new().width(Fill),
-            text(value.into()).size(12).color(MUTED),
+            text(value.into()).size(MICRO).color(MUTED),
         ]
         .align_y(iced::Center),
     )
@@ -352,7 +354,7 @@ pub(crate) fn fact_path(label: &'static str, path: &std::path::Path) -> Element<
     let shown = display_path(path);
     container(
         row![
-            text(label).size(13.5).color(FG),
+            text(label).size(BODY).color(FG),
             Space::new().width(20),
             responsive(move |size| {
                 // 8px per character is wider than the proportional face
@@ -375,7 +377,7 @@ pub(crate) fn fact_path(label: &'static str, path: &std::path::Path) -> Element<
 
 fn path_link(path: std::path::PathBuf, shown: String) -> Element<'static, Message> {
     crate::interaction::hover(move |amount| {
-        button(text(shown).size(12).wrapping(text::Wrapping::None))
+        button(text(shown).size(MICRO).wrapping(text::Wrapping::None))
             .padding(0)
             .on_press(Message::OpenPath(path))
             .style(move |_, _| button::Style {

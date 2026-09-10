@@ -7,8 +7,8 @@
 use crate::card::card;
 use crate::format::{commas, plural};
 use crate::theme::{
-    mix, ACCENT, BG, CALENDAR_WEEKS, CELL, CELL_GAP, FAINT, FG, HAIRLINE, LINE, MUTED, RADIUS,
-    RAISED, WEEKDAY_GUTTER,
+    mix, ACCENT, BG, CALENDAR_WEEKS, CELL, CELL_GAP, FAINT, FG, HAIRLINE, LINE, MICRO, MUTED,
+    RADIUS, RAISED, WEEKDAY_GUTTER,
 };
 use crate::{history, Message};
 use iced::widget::{column, container, responsive, row, text, tooltip, Space};
@@ -134,7 +134,7 @@ fn day_cell(day: history::Day, number: u64, ceiling: u32) -> Element<'static, Me
 
     tooltip(
         heat_cell(heat_color(day.words, ceiling), CELL),
-        container(text(format!("{when} · {what}")).size(11.5).color(FG))
+        container(text(format!("{when} · {what}")).size(MICRO).color(FG))
             .padding([5, 8])
             .style(|_theme| container::Style {
                 background: Some(Background::Color(BG)),
@@ -216,7 +216,7 @@ pub(crate) fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
             }
             let name = if run >= 3 { month_name(month) } else { "" };
             labels.push(
-                container(text(name).size(11).color(FAINT))
+                container(text(name).size(MICRO).color(FAINT))
                     .width(Length::Fixed(run as f32 * pitch - CELL_GAP))
                     .into(),
             );
@@ -261,7 +261,7 @@ pub(crate) fn calendar_card(days: &[history::Day]) -> Element<'_, Message> {
             grid,
             Space::new().height(14),
             row![
-                text(caption).size(12).color(MUTED),
+                text(caption).size(MICRO).color(MUTED),
                 Space::new().width(Fill),
                 legend(),
             ]
@@ -284,7 +284,7 @@ fn weekday_gutter() -> Element<'static, Message> {
             _ => "",
         };
         gutter = gutter.push(
-            container(text(name).size(10).color(FAINT))
+            container(text(name).size(MICRO).color(FAINT))
                 .width(Length::Fixed(WEEKDAY_GUTTER - CELL_GAP))
                 .height(Length::Fixed(CELL))
                 .align_y(iced::Center),
@@ -296,7 +296,7 @@ fn weekday_gutter() -> Element<'static, Message> {
 /// Less-to-more swatches, in the same shape and steps as the grid.
 fn legend() -> Element<'static, Message> {
     row![
-        text("Less").size(11).color(FAINT),
+        text("Less").size(MICRO).color(FAINT),
         Space::new().width(5),
         heat_cell(heat_color(0, 4), 10.0),
         heat_cell(heat_color(1, 4), 10.0),
@@ -304,7 +304,7 @@ fn legend() -> Element<'static, Message> {
         heat_cell(heat_color(3, 4), 10.0),
         heat_cell(heat_color(4, 4), 10.0),
         Space::new().width(5),
-        text("More").size(11).color(FAINT),
+        text("More").size(MICRO).color(FAINT),
     ]
     .spacing(3)
     .align_y(iced::Center)
