@@ -26,7 +26,7 @@ pub fn seed(path: &Path, contents: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// The three files a fresh install wants, and whether each one was new.
+/// The files a fresh install wants, and whether each one was new.
 pub fn run() -> Result<()> {
     for (path, contents) in [
         (
@@ -36,10 +36,6 @@ pub fn run() -> Result<()> {
         (
             flow_paths::vocabulary_file(),
             include_str!("../packaging/vocabulary.template.txt"),
-        ),
-        (
-            flow_paths::instructions_file(),
-            include_str!("../packaging/instructions.template.txt"),
         ),
     ] {
         let written = seed(&path, contents)?;

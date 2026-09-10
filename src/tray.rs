@@ -126,6 +126,19 @@ impl Tray for Flow {
                 ..Default::default()
             }
             .into(),
+            StandardItem {
+                label: "Restart Dictation".into(),
+                activate: Box::new(|_: &mut Self| daemon("restart")),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Quit Flow".into(),
+                activate: Box::new(|_: &mut Self| quit()),
+                ..Default::default()
+            }
+            .into(),
         ]
     }
 }
@@ -141,25 +154,39 @@ fn open_console() {
     if running("flow-console") {
         return;
     }
-    // Resolved from PATH first so a system install and a ~/.local/bin one both
-    // work, with the usual location as the fallback: a systemd user unit does
-    // not always inherit a PATH that carries ~/.local/bin.
-    let home = std::env::var("HOME").unwrap_or_default();
-    let fallback = format!("{home}/.local/bin/flow-console");
-    for program in ["flow-console", fallback.as_str()] {
-        let Ok(mut console) = std::process::Command::new(program).spawn() else {
-            continue;
-        };
-        // Waited on its own thread, the way `chime` waits on paplay. A child
-        // nobody reaps stays in the process table under its own name after the
-        // window closes, so `running` above went on answering yes for the life
-        // of the daemon and every click after the first one did nothing.
-        std::thread::spawn(move || {
-            let _ = console.wait();
-        });
+    // Handed to the user manager rather than spawned as a child, because this
+    // service starts from `default.target` and so is running before the
+    // compositor exports WAYLAND_DISPLAY. A direct child inherits this
+    // process's frozen environment and the window dies on startup with
+    // "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set"; a
+    // transient unit gets the manager's current environment, which the
+    // compositor has since imported.
+    let Ok(mut launcher) = std::process::Command::new("systemd-run")
+        .args(["--user", "--quiet", "--collect", "--", &console_program()])
+        .spawn()
+    else {
+        eprintln!("tray: systemd-run is not available, cannot open flow-console");
         return;
+    };
+    // Waited on its own thread, the way `chime` waits on paplay. A child
+    // nobody reaps stays in the process table under its own name after the
+    // window closes, so `running` above went on answering yes for the life
+    // of the daemon and every click after the first one did nothing.
+    std::thread::spawn(move || {
+        let _ = launcher.wait();
+    });
+}
+
+/// systemd resolves a bare name against a fixed list of system directories,
+/// never `$PATH`, so a `~/.local/bin` install has to be named in full.
+fn console_program() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let local = format!("{home}/.local/bin/flow-console");
+    if std::path::Path::new(&local).is_file() {
+        local
+    } else {
+        "flow-console".into()
     }
-    eprintln!("tray: flow-console is not on PATH or in ~/.local/bin");
 }
 
 fn daemon_running() -> bool {
@@ -180,9 +207,25 @@ fn daemon_action_label(running: bool) -> &'static str {
 /// Start or stop only the dictation daemon. The independent tray service stays
 /// put so the opposite action remains available afterwards.
 fn toggle_daemon() {
-    let verb = if daemon_running() { "stop" } else { "start" };
+    daemon(if daemon_running() { "stop" } else { "start" });
+}
+
+fn daemon(verb: &str) {
     let _ = std::process::Command::new("systemctl")
         .args(["--user", verb, "flow.service"])
+        .status();
+}
+
+/// End Flow entirely: the dictation daemon and this controller with it.
+///
+/// Stopping our own unit is what makes this Quit rather than a second way to
+/// hide the icon - `show_tray = false` leaves the controller running so the
+/// icon can come back live, and that is deliberately not what a Quit means.
+/// systemd terminates this process as part of the same call, so nothing after
+/// it is reached.
+fn quit() {
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "stop", "flow.service", "flow-tray.service"])
         .status();
 }
 

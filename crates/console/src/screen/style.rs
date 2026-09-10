@@ -1,5 +1,5 @@
 use crate::*;
-use iced::widget::{button, column, container, responsive, row, text, text_input, tooltip, Space};
+use iced::widget::{button, column, container, responsive, row, text, Space};
 use iced::{Background, Border, Element, Fill};
 
 impl Console {
@@ -44,114 +44,7 @@ impl Console {
                 text("The same thought, with a different amount of polish.")
                     .size(12)
                     .color(MUTED),
-                Space::new().height(36),
-                self.instructions_editor(wide),
             ])
-        })
-        .into()
-    }
-
-    /// The cards decide how much of what you said is changed. This decides how
-    /// the result is written, which is the part no level can know.
-    fn instructions_editor(&self, wide: bool) -> Element<'_, Message> {
-        let error = self.note_error.as_deref();
-        let note = error.unwrap_or(
-            "For example, “Use British spelling.” or “Keep code names exactly as I say them.”",
-        );
-
-        let list = self
-            .notes
-            .iter()
-            .enumerate()
-            .fold(column![].spacing(8), |list, (index, _)| {
-                list.push(self.instruction_row(index))
-            });
-
-        column![
-            text("Your instructions").size(15).color(FG),
-            Space::new().height(4),
-            text("Followed on every dictation, at every level above Off.")
-                .size(12)
-                .color(MUTED),
-            Space::new().height(14),
-            list,
-            Space::new().height(if self.notes.is_empty() { 0 } else { 12 }),
-            row![
-                crate::interaction::field(|amount| text_input(
-                    "e.g. Use British spelling.",
-                    &self.note_typing
-                )
-                .on_input(Message::TypingInstruction)
-                .on_submit(Message::AddInstruction)
-                .id("instruction-entry")
-                .size(13)
-                .padding([10, 12])
-                .style(move |theme, status| super::editorial::input_style(
-                    theme,
-                    status,
-                    amount.get()
-                ))
-                .into()),
-                crate::control::action_padded(
-                    if wide { "Add instruction" } else { "Add" },
-                    true,
-                    1.0,
-                    [10.0, 14.0],
-                    (!self.note_typing.trim().is_empty()).then_some(Message::AddInstruction)
-                ),
-            ]
-            .spacing(10)
-            .align_y(iced::Center),
-            Space::new().height(8),
-            // Reserved whether or not anything is being said, so adding an
-            // instruction cannot move the page under the pointer.
-            container(
-                text(note)
-                    .size(12)
-                    .line_height(1.5)
-                    .color(if error.is_some() { ERR } else { MUTED })
-            )
-            .height(40),
-        ]
-        .into()
-    }
-
-    fn instruction_row(&self, index: usize) -> Element<'_, Message> {
-        let remove = crate::interaction::hover(move |amount| {
-            button(text("×").size(20))
-                .padding([2, 8])
-                .on_press(Message::RemoveInstruction(index))
-                .style(move |_, _| button::Style {
-                    text_color: mix(MUTED, FG, amount.get()),
-                    background: None,
-                    ..Default::default()
-                })
-                .into()
-        });
-
-        container(
-            row![
-                text(&self.notes[index]).size(14).color(FG).width(Fill),
-                tooltip(
-                    remove,
-                    container(text("Remove instruction").size(12))
-                        .padding(8)
-                        .style(container::dark),
-                    tooltip::Position::Top
-                ),
-            ]
-            .spacing(12)
-            .align_y(iced::Center),
-        )
-        .padding([12, 14])
-        .width(Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(mix(BG, theme::RAISED, 0.65))),
-            border: Border {
-                radius: CARD_RADIUS.into(),
-                ..Default::default()
-            },
-            ..Default::default()
         })
         .into()
     }

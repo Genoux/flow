@@ -68,10 +68,15 @@ impl Cleanup {
     pub fn describe(self) -> (&'static str, &'static str) {
         match self {
             // "including mistakes" is the only reason anyone would not pick
-            // None, so it earns its two words. What went was "mistakes and
-            // all", which said it in a folksier voice than the two levels
+            // this level, so it earns its two words. What went was "mistakes
+            // and all", which said it in a folksier voice than the two levels
             // beside it.
-            Self::None => ("None", "Types exactly what you said, including mistakes."),
+            //
+            // Named for what it does rather than "None", which stopped being
+            // true when the level started running a pass of its own: the ums
+            // go and the vocabulary applies, and a card promising nothing
+            // would have been describing the version before that.
+            Self::None => ("Minimal", "Takes out the ums, keeps the rest including mistakes."),
             // "nothing else" is the half that makes this the default. Fillers
             // out and grammar right is what every level above None does; not
             // touching the rest is what tells this level from that one.
@@ -93,7 +98,10 @@ impl Cleanup {
     /// a worse product than it is.
     ///
     /// Kept in step with `ADVERTISED_INPUT` in tests/refine.rs, which feeds the
-    /// None line to the real model and checks the split these lines claim.
+    /// spoken original to the real model and checks the split these lines
+    /// claim. That original is this first line with its "Um," still on the
+    /// front - the hesitation is what the lowest level takes, so it belongs in
+    /// the input and not in any card.
     ///
     /// Chosen because it is the shortest sentence found that shows both steps:
     /// "what we built don't work good" becomes "we built doesn't work well"
@@ -112,9 +120,7 @@ impl Cleanup {
     /// `FLOW_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
     pub fn example(self) -> &'static str {
         match self {
-            Self::None => {
-                "Um, I think the thing what we built don't work good on mobile, you know."
-            }
+            Self::None => "I think the thing what we built don't work good on mobile, you know.",
             Self::Light => "I think the thing we built doesn't work well on mobile, you know.",
             Self::Medium => "The thing we built doesn't work well on mobile.",
         }

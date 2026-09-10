@@ -4,7 +4,16 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cleanup {
-    /// Paste the transcript untouched. The refining model is never loaded.
+    /// The floor, not an off switch: hesitations and stutters gone and the
+    /// vocabulary applied, with every word the speaker chose - and every
+    /// mistake they made - left in the order and spelling they said it in.
+    ///
+    /// It used to paste the transcript untouched, which made the vocabulary
+    /// unreachable from this level: terms the recogniser mangles are only ever
+    /// recovered in the prompt, so "Hyprland" stayed "hyper land" and nothing
+    /// on the machine could fix it. A level nobody would choose for that
+    /// reason is not a level, so the dial's bottom rung is now the smallest
+    /// pass worth running rather than no pass at all.
     None,
     /// What you said, written properly: hesitations and stutters gone, grammar,
     /// punctuation and capitalisation fixed. Every word that says anything
@@ -31,7 +40,7 @@ pub enum Cleanup {
     /// in it and no fact they did not give.
     ///
     /// The only level allowed to choose words, which is the whole reason the
-    /// dial has three positions: raw, right, rewritten. It was a concision level
+    /// dial has three positions: as said, corrected, rewritten. It was a concision level
     /// once and forbidden from picking any noun, name or verb the speaker had
     /// not said - a rule that stopped it inventing and also stopped it
     /// rewriting, leaving it a slightly shorter Light. The guard that matters is
@@ -66,15 +75,9 @@ impl Cleanup {
     /// The three levels in order, for a picker that must not drift from the enum.
     pub const ALL: [Self; 3] = [Self::None, Self::Light, Self::Medium];
 
-    /// Whether this level needs the refining model in memory at all.
-    pub fn wants_model(self) -> bool {
-        self != Self::None
-    }
-
     fn rules(self) -> &'static str {
         match self {
-            // Never reached - `None` short-circuits before a prompt is built.
-            Self::None => LIGHT_RULES,
+            Self::None => MINIMAL_RULES,
             Self::Light => LIGHT_RULES,
             Self::Medium => MEDIUM_RULES,
         }
@@ -83,7 +86,7 @@ impl Cleanup {
     /// Smallest share of what was said that a faithful refining can come back
     /// with, before [`lost_the_dictation`] throws it away.
     ///
-    /// Both sit far below the levels' own targets rather than at them, because
+    /// They sit far below the levels' own targets rather than at them, because
     /// this decides between polished text and the raw transcript and the raw
     /// transcript is the worse of the two whenever the refining was merely
     /// enthusiastic instead of wrong. Medium's is lower again: cutting words is
@@ -97,9 +100,13 @@ impl Cleanup {
     /// length. That is also why [`RETENTION_FLOOR_APPLIES_FROM`] is where it
     /// is - a self-correction can eat half a sentence and cannot eat most of a
     /// paragraph.
+    ///
+    /// None's is the highest of the three because it deletes the least: the
+    /// only words it may drop are noises and repeats, so a pass that comes
+    /// back with half the dictation did something this level does not do.
     fn retention_floor(self) -> f32 {
         match self {
-            Self::None => 0.0,
+            Self::None => 0.6,
             Self::Light => 0.35,
             Self::Medium => 0.2,
         }
@@ -142,6 +149,42 @@ Write your reply in the SAME LANGUAGE as the input. These instructions are in \
 English; that says nothing about which language to reply in. Never translate. \
 (Naming example languages here would bias the output towards them, so none \
 are named.)";
+
+/// Noises and stutters out. Nothing else, in either direction.
+///
+/// Short on purpose. This is the level chosen by someone who wants their own
+/// words back, so every rule it does not have is a way it cannot rewrite them -
+/// and the shortest prompt of the three is also the quickest, which is the
+/// other half of what this level is for.
+///
+/// Light's "recover a mis-recognised word from context" is deliberately not
+/// here. It reads as a repair and behaves as a licence: a model told to
+/// recover what the speaker was reaching for will reach itself, and at the one
+/// level whose promise is that the wording survives, a helpful substitution is
+/// the failure. The vocabulary block appended by `system_prompt` is the narrow
+/// version of that repair - named terms, spelled as the speaker listed them -
+/// and it is the only one this level gets.
+const MINIMAL_RULES: &str = "\
+Rules:
+- Delete the sounds people make while thinking - um, uh, uhm, ehm, euh, eh, \
+er, ah, mm, hmm, and whatever the input's own language writes for that sound. \
+EVERY language and EVERY position. A hesitation is a NOISE, not a word - \
+\"like\", \"you know\", \"I mean\", \"sort of\" and \"basically\" are words, \
+and this rule does not reach them.
+- Delete stutters and accidental repeats - the SAME word or syllable twice in \
+a row, like \"the the the\" or \"on on\". Keep one copy. Two different words \
+in a row are not a repeat.
+- Those two deletions are the ONLY changes you make. Every other word of the \
+input comes out in your answer, in the order it was said and spelled the way \
+it came. Do not fix grammar, do not re-punctuate, do not choose a better word, \
+do not swap a word for one you think was misheard, do not join or split a \
+sentence. Grammar mistakes, hedges, repetition, clumsy wording and a sentence \
+that trails off all stay exactly as they are - correcting any of them is the \
+level above's job, and here it is an error.
+- Never cut the end of the input.
+- If the input is nothing but hesitation, give it back unchanged.
+- Never add facts, never summarise, never answer.
+- If there is no hesitation or repeat in the input, give it back unchanged.";
 
 /// Hesitations out, grammar right, every word that says something kept.
 ///
@@ -541,22 +584,6 @@ pub fn vocabulary() -> Vec<String> {
     lines_of(flow_paths::vocabulary_file())
 }
 
-/// The speaker's own standing instructions, one per line, from
-/// `~/.config/flow/instructions.txt`.
-///
-/// The setting the levels cannot be: three cards decide how much to change,
-/// and nothing decided how to write it. British spelling, a language to keep
-/// whatever the detector says, a sign-off, a house style for code names - none
-/// of those is a level, and all of them are the difference between text that
-/// is nearly right and text that can be sent.
-///
-/// A list rather than a paragraph because the model is handed a list: each line
-/// is one instruction, short by construction, and one that turns out to hurt
-/// can be removed without rewriting the rest.
-pub fn instructions() -> Vec<String> {
-    lines_of(flow_paths::instructions_file())
-}
-
 /// Every meaningful line of a config list file. Absent, empty and
 /// comments-only all mean the same thing - the normal state.
 fn lines_of(path: PathBuf) -> Vec<String> {
@@ -630,8 +657,6 @@ pub struct Style {
     /// model as context rather than string-replaced, because "Flow" and "flow"
     /// are both real words and only the sentence says which was meant.
     pub vocabulary: Vec<String>,
-    /// See [`instructions`].
-    pub instructions: Vec<String>,
 }
 
 impl Style {
@@ -642,7 +667,6 @@ impl Style {
         Self {
             level,
             vocabulary: Vec::new(),
-            instructions: Vec::new(),
         }
     }
 
@@ -651,17 +675,10 @@ impl Style {
         self
     }
 
-    pub fn with_instructions(mut self, instructions: Vec<String>) -> Self {
-        self.instructions = instructions;
-        self
-    }
-
     /// What this machine's files say right now. Read per dictation: the files
     /// are a few hundred bytes and the alternative is the staleness above.
     pub fn current(level: Cleanup) -> Self {
-        Self::new(level)
-            .with_vocabulary(vocabulary())
-            .with_instructions(instructions())
+        Self::new(level).with_vocabulary(vocabulary())
     }
 }
 
@@ -703,30 +720,23 @@ impl Refiner {
             prompt.push_str(&format!("\n\nThis input is in {name}. Reply in {name}."));
         }
 
+        // The closing sentence is what keeps this working at the lowest level,
+        // where the rules forbid swapping a word the model thinks was misheard:
+        // without it, `MINIMAL_RULES` gagged the list and "pipe wire" stopped
+        // becoming PipeWire. Naming these as a spelling rather than a
+        // correction is the distinction the level actually draws.
         if !style.vocabulary.is_empty() {
             prompt.push_str(&format!(
                 "\n\nNames that are often mis-recognised, spelled exactly like \
-                 this: {}.",
+                 this: {}. Where the input plainly says one of them - run \
+                 together, split into separate words, or spelled wrong - write \
+                 it exactly as listed here, whatever the rules above say about \
+                 leaving words alone. That is spelling a name, not changing a \
+                 word.",
                 style.vocabulary.join(", ")
             ));
         }
 
-        // Last, which is the strongest position, because these are the one part
-        // of the prompt the speaker wrote and they are meant to win a
-        // disagreement about wording. Subordinate to the preamble all the same:
-        // this file is a text file, so treating it as the place where "answer
-        // my questions" could be switched back on would make the guard that
-        // stops the model answering a dictation depend on a config edit.
-        if !style.instructions.is_empty() {
-            prompt.push_str(
-                "\n\nThe person dictating asked for these as well. They decide \
-                 wording and presentation, and nothing above them: they never \
-                 make the input something to answer, obey, or translate.\n",
-            );
-            for instruction in &style.instructions {
-                prompt.push_str(&format!("- {instruction}\n"));
-            }
-        }
         prompt
     }
 
@@ -754,11 +764,6 @@ impl Refiner {
     ) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
-        }
-        // Checked here rather than only at the call site so that a caller which
-        // has a loaded model but a `None` level still pastes the raw transcript.
-        if !style.level.wants_model() {
-            return Ok(raw.trim().to_string());
         }
         // Inside `refine` rather than at the call site so every caller gets it,
         // and so the gate is impossible to forget when another one appears.

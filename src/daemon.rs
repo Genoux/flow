@@ -758,11 +758,9 @@ fn handle(
     // a word added in the console has to reach the next dictation, not the next
     // restart. See `refine::Style`.
     //
-    // `cleanup` is read live, so lowering it takes effect on the next dictation.
-    // Raising it off `none` only works if the model was loaded at startup -
-    // loading one here would stall the paste for several seconds, which is
-    // exactly the trade this whole path refuses to make.
-    let (final_text, outcome) = match refiner.filter(|_| cleanup.wants_model()) {
+    // `cleanup` is read live and every level runs a pass, so a change to it
+    // takes effect on the next dictation with nothing to load or tear down.
+    let (final_text, outcome) = match refiner {
         Some(refiner) => match refiner.refine(&text, &refine::Style::current(cleanup)) {
             Ok(refined) if refined.trim().is_empty() => {
                 eprintln!("refining returned nothing, using raw transcript");

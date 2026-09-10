@@ -29,7 +29,12 @@ impl Console {
         let (dot, note) = update_state(&self.update);
 
         let action = if self.updating {
-            action_msg("Updating…", true, Message::InstallUpdate)
+            let label = if matches!(self.update, update::Status::Installed(_)) {
+                "Restarting…"
+            } else {
+                "Updating…"
+            };
+            action_msg(label, true, Message::InstallUpdate)
         } else if matches!(self.update, update::Status::Installed(_)) {
             action_msg("Restart Flow", true, Message::RestartApp)
         } else if let update::Status::Available(tag) = &self.update {

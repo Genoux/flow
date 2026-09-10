@@ -89,11 +89,6 @@ pub fn vocabulary_file() -> PathBuf {
     config_home().join("flow/vocabulary.txt")
 }
 
-/// `~/.config/flow/instructions.txt`
-pub fn instructions_file() -> PathBuf {
-    config_home().join("flow/instructions.txt")
-}
-
 /// `~/.local/share/flow`
 pub fn data_dir() -> PathBuf {
     data_home().join("flow")

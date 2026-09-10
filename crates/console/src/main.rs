@@ -32,7 +32,6 @@ mod daemon;
 mod dispatch;
 mod format;
 mod history;
-mod instructions;
 mod interaction;
 mod layout;
 mod motion;
@@ -329,9 +328,6 @@ enum Message {
     HoverCleanup(Option<settings::Cleanup>),
     AddTerm,
     RemoveTerm(usize),
-    TypingInstruction(String),
-    AddInstruction,
-    RemoveInstruction(usize),
     Daemon(daemon::Event),
     /// A frame went by; only delivered while something is moving.
     Tick(std::time::Instant),
@@ -415,6 +411,7 @@ struct Console {
     update: update::Status,
     /// True while the release tarball is downloading and installing.
     updating: bool,
+    restart_pending: bool,
     /// How many installed files are missing or the wrong length, asked of the
     /// daemon binary at launch and again whenever setup ends. `None` when
     /// Seconds into a full-window transition. Nothing drives it since the
@@ -425,9 +422,6 @@ struct Console {
     typing: String,
     term_query: String,
     term_error: Option<String>,
-    /// Standing instructions for the cleanup model, edited on the Style screen.
-    notes: Vec<String>,
-    note_typing: String,
     /// What is in the OpenRouter key box right now, which is not yet what is
     /// saved. Typed keys are persisted on Enter, not per keystroke: a
     /// half-pasted credential written to disk is a config file that fails
@@ -436,7 +430,6 @@ struct Console {
     /// Which build the `flow` symlink points at, read at launch. The link is
     /// the source of truth; this is only what the switch renders.
     channel: system::Channel,
-    note_error: Option<String>,
     /// True while waiting for the user to press a new chord.
     capturing: bool,
     /// False when /dev/input cannot be read, so the chord cannot be captured.
@@ -500,17 +493,15 @@ impl Console {
                 // second one.
                 update: update::Status::Checking,
                 updating: false,
+                restart_pending: false,
                 fading: None,
                 session: system::session(),
                 terms: vocabulary::load(),
                 typing: String::new(),
                 term_query: String::new(),
                 term_error: None,
-                notes: instructions::load(),
-                note_typing: String::new(),
                 typing_key: String::new(),
                 channel: system::channel(),
-                note_error: None,
                 capturing: false,
                 can_capture: false,
                 cancel_capture: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

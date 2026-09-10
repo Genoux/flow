@@ -178,32 +178,23 @@ impl Console {
 
     fn channel_rows(&self) -> Vec<Element<'_, Message>> {
         let on = self.channel == crate::system::Channel::Experimental;
-        let mut rows = vec![setting(
+        // Once opted in, the running release is the only thing left to say:
+        // what the channel is was already answered by the switch being on, and
+        // the terms of it are what the off state is for.
+        let note = if self.updating {
+            "Downloading and verifying the release…".to_string()
+        } else if matches!(self.update, update::Status::Installed(_)) {
+            "Restart Flow to apply.".to_string()
+        } else if on {
+            update::running().to_string()
+        } else {
+            "Opt in to MAI + Flash-Lite through OpenRouter. Audio leaves your device and usage charges apply.".to_string()
+        };
+        vec![setting(
             "Experimental build",
-            if self.updating {
-                "Downloading and verifying the release…"
-            } else if on {
-                "MAI + Flash-Lite. Audio and text go to OpenRouter; an API key and usage charges apply. Restart Flow to apply."
-            } else {
-                "Opt in to MAI + Flash-Lite through OpenRouter. Audio leaves your device and usage charges apply. You can return to local dictation."
-            },
+            note,
             toggle(on, self.travel("channel"), Message::SetChannel),
-        )];
-        let pending = matches!(self.update, update::Status::Installed(_));
-        rows.push(setting(
-            "Selected release",
-            if pending {
-                "Restart to use the selected build."
-            } else {
-                "Updates stay within your selected channel."
-            },
-            if pending {
-                action_msg("Restart Flow", true, Message::RestartApp)
-            } else {
-                iced::widget::Space::new().width(110).into()
-            },
-        ));
-        rows
+        )]
     }
 
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {

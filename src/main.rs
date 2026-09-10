@@ -40,7 +40,6 @@ FLAGS
 
 Configuration    ~/.config/flow/config.toml
 Word fixes       ~/.config/flow/vocabulary.txt
-Instructions     ~/.config/flow/instructions.txt
 Verbose output   FLOW_DEBUG=1
 ";
 
@@ -231,9 +230,6 @@ fn retry(engine: &mut stt::Stt, back: usize, cleanup: refine::Cleanup) -> Result
         println!("denoised  {denoised_text}");
     }
 
-    if !cleanup.wants_model() {
-        return Ok(());
-    }
     let refiner = refine::Refiner::new(config::Config::load().openrouter_key.unwrap_or_default());
     match refiner.refine(&raw_text, &refine::Style::current(cleanup)) {
         Ok(refined) => println!("refined   {refined}"),

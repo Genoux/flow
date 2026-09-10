@@ -11,10 +11,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// A config list file beside `config.toml`. Both this file and
-/// `instructions.txt` are the same shape - a comment block, then one entry per
-/// line - and the daemon reads them with the same function, so the window has
-/// no business growing a second reader that could disagree with it.
+/// A config list file beside `config.toml`, of the shape `vocabulary.txt` is:
+/// a comment block, then one entry per line. The daemon reads it with the
+/// same function, so the window has no business growing a second reader that
+/// could disagree with it.
 pub fn beside_config(name: &str) -> PathBuf {
     super::settings::config_path()
         .parent()
