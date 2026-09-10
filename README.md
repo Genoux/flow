@@ -2,8 +2,8 @@
 
 Hold a key, talk, let go. The text appears where your cursor already was.
 
-This branch builds Flow’s experimental release for Linux. Speech recognition runs
-locally; refining uses the selected OpenRouter model. There is no window to
+Flow is a dictation app for Linux. Speech recognition runs locally; refining uses
+the selected OpenRouter model. There is no window to
 focus and no button to press: the only interface is a key you hold and a small
 island that appears while you speak.
 
@@ -20,7 +20,7 @@ island that appears while you speak.
 ## Install
 
 ```bash
-git clone --branch experiment/local-cloud https://github.com/Genoux/flow
+git clone https://github.com/Genoux/flow
 cd flow && ./packaging/install.sh
 ```
 
@@ -50,15 +50,12 @@ a rejected key still transcribes, but a cleanup level above `none` will not run.
 Updating is the same script — `git pull && ./packaging/install.sh` — which
 restarts the daemon onto the new build if it was already running.
 
-There are two release channels. **Stable 0.3.1** transcribes locally with streaming
-Nemotron 3.5 ASR and sends only the transcript to Gemini 3.1 Flash-Lite for cleanup;
-nothing leaves your device at `cleanup = "none"`. **Experimental** currently uses
-MAI-Transcribe-2 and Flash-Lite through OpenRouter, sending audio and text to the
-service. Enable **Settings → Build → Experimental build** to switch. An OpenRouter
-key and usage charges apply to cloud features. Disable the toggle to return to
-stable. Flow downloads and verifies the selected release and restarts to apply it.
-Both builds, your models, settings and history stay on disk. Updates follow the
-selected channel. A release installer refuses to install under the wrong channel.
+There are two release channels. **Stable** is for everyday use. **Experimental**
+lets you try upcoming changes before they reach stable and may be less reliable.
+Enable **Settings → Build → Experimental build** to opt in, or disable it to return
+to stable. Flow downloads and verifies the selected release and restarts to apply
+it. Both builds, your models, settings and history stay on disk. Updates follow
+the selected channel. A release installer refuses to install under the wrong channel.
 
 Removing it is `./packaging/uninstall.sh`. That leaves your config and history
 alone, and prints how to delete those if you want them gone.
@@ -116,8 +113,7 @@ OpenRouter key is needed to use it. Expect rough text from it — the recogniser
 punctuates short utterances but not long ones, and leaves every "um" and
 repeated word where it was. Every level above it is one refining
 request per dictation, guarded the same way regardless of which channel built
-the binary. Stable continues using its own local Parakeet and Qwen pipeline
-for both steps.
+the binary.
 
 Refining is bounded. Past its budget the raw transcript is pasted instead of a
 late one, and every guard that made the local refiner safe still runs on the

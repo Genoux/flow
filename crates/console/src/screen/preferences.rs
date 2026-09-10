@@ -246,7 +246,7 @@ impl Console {
         } else if on {
             update::running().to_string()
         } else {
-            "Opt in to MAI + Flash-Lite through OpenRouter. Audio and text leave your device; an API key and usage charges apply.".to_string()
+            "Try upcoming changes before they reach stable. Experimental builds may be less reliable.".to_string()
         };
         vec![setting(
             "Experimental build",

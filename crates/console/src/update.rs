@@ -251,7 +251,7 @@ fn verify_binaries(dir: &std::path::Path, suffix: &str, tag: &str) -> Result<(),
             return Err(format!("{name} is missing or not executable."));
         }
         // Releases before 0.3.1 open a window for --version; retain channel rollback.
-        if name == "flow-console" && version < semver::Version::new(0, 3, 1) {
+        if name == "flow-console" && (version.major, version.minor, version.patch) < (0, 3, 1) {
             continue;
         }
         let output = crate::system::run_for(
@@ -355,6 +355,10 @@ mod tests {
         assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_err());
         write("flow-console", "echo flow-console 0.3.1");
         assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_ok());
+        write("flow", "echo flow 0.3.1-experimental.1");
+        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1-experimental.1").is_err());
+        write("flow-console", "echo flow-console 0.3.1-experimental.1");
+        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1-experimental.1").is_ok());
         write("flow", "echo flow 0.3.0");
         write(
             "flow-console",

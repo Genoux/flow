@@ -14,7 +14,12 @@ impl Console {
             self.version_row(),
             fact_row(
                 "Build",
-                "Experimental · on-device speech + Flash-Lite".to_string(),
+                if update::running().contains("-experimental.") {
+                    "Experimental"
+                } else {
+                    "Stable"
+                }
+                .to_string(),
             ),
             fact_row(
                 "Speech",

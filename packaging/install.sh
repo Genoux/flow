@@ -147,13 +147,8 @@ command -v update-desktop-database >/dev/null && update-desktop-database "$apps"
 command -v gtk-update-icon-cache >/dev/null &&
   gtk-update-icon-cache -qtf "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 
-# Seeds the config templates and fetches the local speech model (~2.6GB).
-# Refining is still an OpenRouter request; that key is typed into the
-# console's Settings screen rather than fetched here.
-if [ "$channel" = experimental ]; then
-  say "Seeding config"
-  "$bin_dir/flow-$channel" install
-elif "$models"; then
+# The console handles first-run model setup unless a headless install opts in.
+if "$models"; then
   "$bin_dir/flow-$channel" install
 fi
 
