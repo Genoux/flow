@@ -1,6 +1,10 @@
 target
 crates/console/target/
 
+# makepkg build artifacts (src/ is not listed: it is this crate's source tree)
+/pkg/
+*.pkg.tar.*
+
 .atl
 .claude
 .cursor

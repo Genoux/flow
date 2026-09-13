@@ -1,0 +1,154 @@
+{
+  "data": {
+    "id": "mistralai/ministral-8b-2512",
+    "name": "Mistral: Ministral 3 8B 2512",
+    "created": 1764681654,
+    "description": "A balanced model in the Ministral 3 family, Ministral 3 8B is a powerful, efficient tiny language model with vision capabilities.",
+    "architecture": {
+      "tokenizer": "Mistral",
+      "instruct_type": null,
+      "modality": "text+image->text",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "endpoints": [
+      {
+        "name": "Mistral | mistralai/ministral-8b-2512",
+        "model_id": "mistralai/ministral-8b-2512",
+        "model_name": "Mistral: Ministral 3 8B 2512",
+        "context_length": 262144,
+        "pricing": {
+          "prompt": "0.00000015",
+          "completion": "0.00000015",
+          "input_cache_read": "0.000000015",
+          "discount": 0
+        },
+        "provider_name": "Mistral",
+        "tag": "mistral/zdr",
+        "quantization": "unknown",
+        "max_completion_tokens": 209715,
+        "max_prompt_tokens": null,
+        "supported_parameters": [
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "stop",
+          "frequency_penalty",
+          "presence_penalty",
+          "seed",
+          "response_format",
+          "structured_outputs",
+          "tools",
+          "tool_choice"
+        ],
+        "supports_tool_choice": {
+          "none": true,
+          "auto": true,
+          "required": true,
+          "function": true
+        },
+        "status": 0,
+        "uptime_last_30m": 99.68291054739653,
+        "uptime_last_5m": null,
+        "uptime_last_1d": null,
+        "supports_implicit_caching": false,
+        "supports_voice_cloning": false,
+        "latency_last_30m": null,
+        "throughput_last_30m": null
+      },
+      {
+        "name": "Mistral | mistralai/ministral-8b-2512",
+        "model_id": "mistralai/ministral-8b-2512",
+        "model_name": "Mistral: Ministral 3 8B 2512",
+        "context_length": 262144,
+        "pricing": {
+          "prompt": "0.00000015",
+          "completion": "0.00000015",
+          "input_cache_read": "0.000000015",
+          "discount": 0
+        },
+        "provider_name": "Mistral",
+        "tag": "mistral",
+        "quantization": "unknown",
+        "max_completion_tokens": 209715,
+        "max_prompt_tokens": null,
+        "supported_parameters": [
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "stop",
+          "frequency_penalty",
+          "presence_penalty",
+          "seed",
+          "response_format",
+          "structured_outputs",
+          "tools",
+          "tool_choice"
+        ],
+        "supports_tool_choice": {
+          "none": true,
+          "auto": true,
+          "required": true,
+          "function": true
+        },
+        "status": 0,
+        "uptime_last_30m": 99.11630558722919,
+        "uptime_last_5m": null,
+        "uptime_last_1d": null,
+        "supports_implicit_caching": false,
+        "supports_voice_cloning": false,
+        "latency_last_30m": null,
+        "throughput_last_30m": null
+      },
+      {
+        "name": "Mistral | mistralai/ministral-8b-2512",
+        "model_id": "mistralai/ministral-8b-2512",
+        "model_name": "Mistral: Ministral 3 8B 2512",
+        "context_length": 262144,
+        "pricing": {
+          "prompt": "0.000000165",
+          "completion": "0.000000165",
+          "input_cache_read": "0.0000000165",
+          "discount": 0
+        },
+        "provider_name": "Mistral",
+        "tag": "mistral/eu",
+        "quantization": "unknown",
+        "max_completion_tokens": 209715,
+        "max_prompt_tokens": null,
+        "supported_parameters": [
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "stop",
+          "frequency_penalty",
+          "presence_penalty",
+          "seed",
+          "response_format",
+          "structured_outputs",
+          "tools",
+          "tool_choice"
+        ],
+        "supports_tool_choice": {
+          "none": true,
+          "auto": true,
+          "required": true,
+          "function": true
+        },
+        "status": 0,
+        "uptime_last_30m": null,
+        "uptime_last_5m": null,
+        "uptime_last_1d": null,
+        "supports_implicit_caching": false,
+        "supports_voice_cloning": false,
+        "latency_last_30m": null,
+        "throughput_last_30m": null
+      }
+    ]
+  }
+}

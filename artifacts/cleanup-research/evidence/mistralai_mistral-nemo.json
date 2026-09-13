@@ -1,0 +1,204 @@
+{
+  "data": {
+    "id": "mistralai/mistral-nemo",
+    "name": "Mistral: Mistral Nemo",
+    "created": 1721347200,
+    "description": "A 12B parameter model with a 128k token context length built by Mistral in collaboration with NVIDIA. The model is multilingual, supporting English, French, German, Spanish, Italian, Portuguese, Chinese, Japanese,...",
+    "architecture": {
+      "tokenizer": "Mistral",
+      "instruct_type": null,
+      "modality": "text->text",
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "endpoints": [
+      {
+        "name": "DeepInfra | mistralai/mistral-nemo",
+        "model_id": "mistralai/mistral-nemo",
+        "model_name": "Mistral: Mistral Nemo",
+        "context_length": 131072,
+        "pricing": {
+          "prompt": "0.000000019",
+          "completion": "0.00000003",
+          "discount": 0
+        },
+        "provider_name": "DeepInfra",
+        "tag": "deepinfra/fp8",
+        "quantization": "fp8",
+        "max_completion_tokens": 16384,
+        "max_prompt_tokens": null,
+        "supported_parameters": [
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "stop",
+          "frequency_penalty",
+          "presence_penalty",
+          "repetition_penalty",
+          "top_k",
+          "seed",
+          "min_p",
+          "response_format",
+          "logit_bias",
+          "structured_outputs",
+          "tools",
+          "tool_choice"
+        ],
+        "supports_tool_choice": {
+          "none": true,
+          "auto": true,
+          "required": false,
+          "function": false
+        },
+        "status": 0,
+        "uptime_last_30m": 99.94940006782545,
+        "uptime_last_5m": null,
+        "uptime_last_1d": null,
+        "supports_implicit_caching": false,
+        "supports_voice_cloning": false,
+        "latency_last_30m": null,
+        "throughput_last_30m": null
+      },
+      {
+        "name": "Parasail | mistralai/mistral-nemo",
+        "model_id": "mistralai/mistral-nemo",
+        "model_name": "Mistral: Mistral Nemo",
+        "context_length": 131072,
+        "pricing": {
+          "prompt": "0.00000003",
+          "completion": "0.00000003",
+          "discount": 0
+        },
+        "provider_name": "Parasail",
+        "tag": "parasail/fp8",
+        "quantization": "fp8",
+        "max_completion_tokens": 104857,
+        "max_prompt_tokens": null,
+        "supported_parameters": [
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "frequency_penalty",
+          "presence_penalty",
+          "repetition_penalty",
+          "seed",
+          "stop",
+          "top_k",
+          "logit_bias",
+          "response_format",
+          "structured_outputs",
+          "logprobs",
+          "top_logprobs"
+        ],
+        "supports_tool_choice": {
+          "none": true,
+          "auto": true,
+          "required": true,
+          "function": true
+        },
+        "status": -2,
+        "uptime_last_30m": 91.30299251870323,
+        "uptime_last_5m": null,
+        "uptime_last_1d": null,
+        "supports_implicit_caching": false,
+        "supports_voice_cloning": false,
+        "latency_last_30m": null,
+        "throughput_last_30m": null
+      },
+      {
+        "name": "Novita | mistralai/mistral-nemo",
+        "model_id": "mistralai/mistral-nemo",
+        "model_name": "Mistral: Mistral Nemo",
+        "context_length": 60288,
+        "pricing": {
+          "prompt": "0.00000004",
+          "completion": "0.00000017",
+          "discount": 0
+        },
+        "provider_name": "Novita",
+        "tag": "novita/fp8",
+        "quantization": "fp8",
+        "max_completion_tokens": 16000,
+        "max_prompt_tokens": null,
+        "supported_parameters": [
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "stop",
+          "frequency_penalty",
+          "presence_penalty",
+          "seed",
+          "top_k",
+          "repetition_penalty",
+          "response_format",
+          "structured_outputs",
+          "logprobs",
+          "top_logprobs"
+        ],
+        "supports_tool_choice": {
+          "none": true,
+          "auto": true,
+          "required": true,
+          "function": true
+        },
+        "status": -5,
+        "uptime_last_30m": 52.048450302814395,
+        "uptime_last_5m": null,
+        "uptime_last_1d": null,
+        "supports_implicit_caching": false,
+        "supports_voice_cloning": false,
+        "latency_last_30m": null,
+        "throughput_last_30m": null
+      },
+      {
+        "name": "Io Net | mistralai/mistral-nemo",
+        "model_id": "mistralai/mistral-nemo",
+        "model_name": "Mistral: Mistral Nemo",
+        "context_length": 128000,
+        "pricing": {
+          "prompt": "0.000000044",
+          "completion": "0.00000016",
+          "input_cache_read": "0.000000029",
+          "discount": 0
+        },
+        "provider_name": "Io Net",
+        "tag": "io-net/fp16",
+        "quantization": "fp16",
+        "max_completion_tokens": 102400,
+        "max_prompt_tokens": null,
+        "supported_parameters": [
+          "max_tokens",
+          "temperature",
+          "tools",
+          "tool_choice",
+          "seed",
+          "stop",
+          "min_p",
+          "top_k",
+          "top_p",
+          "presence_penalty",
+          "frequency_penalty",
+          "repetition_penalty"
+        ],
+        "supports_tool_choice": {
+          "none": false,
+          "auto": true,
+          "required": true,
+          "function": true
+        },
+        "status": 0,
+        "uptime_last_30m": 96.97786160132921,
+        "uptime_last_5m": null,
+        "uptime_last_1d": null,
+        "supports_implicit_caching": false,
+        "supports_voice_cloning": false,
+        "latency_last_30m": null,
+        "throughput_last_30m": null
+      }
+    ]
+  }
+}

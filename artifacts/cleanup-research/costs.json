@@ -1,0 +1,156 @@
+{
+  "as_of": "2026-09-10",
+  "assumptions": {
+    "input_tokens_per_request": 1200,
+    "visible_output_tokens_per_request": 80,
+    "cached_input_tokens": 0,
+    "reasoning_tokens": 0,
+    "fees_and_tax_excluded": true
+  },
+  "rows": [
+    {
+      "model": "Gemini 3.1 Flash-Lite",
+      "provider": "Google AI Studio",
+      "input_usd_per_million": 0.25,
+      "output_usd_per_million": 1.5,
+      "cost_per_1000_usd": 0.42,
+      "cost_per_3000_usd": 1.26,
+      "note": "standard; current Flow model"
+    },
+    {
+      "model": "Gemini 3.5 Flash-Lite",
+      "provider": "Google AI Studio",
+      "input_usd_per_million": 0.3,
+      "output_usd_per_million": 2.5,
+      "cost_per_1000_usd": 0.56,
+      "cost_per_3000_usd": 1.68,
+      "note": "standard; newer alternative"
+    },
+    {
+      "model": "Gemini 2.5 Flash-Lite",
+      "provider": "Google AI Studio",
+      "input_usd_per_million": 0.1,
+      "output_usd_per_million": 0.4,
+      "cost_per_1000_usd": 0.152,
+      "cost_per_3000_usd": 0.456,
+      "note": "standard; older budget candidate"
+    },
+    {
+      "model": "Mercury 2.5",
+      "provider": "Inception",
+      "input_usd_per_million": 0.04,
+      "output_usd_per_million": 0.15,
+      "cost_per_1000_usd": 0.06,
+      "cost_per_3000_usd": 0.18,
+      "note": "80% launch discount; expiry not established"
+    },
+    {
+      "model": "Mercury 2.5 (list price)",
+      "provider": "Inception",
+      "input_usd_per_million": 0.2,
+      "output_usd_per_million": 0.75,
+      "cost_per_1000_usd": 0.3,
+      "cost_per_3000_usd": 0.9,
+      "note": "price after promotional discount"
+    },
+    {
+      "model": "GPT-OSS 20B",
+      "provider": "Groq",
+      "input_usd_per_million": 0.075,
+      "output_usd_per_million": 0.3,
+      "cost_per_1000_usd": 0.114,
+      "cost_per_3000_usd": 0.342,
+      "note": "reasoning tokens extra"
+    },
+    {
+      "model": "GPT-OSS 120B",
+      "provider": "Groq",
+      "input_usd_per_million": 0.15,
+      "output_usd_per_million": 0.6,
+      "cost_per_1000_usd": 0.228,
+      "cost_per_3000_usd": 0.684,
+      "note": "reasoning tokens extra"
+    },
+    {
+      "model": "GPT-OSS 120B",
+      "provider": "Cerebras via OpenRouter",
+      "input_usd_per_million": 0.35,
+      "output_usd_per_million": 0.75,
+      "cost_per_1000_usd": 0.48,
+      "cost_per_3000_usd": 1.44,
+      "note": "provider-specific; reasoning tokens extra"
+    },
+    {
+      "model": "Llama 3.1 8B Instruct",
+      "provider": "Groq via OpenRouter",
+      "input_usd_per_million": 0.05,
+      "output_usd_per_million": 0.08,
+      "cost_per_1000_usd": 0.0664,
+      "cost_per_3000_usd": 0.1992,
+      "note": "OpenRouter-listed; direct Groq now enterprise"
+    },
+    {
+      "model": "Ministral 3 3B",
+      "provider": "Mistral",
+      "input_usd_per_million": 0.1,
+      "output_usd_per_million": 0.1,
+      "cost_per_1000_usd": 0.128,
+      "cost_per_3000_usd": 0.384,
+      "note": "small model quality untested"
+    },
+    {
+      "model": "Ministral 3 8B",
+      "provider": "Mistral",
+      "input_usd_per_million": 0.15,
+      "output_usd_per_million": 0.15,
+      "cost_per_1000_usd": 0.192,
+      "cost_per_3000_usd": 0.576,
+      "note": "French/English candidate"
+    },
+    {
+      "model": "GPT-5.4 nano",
+      "provider": "OpenAI",
+      "input_usd_per_million": 0.2,
+      "output_usd_per_million": 1.25,
+      "cost_per_1000_usd": 0.34,
+      "cost_per_3000_usd": 1.02,
+      "note": "reasoning configuration must be checked"
+    },
+    {
+      "model": "GPT-4.1 nano",
+      "provider": "OpenAI",
+      "input_usd_per_million": 0.1,
+      "output_usd_per_million": 0.4,
+      "cost_per_1000_usd": 0.152,
+      "cost_per_3000_usd": 0.456,
+      "note": "older non-reasoning candidate"
+    },
+    {
+      "model": "Qwen3.7 Flash",
+      "provider": "Alibaba via OpenRouter",
+      "input_usd_per_million": 0.03,
+      "output_usd_per_million": 0.13,
+      "cost_per_1000_usd": 0.0464,
+      "cost_per_3000_usd": 0.1392,
+      "note": "quality/latency untested"
+    },
+    {
+      "model": "Mistral NeMo 12B",
+      "provider": "DeepInfra via OpenRouter",
+      "input_usd_per_million": 0.019,
+      "output_usd_per_million": 0.03,
+      "cost_per_1000_usd": 0.0252,
+      "cost_per_3000_usd": 0.0756,
+      "note": "cheapest catalog model for this cost scenario"
+    },
+    {
+      "model": "GPT-OSS 20B",
+      "provider": "Darkbloom/AkashML via OpenRouter",
+      "input_usd_per_million": 0.02,
+      "output_usd_per_million": 0.1,
+      "cost_per_1000_usd": 0.032,
+      "cost_per_3000_usd": 0.096,
+      "note": "endpoint quote below aggregate catalog; untested"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "retrieved_at": "2026-09-10T19:48:04.112877+00:00",
+  "cpu": "AMD Ryzen 7 7700X",
+  "ram_gib_approx": 30,
+  "gpu": "NVIDIA RTX 3060 Ti",
+  "gpu_total_mib": 8192,
+  "gpu_free_mib_snapshot": 5811,
+  "local_qwen_gguf_bytes": 2497281120,
+  "successful_cleanup_seconds_since_1539": [
+    0.8891962569999999,
+    0.6834128020000001
+  ],
+  "earlier_gemini_synthetic_smoke_seconds": 0.908652393,
+  "historical_local_note": "AGENTS.md reports cached short output 73ms; 140-word dictations 2032-2769ms, not rebenchmarked"
+}
