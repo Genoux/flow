@@ -1,0 +1,16 @@
+pkgbase = flow
+	pkgdesc = Voice dictation daemon with a local speech model and a system tray console
+	pkgver = 0.3.2
+	pkgrel = 1
+	url = https://github.com/Genoux/flow
+	install = flow.install
+	arch = x86_64
+	license = MIT
+	depends = alsa-lib
+	depends = wayland
+	depends = hicolor-icon-theme
+	optdepends = vulkan-icd-loader: GPU-accelerated local speech model inference
+	source = https://github.com/Genoux/flow/releases/download/v0.3.2/flow-v0.3.2-x86_64-linux.tar.gz
+	sha256sums = e2f7271bd7199a09353784b78bbf83f6e65415cac0c1a26672a87d746f051a25
+
+pkgname = flow
