@@ -36,7 +36,7 @@ impl Console {
         // product's one-line description describe a setting.
         section_shell(
             "Flow",
-            "Speech on your machine, cleanup through Flash-Lite.",
+            "Speech on your machine, cleanup through OpenRouter.",
             rows,
         )
     }

@@ -21,21 +21,61 @@ use std::time::Duration;
 
 const API: &str = "https://openrouter.ai/api/v1";
 
-/// The editor used by both release channels, pinned to the provider it was
-/// measured against. `allow_fallbacks: false` is deliberate: a silent reroute to another
-/// host serving the same model id is a different machine with different
-/// arithmetic, and the prompt was tuned against this one.
-pub const REFINE_MODEL: &str = "google/gemini-3.1-flash-lite";
-const REFINE_PROVIDER: &str = "google-ai-studio";
+/// Everything about the editor that changes when the editor does. Swapping
+/// models is editing [`REFINE`] and rerunning `tests/refine.rs`; the console's
+/// About screen names the model as well, in `crates/console/src/screen/about.rs`.
+pub struct Model {
+    pub id: &'static str,
+    /// The only hosts allowed to serve it: an unlisted one is a different
+    /// machine with different arithmetic, and the prompt was measured on these.
+    /// OpenRouter enforces `only` even with fallbacks on - a request naming
+    /// only a host without the model is refused, not rerouted (2026-10-13) -
+    /// so `allow_fallbacks` stays at its default and fails over within the list.
+    /// A list because a newly released model can be rate-limited on any one
+    /// host (Haiku 5.5 was, on Anthropic and Azure, 2026-10-13); a host that
+    /// is not needed costs latency, since Vertex beside AI Studio doubled
+    /// Flash-Lite's p90 in the suite.
+    pub providers: &'static [&'static str],
+    pub reasoning: Reasoning,
+}
+
+pub enum Reasoning {
+    /// `enabled: false` rather than `effort: "none"`, which OpenRouter
+    /// documents as rejected for Claude. Some models refuse both: Gemini 3.5
+    /// Flash-Lite answers "Reasoning is mandatory".
+    Off,
+    /// Thinking is paid for out of `max_tokens` and out of the dictation's
+    /// latency budget in `refine.rs`, so a level that thinks long ships the raw
+    /// transcript instead.
+    Effort(&'static str),
+}
+
+impl Reasoning {
+    fn request(&self) -> serde_json::Value {
+        match self {
+            Reasoning::Off => serde_json::json!({"enabled": false}),
+            Reasoning::Effort(level) => serde_json::json!({"effort": level}),
+        }
+    }
+}
+
+/// The editor used by both release channels.
+pub const REFINE: Model = Model {
+    id: "google/gemini-3.1-flash-lite",
+    providers: &["google-ai-studio"],
+    reasoning: Reasoning::Effort("minimal"),
+};
 
 /// Ask the editor to clean one dictation.
 pub fn chat(key: &str, system: &str, user: &str, timeout: Duration) -> Result<String> {
     let body = serde_json::json!({
-        "model": REFINE_MODEL,
+        "model": REFINE.id,
+        // OpenRouter drops this for a model without one (Haiku 5.5 has none,
+        // checked 2026-10-13), so it stays for whichever model does.
         "temperature": 0,
         "max_tokens": 2048,
-        "reasoning": {"effort": "minimal"},
-        "provider": {"only": [REFINE_PROVIDER], "allow_fallbacks": false},
+        "reasoning": REFINE.reasoning.request(),
+        "provider": {"only": REFINE.providers},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
