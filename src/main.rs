@@ -35,7 +35,6 @@ FLAGS
     --plan           install: print what would be fetched, and fetch nothing
     --raw            Skip the refining model for this run
     --no-ptt         Do not watch the hotkey
-    --denoise | --no-denoise
     --record-debug   Keep this run's audio for `flow retry`
     --duck PERCENT   Volume of other apps while recording. 0 turns it off.
 
@@ -191,7 +190,7 @@ fn main() -> Result<()> {
 
 /// The first argument that is not a flag.
 ///
-/// So `flow --denoise 5` and `flow 5 --denoise` mean the same thing. Flags
+/// So `flow --raw 5` and `flow 5 --raw` mean the same thing. Flags
 /// are read separately by `Config::overridden_by`, which scans the whole list
 /// and does not care where they sit.
 fn command(args: &[String]) -> Option<&str> {
@@ -208,11 +207,9 @@ fn wants_usage(args: &[String]) -> bool {
 
 /// `flow retry [n]` - put a saved dictation back through the pipeline.
 ///
-/// `record_debug` writes an A/B pair per dictation, raw and denoised, and until
-/// now nothing read them back: answering "why did I get that text" meant
-/// finding the file by hand and running `flow <path>.wav`, which reports the
-/// raw transcript only. The interesting comparisons are exactly the ones that
-/// needed the most typing.
+/// `record_debug` saves each dictation, and until now nothing read them back:
+/// answering "why did I get that text" meant finding the file by hand and
+/// running `flow <path>.wav`, which reports the raw transcript only.
 ///
 /// `n` counts back from the newest, so `flow retry` is the last thing you said
 /// and `flow retry 3` is three before it.
@@ -234,21 +231,6 @@ fn retry(engine: &mut stt::Stt, back: usize, cleanup: refine::Cleanup) -> Result
     eprintln!("{}\n", raw_path.display());
     let raw_text = engine.transcribe(wav::read_16k_mono(raw_path)?)?;
     println!("raw       {raw_text}");
-
-    // The denoised half of the pair, when there is one. This is the whole
-    // reason both files are kept: the only way to tell whether the denoiser
-    // helped this dictation is to hear the model's answer to both.
-    let denoised_path = raw_path.with_file_name(
-        raw_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .replace("_raw.wav", "_denoised.wav"),
-    );
-    if denoised_path.is_file() {
-        let denoised_text = engine.transcribe(wav::read_16k_mono(&denoised_path)?)?;
-        println!("denoised  {denoised_text}");
-    }
 
     let refiner = refine::Refiner::new(config::Config::load().openrouter_key.unwrap_or_default());
     match refiner.refine(&raw_text, &refine::Style::current(cleanup)) {
@@ -415,8 +397,8 @@ mod tests {
     #[test]
     fn flags_do_not_hide_the_command() {
         assert_eq!(command(&args("daemon")), Some("daemon"));
-        assert_eq!(command(&args("--denoise 5")), Some("5"));
-        assert_eq!(command(&args("5 --denoise")), Some("5"));
+        assert_eq!(command(&args("--raw 5")), Some("5"));
+        assert_eq!(command(&args("5 --raw")), Some("5"));
         assert_eq!(command(&args("--raw daemon")), Some("daemon"));
         assert_eq!(command(&args("")), None);
         assert_eq!(command(&args("--raw")), None);

@@ -121,7 +121,6 @@ impl Cleanup {
 pub struct Settings {
     pub push_to_talk: bool,
     pub cleanup: Cleanup,
-    pub denoise: bool,
     /// Play the island's arrive and leave chimes.
     pub sound: bool,
     /// Show Flow's independent controller in the desktop's system tray.
@@ -160,7 +159,6 @@ impl Default for Settings {
         Self {
             push_to_talk: true,
             cleanup: Cleanup::default(),
-            denoise: false,
             sound: true,
             show_tray: true,
             duck: 50,
@@ -201,7 +199,6 @@ impl Settings {
                         Cleanup::None
                     }
                 }
-                "denoise" => settings.denoise = value == "true",
                 "sound" => settings.sound = value == "true",
                 "show_tray" => settings.show_tray = value == "true",
                 "duck" => {
@@ -238,7 +235,7 @@ impl Settings {
     /// A `None` value means the key must not appear at all: the daemon reads an
     /// absent `gpu` as "choose for me", and there is no number that says that.
     fn render(&self, existing: &str) -> String {
-        let wanted: [(&str, Option<String>); 11] = [
+        let wanted: [(&str, Option<String>); 10] = [
             ("push_to_talk", Some(self.push_to_talk.to_string())),
             ("cleanup", Some(self.cleanup.as_str().to_string())),
             // Deleted rather than left alone. The daemon still understands
@@ -246,7 +243,6 @@ impl Settings {
             // line sitting below `cleanup` would silently undo the level the
             // user just picked.
             ("refine", None),
-            ("denoise", Some(self.denoise.to_string())),
             ("sound", Some(self.sound.to_string())),
             ("show_tray", Some(self.show_tray.to_string())),
             ("duck", Some(self.duck.to_string())),
@@ -376,7 +372,6 @@ mod tests {
         let settings = Settings {
             push_to_talk: false,
             cleanup: Cleanup::None,
-            denoise: true,
             sound: false,
             show_tray: false,
             duck: 0,
@@ -409,6 +404,15 @@ mod tests {
         }
         .render("")
         .contains("show_tray = false"));
+    }
+
+    #[test]
+    fn a_config_still_naming_denoise_reads_and_keeps_the_line() {
+        let existing = "denoise = true\nduck = 20\n";
+        assert_eq!(Settings::parse(existing).duck, 20);
+        assert!(Settings::default()
+            .render(existing)
+            .contains("denoise = true"));
     }
 
     /// The daemon applies keys in file order, so a `refine` line left below the

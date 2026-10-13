@@ -23,10 +23,6 @@ pub struct Config {
     /// which is right on every machine tested so far; an index is the escape hatch
     /// for when it is not.
     pub gpu: Option<usize>,
-    /// Run RNNoise denoising between capture and STT. Off by default so the A/B
-    /// case is the current, known-good behaviour; on, it runs the utterance
-    /// through nnnoiseless to strip hiss and fan noise before Parakeet sees it.
-    pub denoise: bool,
     /// Play the island's arrive and leave chimes. On by default: the island is
     /// silent feedback, and a dictation started over a full-screen window is
     /// otherwise unacknowledged until the text lands.
@@ -34,10 +30,9 @@ pub struct Config {
     /// Publish Flow in the desktop's system tray. Hiding the icon is only a
     /// presentation choice: the daemon, hotkey and dictation keep running.
     pub show_tray: bool,
-    /// Save every dictation's audio as WAV files to `~/.local/share/flow/recordings/`,
-    /// one raw and (when denoise is on) one denoised. Off by default because
-    /// long sessions add up on disk fast; on, it is the only way to A/B the
-    /// denoiser on the same source audio.
+    /// Save every dictation's audio as a WAV file to `~/.local/share/flow/recordings/`,
+    /// which is what `flow retry` replays. Off by default because long sessions
+    /// add up on disk fast.
     pub record_debug: bool,
     /// Which microphone to record from, as a pactl source name. `None` follows
     /// the system default, which is what a fresh install does and what most
@@ -74,7 +69,6 @@ impl Default for Config {
             cleanup: super::refine::Cleanup::default(),
             chord: super::hotkey::Chord::default(),
             gpu: None,
-            denoise: false,
             sound: true,
             show_tray: true,
             record_debug: false,
@@ -198,7 +192,8 @@ impl Config {
             "openrouter_key" => {
                 config.openrouter_key = (!value.is_empty()).then(|| value.to_owned())
             }
-            "denoise" => config.denoise = boolean(at, key, value)?,
+            // Removed feature; accepted so an existing config naming it stays valid.
+            "denoise" => {}
             "sound" => config.sound = boolean(at, key, value)?,
             "show_tray" => config.show_tray = boolean(at, key, value)?,
             "record_debug" => config.record_debug = boolean(at, key, value)?,
@@ -237,8 +232,6 @@ impl Config {
         if let Some(level) = flag_str(args, "--cleanup").and_then(super::refine::Cleanup::parse) {
             self.cleanup = level;
         }
-        self.denoise |= present("--denoise");
-        self.denoise &= !present("--no-denoise");
         self.record_debug |= present("--record-debug");
         // Clamped rather than assigned: the file rejects anything over 100, and
         // without the same limit here `--duck 200` reached `Ducker`, which clamps

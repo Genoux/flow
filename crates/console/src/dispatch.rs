@@ -178,11 +178,6 @@ impl Console {
                 }
                 return self.persist();
             }
-            Message::Denoise(on) => {
-                self.animate_toggle("denoise", self.settings.denoise, on);
-                self.settings.denoise = on;
-                return self.persist();
-            }
             Message::HistoryLoaded(entries, days) => {
                 self.history_pending = false;
                 self.entries = entries;

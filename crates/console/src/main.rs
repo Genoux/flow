@@ -304,7 +304,6 @@ enum Message {
     /// A cleanup card on the Style screen. Picking a level is the whole of that
     /// screen, so it saves immediately rather than behind a confirm.
     SetCleanup(settings::Cleanup),
-    Denoise(bool),
     /// Which microphone to record from. `None` is Auto-detect - follow whatever
     /// the system default is, now and whenever it changes. Picking one also
     /// closes the dialog it was picked in: the choice takes effect on the next
@@ -622,7 +621,6 @@ impl Console {
     fn travel(&self, key: &str) -> f32 {
         let on = match key {
             "push_to_talk" => self.settings.push_to_talk,
-            "denoise" => self.settings.denoise,
             "sound" => self.settings.sound,
             "show_tray" => self.settings.show_tray,
             "autostart" => self.autostart.unwrap_or(false),

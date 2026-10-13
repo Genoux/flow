@@ -25,8 +25,7 @@ pub fn read_16k_mono(path: impl AsRef<Path>) -> Result<Vec<f32>> {
     })
 }
 
-/// Dump normalised f32 samples as 16 kHz mono i16 WAV. Used for the
-/// `record_debug` A/B pair (raw + denoised for the same utterance).
+/// Dump normalised f32 samples as 16 kHz mono i16 WAV. Used for `record_debug`.
 pub fn write_16k_mono(path: impl AsRef<Path>, samples: &[f32]) -> Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {

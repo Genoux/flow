@@ -102,8 +102,7 @@ One model on-device, one through OpenRouter:
   CPU. `flow install` fetches it once (~2.6GB, ONNX, licensed OpenMDW-1.1 — the
   weights and origin notices travel with any redistribution). Audio is transcribed
   during recording in 560 ms chunks, preserving context across chunks. Release
-  finishes the remaining audio. Optional denoising uses whole-recording inference;
-  it is off by default.
+  finishes the remaining audio.
 - **Gemini 3.1 Flash-Lite** punctuates and removes filler, above `cleanup =
   "none"`. It is told the language it just heard, and a result that comes back
   in a different language is discarded, so speaking French gets French back.
@@ -127,7 +126,7 @@ Start with [TROUBLESHOOTING.md](TROUBLESHOOTING.md). The short version:
 
 ```bash
 flow logs                      # the last 50 lines
-flow retry                     # what it heard, denoised, and refined
+flow retry                     # what it heard, and refined
 FLOW_DEBUG=1 flow daemon       # the chatty version, run in a terminal
 ```
 
