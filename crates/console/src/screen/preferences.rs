@@ -274,15 +274,6 @@ impl Console {
                     &format!("{}%", self.settings.duck),
                 ),
             ),
-            setting(
-                "Noise suppression",
-                "Can muffle speech on some mics.",
-                toggle(
-                    self.settings.denoise,
-                    self.travel("denoise"),
-                    Message::Denoise,
-                ),
-            ),
         ]
     }
 

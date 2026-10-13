@@ -6,8 +6,8 @@
 //! from `tests/`, which it was not while it lived in the binary.
 
 use crate::{
-    audio, chime, config, denoise, duck, history, hotkey, inject, ipc, notify, overlay, refine,
-    status, stt, wav,
+    audio, chime, config, duck, history, hotkey, inject, ipc, notify, overlay, refine, status, stt,
+    wav,
 };
 use anyhow::Result;
 use std::time::{Duration, Instant};
@@ -215,9 +215,6 @@ pub fn run(
         scope.spawn(move || {
             while listening.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(STREAM_POLL);
-                if live.lock().expect("config").denoise {
-                    continue;
-                }
                 let mut engine = engine.lock().expect("stt engine");
                 let mut progress = stream_progress.lock().expect("stream progress");
                 if progress.failed {
@@ -656,10 +653,9 @@ fn handle(
 ) -> Result<()> {
     // One read for the whole of this dictation, so a file change part-way
     // through cannot refine the text but paste it with the other chord.
-    let (denoise_audio, record_debug, cleanup, refiner) = {
+    let (record_debug, cleanup, refiner) = {
         let config = live.lock().expect("config");
         (
-            config.denoise,
             config.record_debug,
             config.cleanup,
             refine::Refiner::new(config.openrouter_key.clone().unwrap_or_default()),
@@ -688,39 +684,29 @@ fn handle(
         return Ok(());
     }
 
-    let mut streamed = stream_progress.processed > 0 && !stream_progress.failed && !denoise_audio;
+    let mut streamed = stream_progress.processed > 0 && !stream_progress.failed;
     let text = {
-        // A/B pair. Recording happens BEFORE denoise so the raw wav is exactly
-        // what the mic gave us and the denoised wav is exactly what the model
-        // saw. Both write on best-effort - a full disk must not lose the
-        // dictation. Naming uses a monotonic counter under a start-time root,
-        // so files sort by utterance and never collide across a single run.
-        let denoised = denoise_audio.then(|| denoise::denoise_16k_mono(&samples));
+        // Best-effort: a full disk must not lose the dictation. Naming uses a
+        // monotonic counter under a start-time root, so files sort by utterance
+        // and never collide across a single run.
         if record_debug {
             let dir = debug_recording_dir();
             let n = next_recording_index();
             if let Err(err) = wav::write_16k_mono(dir.join(format!("{n:04}_raw.wav")), &samples) {
                 eprintln!("record_debug: raw wav write failed: {err:#}");
             }
-            if let Some(denoised) = denoised.as_ref()
-                && let Err(err) =
-                    wav::write_16k_mono(dir.join(format!("{n:04}_denoised.wav")), denoised)
-            {
-                eprintln!("record_debug: denoised wav write failed: {err:#}");
-            }
         }
-        let audio = denoised.unwrap_or(samples);
         if streamed {
-            match engine.finish_stream(&audio[stream_progress.processed..]) {
+            match engine.finish_stream(&samples[stream_progress.processed..]) {
                 Ok(text) => text,
                 Err(err) => {
                     streamed = false;
                     eprintln!("stream finalisation failed, retrying full recording: {err}");
-                    engine.transcribe(audio)?
+                    engine.transcribe(samples)?
                 }
             }
         } else {
-            engine.transcribe(audio)?
+            engine.transcribe(samples)?
         }
     };
     let transcribed = started.elapsed();

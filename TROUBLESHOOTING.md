@@ -4,7 +4,7 @@ Three commands answer most of it:
 
 ```bash
 flow logs          # what the daemon has been saying
-flow retry         # re-run your last dictation: raw, denoised, cleaned
+flow retry         # re-run your last dictation: raw, cleaned
 flow logs -f       # watch it live while you reproduce the problem
 ```
 

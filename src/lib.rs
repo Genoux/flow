@@ -3,7 +3,6 @@ pub mod chime;
 pub mod config;
 pub mod daemon;
 pub mod debug;
-pub mod denoise;
 pub mod duck;
 pub mod history;
 pub mod hotkey;

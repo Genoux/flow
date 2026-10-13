@@ -25,8 +25,7 @@ fn missing_file_is_the_normal_state() {
 #[test]
 fn file_overrides_every_key() {
     let parsed =
-        Config::parse("push_to_talk = false\nduck = 20\ncleanup = light\ndenoise = true\n")
-            .expect("parse");
+        Config::parse("push_to_talk = false\nduck = 20\ncleanup = light\n").expect("parse");
     assert_eq!(
         parsed,
         Config {
@@ -35,7 +34,6 @@ fn file_overrides_every_key() {
             cleanup: Cleanup::Light,
             chord: Default::default(),
             gpu: None,
-            denoise: true,
             sound: true,
             show_tray: true,
             record_debug: false,
@@ -43,6 +41,13 @@ fn file_overrides_every_key() {
             openrouter_key: None,
         }
     );
+}
+
+#[test]
+fn removed_denoise_key_still_parses() {
+    for value in ["true", "false"] {
+        Config::parse(&format!("denoise = {value}\n")).expect("denoise is still accepted");
+    }
 }
 
 #[test]
@@ -216,21 +221,19 @@ fn flags_win_over_the_file() {
         cleanup: Cleanup::Light,
         chord: Default::default(),
         gpu: None,
-        denoise: false,
         sound: true,
         show_tray: true,
         record_debug: false,
         input_device: None,
         openrouter_key: None,
     };
-    let flags = ["daemon", "--raw", "--duck", "20", "--denoise"]
+    let flags = ["daemon", "--raw", "--duck", "20"]
         .map(String::from)
         .to_vec();
 
     let effective = from_file.clone().overridden_by(&flags);
     assert_eq!(effective.push_to_talk, from_file.push_to_talk);
     assert_eq!(effective.cleanup, Cleanup::None);
-    assert!(effective.denoise);
     assert_eq!(effective.duck, 20);
 
     // `--no-ptt` skips the key watcher; it is not the tap-to-talk switch.
@@ -256,7 +259,6 @@ fn absent_flags_leave_the_file_alone() {
         cleanup: Cleanup::None,
         chord: Default::default(),
         gpu: None,
-        denoise: false,
         sound: true,
         show_tray: true,
         record_debug: false,
