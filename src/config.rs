@@ -176,7 +176,7 @@ impl Config {
             "push_to_talk" => config.push_to_talk = boolean(at, key, value)?,
             "cleanup" => {
                 config.cleanup = super::refine::Cleanup::parse(value).ok_or_else(|| {
-                    anyhow::anyhow!("{at}: cleanup wants none, light, or medium, found {value:?}")
+                    anyhow::anyhow!("{at}: cleanup wants none or light, found {value:?}")
                 })?
             }
             // Accepted so an existing config keeps working across the rename.

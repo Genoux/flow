@@ -11,9 +11,7 @@ impl Console {
                 settings::Cleanup::ALL
                     .into_iter()
                     .fold(row![], |cards, level| {
-                        cards.push(
-                            self.cleanup_card(level, if width < 740.0 { 290.0 } else { 260.0 }),
-                        )
+                        cards.push(self.cleanup_card(level, 240.0))
                     })
                     .spacing(GAP)
                     .into()
@@ -29,7 +27,7 @@ impl Console {
 
             let banner = super::editorial::banner(
                 "A little polish.\nStill your voice.",
-                "Keep every word, tidy up the stumbles,\nor make your thoughts more concise.",
+                "Keep every word as spoken, or tidy up the stumbles.",
                 wide,
                 false,
                 super::editorial::Photo::Woodland,
@@ -41,9 +39,13 @@ impl Console {
                 Space::new().height(24),
                 cards,
                 Space::new().height(20),
-                text("The same thought, with a different amount of polish.")
-                    .size(MICRO)
-                    .color(MUTED),
+                text(if self.settings.openrouter_key.is_none() {
+                    "No key saved. Dictation works without cleanup until you add one in Settings."
+                } else {
+                    "The same thought, with a different amount of polish."
+                })
+                .size(MICRO)
+                .color(MUTED),
             ])
         })
         .into()

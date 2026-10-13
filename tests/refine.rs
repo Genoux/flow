@@ -34,9 +34,8 @@ struct Case {
 const ADVERTISED_INPUT: &str =
     "Um, I think the thing what we built don't work good on mobile, you know.";
 
-/// The spoken grammar fault in [`ADVERTISED_INPUT`]. Light and Medium must fix
-/// it - correctness is Light's job, and Medium is Light plus concision - and
-/// the level below them must not.
+/// The spoken grammar fault in [`ADVERTISED_INPUT`]. Light must fix it, and the
+/// level below it must not.
 const SPOKEN_FAULT: &str = "don't work good";
 
 // `Cleanup::None` is not in `CASES`: it never reaches this model at all (see
@@ -53,7 +52,7 @@ const CASES: &[Case] = &[
         // "maybe" and "you know" are required, not forbidden, and that is the
         // whole difference between this level and the one above it. Light takes
         // the sounds that are never words; deciding that a "you know" was
-        // carrying nothing is a judgement, and judgements live in Medium.
+        // carrying nothing is a judgement, and Light does not make it.
         //
         // The input's "like" is not required with them, and that is a measured
         // limit rather than an oversight. It sits in "maybe like ship", and the
@@ -123,16 +122,6 @@ const CASES: &[Case] = &[
         required: &["difference", "cleanup"],
         max_words: 14,
     },
-    // Same shape at the level allowed to reword, where "answer it" and "rewrite
-    // it" are easiest to confuse. A request keeps being a request.
-    Case {
-        name: "medium does not answer a dictated request either",
-        level: Cleanup::Medium,
-        raw: "Can you show me how the flow will work, and walk me through the steps?",
-        forbidden: &["sure", "step 1", "first,", "certainly", "of course"],
-        required: &["flow", "step"],
-        max_words: 16,
-    },
     // Guards against the opposite failure: a refining pass that rewrites healthy
     // sentences puts words in the speaker's mouth.
     Case {
@@ -176,9 +165,6 @@ const CASES: &[Case] = &[
         required: &["transcript", "clean"],
         max_words: 90,
     },
-    // The pair that makes the levels mean something: Light must come out
-    // correct, Medium must come out short. If either fails the dial is
-    // decorative.
     Case {
         name: "light removes the filler and fixes the grammar",
         level: Cleanup::Light,
@@ -186,42 +172,6 @@ const CASES: &[Case] = &[
         forbidden: &["um ", "me and him was"],
         required: &["ship"],
         max_words: 12,
-    },
-    // Light is required to keep every word that is doing work; Medium is the
-    // level allowed to decide some of them are not. A fatty sentence is the
-    // only way to see that, so this case brings its own.
-    // Medium is the level that gets to decide a "you know" was carrying
-    // nothing, and the level that gets to choose different words for the same
-    // point. Both are forbidden below it.
-    Case {
-        name: "medium cuts what light has to keep",
-        level: Cleanup::Medium,
-        raw: "so basically um I think we should probably just like ship it on Friday you know",
-        forbidden: &["um ", "basically", "you know", "probably"],
-        required: &["ship", "Friday"],
-        max_words: 9,
-    },
-    // The failure the top level is most likely to have, given it is the only
-    // one told to rewrite: filling the gaps with plausible detail nobody said.
-    Case {
-        name: "medium rewrites without inventing",
-        level: Cleanup::Medium,
-        raw: "tell the team the thing is delayed",
-        forbidden: &[
-            "week",
-            "monday",
-            "tomorrow",
-            "apolog",
-            "unfortunately",
-            "due to",
-        ],
-        // "thing" is the assertion that matters, and it was missing: raising
-        // Medium to a concision level bought it a licence to name what the
-        // speaker left vague, and it answered "The delivery is delayed" for a
-        // sentence about a thing. Cutting words is Medium's job; choosing a
-        // noun the speaker did not say is inventing, at any level.
-        required: &["delay", "thing"],
-        max_words: 16,
     },
 ];
 
@@ -406,68 +356,26 @@ fn refining_behaves() {
         Ok(text) => failures.push(format!("a 1ms budget still produced {text:?}")),
     }
 
-    // Every case above grades one level against a constant, which cannot catch
-    // two levels collapsing into each other: if Light ever started fixing
-    // grammar, three cards would become two with three names and the whole list
-    // would stay green. Only one input through both levels can catch it, and
-    // this is now the sharpest seam in the ladder - Light forbids exactly what
-    // Medium permits: choosing words, and choosing which of the speaker's own
-    // words were carrying nothing.
-    //
-    // A four-level dial shipped for a release cycle with its top two levels
-    // indistinguishable. That is the failure this assertion exists to prevent.
+    // The card shown for Polish is this input's real output, so the promise the
+    // user is shown is graded here: grammar fixed, the hesitation gone, and the
+    // speaker's own "you know" still there.
     let light = refiner
         .refine(ADVERTISED_INPUT, &style(Cleanup::Light))
         .expect("light");
-    let medium = refiner
-        .refine(ADVERTISED_INPUT, &style(Cleanup::Medium))
-        .expect("medium");
     eprintln!("\n[levels] light  {light:?}");
-    eprintln!("[levels] medium {medium:?}");
-    if light == medium {
+    if light.to_lowercase().contains(SPOKEN_FAULT) {
         failures.push(format!(
-            "light and medium produced the same text, so the dial has two names \
-             for one level: {light:?}"
+            "light returned {light:?}, leaving the spoken {SPOKEN_FAULT:?} alone"
         ));
     }
-    // Length is the proof of the split, because correctness is no longer one:
-    // both levels fix grammar now, and Medium earns its place by coming out
-    // shorter. Capitalisation was the discriminator once and grammar after it;
-    // each stopped working the moment the level below rose to meet it.
-    for (name, text) in [("light", &light), ("medium", &medium)] {
-        if text.to_lowercase().contains(SPOKEN_FAULT) {
-            failures.push(format!(
-                "{name} returned {text:?}, leaving the spoken {SPOKEN_FAULT:?} \
-                 alone - every level from Light up fixes grammar"
-            ));
-        }
-    }
-    let words = |text: &str| text.split_whitespace().count();
-    if words(&medium) >= words(&light) {
-        failures.push(format!(
-            "medium returned {} words against light's {} - medium is the \
-             concision level, so it has to come out shorter or the dial has two \
-             names for one level:\n  light  {light:?}\n  medium {medium:?}",
-            words(&medium),
-            words(&light)
-        ));
-    }
-    // Every level deletes a hesitation sound. Only Medium deletes a discourse
-    // filler, so the advertised input's trailing "you know" is the seam: Light
-    // owes it back, Medium owes it gone.
-    for (name, text) in [("light", &light), ("medium", &medium)] {
-        if text.to_lowercase().contains("um") {
-            failures.push(format!("{name} kept the hesitation \"um\" in {text:?}"));
-        }
+    if light.to_lowercase().contains("um") {
+        failures.push(format!("light kept the hesitation \"um\" in {light:?}"));
     }
     if !light.to_lowercase().contains("you know") {
         failures.push(format!(
             "light dropped \"you know\" from {light:?} - deleting a word that \
-             is a filler only sometimes is Medium's judgement to make"
+             is a filler only sometimes is not this level's call"
         ));
-    }
-    if medium.to_lowercase().contains("you know") {
-        failures.push(format!("medium kept the filler \"you know\" in {medium:?}"));
     }
 
     // On another thread, because the daemon refines on one it spawns while the
@@ -488,8 +396,8 @@ fn refining_behaves() {
 /// reusing whatever the cache happened to hold instead made them differ, and
 /// nothing about the output said why.
 ///
-/// Both predecessors here vary everything the prompt can vary below that
-/// boundary: a different level, and a different detected language.
+/// Both predecessors here vary what the prompt can vary below that boundary: the
+/// detected language.
 fn a_dictation_does_not_depend_on_the_one_before_it(
     refiner: &flow::refine::Refiner,
     failures: &mut Vec<String>,
@@ -502,7 +410,7 @@ fn a_dictation_does_not_depend_on_the_one_before_it(
         "send the invoice to Mary",
         "euh je pense qu'on peut livrer la fonctionnalité vendredi",
     ] {
-        let _ = refiner.refine_within(before, long, &style(Cleanup::Medium));
+        let _ = refiner.refine_within(before, long, &style(Cleanup::Light));
         match refiner.refine_within(target, long, &style(Cleanup::Light)) {
             Ok(text) => answers.push(text),
             Err(err) => failures.push(format!("prefill reuse: refining failed: {err}")),

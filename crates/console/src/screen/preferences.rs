@@ -164,7 +164,7 @@ impl Console {
             tone,
             row![
                 crate::interaction::field(|amount| {
-                    iced::widget::text_input("sk-or-v1-…", &self.typing_key)
+                    iced::widget::text_input("Paste your OpenRouter key", &self.typing_key)
                         .secure(true)
                         .on_input(Message::TypingKey)
                         .on_submit(Message::SaveKey)
@@ -177,9 +177,6 @@ impl Console {
                         .into()
                 }),
                 Space::new().width(8),
-                // One slot, because a third control crowds the row: with
-                // nothing typed there is nothing to save, and the only thing
-                // left to do to a stored key is take it away.
                 if openrouter::can_save(&self.typing_key) {
                     crate::control::action_padded(
                         "Save",
@@ -192,7 +189,11 @@ impl Console {
                     crate::control::action_padded(
                         "Remove",
                         false,
-                        1.0,
+                        if self.settings.openrouter_key.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        },
                         [10.0, 14.0],
                         self.settings
                             .openrouter_key
@@ -229,10 +230,7 @@ impl Console {
             Some(openrouter::Outcome::NoKey) | None => {
                 match self.settings.openrouter_key.as_deref() {
                     Some(key) => (openrouter::fingerprint(key), FAINT),
-                    // Not "required" - dictation is on-device and works without
-                    // one - and not naming what it unlocks either. Cleanup is what
-                    // uses it today, which is not a reason to write that down here.
-                    None => ("Needed for cloud features.".to_string(), FAINT),
+                    None => ("No key saved".to_string(), MUTED),
                 }
             }
         }

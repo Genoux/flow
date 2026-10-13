@@ -483,8 +483,8 @@ struct Console {
 
     now: std::time::Instant,
     nav_motion: [motion::Transition; 6],
-    cleanup_selection: [motion::Transition; 3],
-    cleanup_hover: [motion::Transition; 3],
+    cleanup_selection: [motion::Transition; 2],
+    cleanup_hover: [motion::Transition; 2],
     entry_motion: std::collections::HashMap<usize, motion::Transition>,
     /// When each toggle last flipped, so its knob can travel rather than jump.
     toggle_motion: std::collections::HashMap<&'static str, motion::Transition>,

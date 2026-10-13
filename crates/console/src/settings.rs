@@ -36,21 +36,19 @@ pub enum Cleanup {
     None,
     #[default]
     Light,
-    Medium,
 }
 
 impl Cleanup {
-    pub const ALL: [Self; 3] = [Self::None, Self::Light, Self::Medium];
+    pub const ALL: [Self; 2] = [Self::None, Self::Light];
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "none" => Some(Self::None),
             "light" => Some(Self::Light),
-            "medium" => Some(Self::Medium),
-            // See `flow::refine::Cleanup::parse`: an existing `cleanup = hard`
-            // file must still round-trip through the window as Medium rather
-            // than reset the setting on open.
-            "hard" => Some(Self::Medium),
+            // See `flow::refine::Cleanup::parse`: an existing `medium` or
+            // `hard` file must still round-trip through the window as Light
+            // rather than reset the setting on open.
+            "medium" | "hard" => Some(Self::Light),
             _ => None,
         }
     }
@@ -59,7 +57,6 @@ impl Cleanup {
         match self {
             Self::None => "none",
             Self::Light => "light",
-            Self::Medium => "medium",
         }
     }
 
@@ -74,36 +71,31 @@ impl Cleanup {
                 "Off",
                 "Pastes exactly what you said - no editor, no network.",
             ),
-            // "nothing else" is the half that makes this the default. Fillers
-            // out and grammar right is what every level above None does; not
-            // touching the rest is what tells this level from that one.
-            Self::Light => ("Light", "Removes stumbles and fixes grammar, nothing else."),
-            Self::Medium => ("Medium", "Rewrites it to read well, in fewer words."),
+            Self::Light => (
+                "Polish",
+                "Fixes grammar and punctuation, and removes stumbles. Keeps your wording.",
+            ),
         }
     }
 
     /// The same sentence at each level, so the cards show the difference rather
     /// than describing it. Showing beats describing here: the levels are
-    /// legible at a glance only because the reader can compare three lines.
+    /// legible at a glance only because the reader can compare two lines.
     ///
     /// `None` is exactly `ADVERTISED_INPUT` in tests/refine.rs, unedited - it
     /// never reaches the cloud editor, so its card can only show what the
-    /// recogniser produced. Light and Medium are measured against that same
+    /// recogniser produced. Light is measured against that same
     /// input, not written: `tests/refine.rs` feeds it to the real model and
     /// checks the split these lines claim.
     ///
-    /// Chosen because it is the shortest sentence found that shows both steps:
+    /// Chosen because it is the shortest sentence found that shows the step:
     /// "what we built don't work good" becomes "we built doesn't work well"
-    /// between None and Light, which is the grammar fix Light is sold on, and
-    /// "I think" and "you know" both go between Light and Medium, which is the
-    /// rewrite Medium is sold on. A hedge is what Medium cuts most readily - it
-    /// will not cut a real subject, so an example built on "me and him were
-    /// thinking" showed almost no difference at the top of the dial.
+    /// between None and Light, which is the grammar fix Light is sold on.
     ///
-    /// The middle line keeps "you know" on purpose, and it is the clearest
-    /// thing on this screen: Light no longer decides that one of the speaker's
+    /// The Light line keeps "you know" on purpose, and it is the clearest
+    /// thing on this screen: Light does not decide that one of the speaker's
     /// own words was worthless. That decision cost a dictation its closing
-    /// "what do you think", and it now belongs to the level below.
+    /// "what do you think".
     ///
     /// Measured on both of this machine's GPUs, which do not always agree - see
     /// `FLOW_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
@@ -119,7 +111,6 @@ impl Cleanup {
                 "Um, I think the thing what we built don't work good on mobile, you know."
             }
             Self::Light => "I think the thing we built doesn't work well on mobile, you know.",
-            Self::Medium => "The thing we built doesn't work well on mobile.",
         }
     }
 }
@@ -384,7 +375,7 @@ mod tests {
     fn a_saved_file_reads_back_the_same() {
         let settings = Settings {
             push_to_talk: false,
-            cleanup: Cleanup::Medium,
+            cleanup: Cleanup::None,
             denoise: true,
             sound: false,
             show_tray: false,
