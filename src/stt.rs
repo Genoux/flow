@@ -50,10 +50,17 @@ impl Stt {
             padded[..remainder.len()].copy_from_slice(remainder);
             self.stream_chunk(&padded)?;
         }
+        // The decoder emits a word only once it has heard past it, so a release
+        // right after the last word dropped that word: 3 of 8 recordings trimmed
+        // to their speech lost it ("let's keep it" came back "let's keep"), and
+        // one silent chunk recovered all of them (examples measured on
+        // parakeet-rs 0.3.7, which has no flush API to do this instead).
+        self.stream_chunk(&vec![0.0; size])?;
         Ok(self.model.get_transcript().trim().to_string())
     }
 
-    pub fn transcribe(&mut self, audio: Vec<f32>) -> Result<String> {
+    pub fn transcribe(&mut self, mut audio: Vec<f32>) -> Result<String> {
+        audio.resize(audio.len() + self.chunk_samples(), 0.0);
         self.model.reset();
         Ok(self.model.transcribe_audio(&audio)?.trim().to_string())
     }
