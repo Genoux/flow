@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 use wl_clipboard_rs::copy::{self, MimeSource, MimeType as CopyMime, Options, Source};
 use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
 
@@ -71,12 +72,42 @@ const FOCUS_BUDGET: Duration = Duration::from_millis(200);
 /// Flow's, and the whole point of snapshotting it is to hand it back promptly.
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(500);
 
-/// Which injection currently owns the clipboard. A restore only fires if its
-/// own dictation is still the newest: without this, dictating again inside
-/// [`CLIPBOARD_RESTORE_DELAY`] would let the previous restore wake up and
-/// clobber the *new* transcript - the same race this delay exists to avoid,
-/// just with a different loser.
+/// Numbers each injection, so a restore can tell whether its dictation still
+/// owns what [`PUT_ASIDE`] holds.
 static CLIPBOARD_GENERATION: AtomicUsize = AtomicUsize::new(0);
+
+/// The user's own clipboard while a transcript stands in for it, with the
+/// injection that put it aside.
+///
+/// Dictations queue, so the next one can paste inside
+/// [`CLIPBOARD_RESTORE_DELAY`]. It takes this over rather than reading the
+/// clipboard, which at that moment holds the previous transcript - saving that
+/// as if it were the user's restored the transcript and lost their clipboard.
+/// Taking it also cancels the earlier restore, which would otherwise wake up
+/// and clobber the newer transcript before its paste was read.
+static PUT_ASIDE: Mutex<Option<(usize, Vec<MimeSource>)>> = Mutex::new(None);
+
+fn put_aside_slot() -> MutexGuard<'static, Option<(usize, Vec<MimeSource>)>> {
+    PUT_ASIDE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn put_aside(generation: usize, saved: Vec<MimeSource>) {
+    *put_aside_slot() = Some((generation, saved));
+}
+
+fn take_put_aside() -> Option<Vec<MimeSource>> {
+    put_aside_slot().take().map(|(_, saved)| saved)
+}
+
+/// Restore what `generation` put aside, unless a newer injection took it over.
+/// Holds the slot while restoring, so an injection starting at that moment
+/// waits and then reads the restored clipboard, not the transcript.
+fn give_back(generation: usize, restore: impl FnOnce(Vec<MimeSource>)) {
+    let mut slot = put_aside_slot();
+    if let Some((_, saved)) = slot.take_if(|(owner, _)| *owner == generation) {
+        restore(saved);
+    }
+}
 
 /// Two ways to deliver the paste chord to the focused window.
 ///
@@ -164,7 +195,7 @@ impl Injector {
     /// Flow waits for the board to clear and uses its own keyboard as usual.
     pub fn inject(&mut self, text: &str) -> Result<()> {
         let generation = CLIPBOARD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-        let saved = snapshot_clipboard();
+        let saved = take_put_aside().unwrap_or_else(snapshot_clipboard);
 
         copy::copy(
             Options::new(),
@@ -228,11 +259,12 @@ impl Injector {
         // back over it would turn a dictation the user can still rescue with
         // Ctrl+V into one that is simply gone.
         if !saved.is_empty() && modifiers_clear {
+            put_aside(generation, saved);
             std::thread::spawn(move || {
                 std::thread::sleep(CLIPBOARD_RESTORE_DELAY);
-                if CLIPBOARD_GENERATION.load(Ordering::SeqCst) == generation {
+                give_back(generation, |saved| {
                     let _ = copy::copy_multi(Options::new(), saved);
-                }
+                });
             });
         }
         Ok(())
@@ -508,8 +540,18 @@ pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
     chord
 }
 
-/// Snapshot the clipboard, or give up and return nothing after
-/// [`CLIPBOARD_BUDGET`].
+/// Snapshot the clipboard: every format it offers, keeping the ones that
+/// answer within [`CLIPBOARD_BUDGET`].
+///
+/// # Why each format on its own
+///
+/// An owner can advertise a format it will never serve. Zen offers
+/// COMPOUND_TEXT, TEXT and SAVE_TARGETS on every text copy and answers none of
+/// them - measured, each read hangs until killed while text/plain answers in
+/// 3ms. Read in sequence under one deadline, the first of them threw away the
+/// formats already read and the paste went ahead anyway, so the transcript
+/// replaced the user's clipboard for good: 36 times in two weeks. A format
+/// that never answers is no loss, since a Ctrl+V could not have read it either.
 ///
 /// # Why this is not just a function call
 ///
@@ -521,21 +563,56 @@ pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
 /// one unresponsive clipboard owner froze every subsequent dictation until the
 /// daemon was restarted. That was the "recording... and then nothing" bug.
 ///
-/// Losing the ability to restore a clipboard is a small cost. Losing every
-/// dictation until a restart is not, so the budget wins and the snapshot is
-/// abandoned.
-///
-/// The worker thread is deliberately left running if it never returns: it is
-/// blocked in a kernel read that cannot be interrupted from here, it holds no
-/// lock this path needs, and it exits on its own if the peer ever answers.
+/// Losing a format is a small cost. Losing every dictation until a restart is
+/// not, so the budget wins and whatever has not answered is abandoned.
 fn snapshot_clipboard() -> Vec<MimeSource> {
-    with_deadline(CLIPBOARD_BUDGET, read_clipboard).unwrap_or_else(|| {
+    let deadline = Instant::now() + CLIPBOARD_BUDGET;
+    let Some(Ok(offered)) = with_deadline(CLIPBOARD_BUDGET, || {
+        paste::get_mime_types(ClipboardType::Regular, Seat::Unspecified)
+    }) else {
+        return Vec::new();
+    };
+    read_formats(offered, deadline, read_format)
+}
+
+/// Read every format at once, each on its own thread, and collect what has
+/// answered by `deadline`. Returns as soon as the last one answers, so a
+/// healthy clipboard is not held to the budget.
+///
+/// A worker that never returns is left running, for the reason given on
+/// [`with_deadline`].
+fn read_formats(
+    offered: impl IntoIterator<Item = String>,
+    deadline: Instant,
+    read: fn(&str) -> Option<Vec<u8>>,
+) -> Vec<MimeSource> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let offered: Vec<String> = offered.into_iter().collect();
+    for mime in offered.iter().cloned() {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(read(&mime).map(|bytes| (mime, bytes)));
+        });
+    }
+    drop(tx);
+
+    let saved: Vec<MimeSource> = std::iter::from_fn(|| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
+    })
+    .flatten()
+    .map(|(mime, bytes)| MimeSource {
+        source: Source::Bytes(bytes.into_boxed_slice()),
+        mime_type: CopyMime::Specific(mime),
+    })
+    .collect();
+    if saved.is_empty() && !offered.is_empty() {
         eprintln!(
-            "clipboard did not answer within {CLIPBOARD_BUDGET:?}; \
+            "clipboard: none of {offered:?} answered within {CLIPBOARD_BUDGET:?}; \
              pasting without saving what was there"
         );
-        Vec::new()
-    })
+    }
+    saved
 }
 
 /// Run `work` on a throwaway thread and give up on it after `budget`.
@@ -561,42 +638,93 @@ fn with_deadline<T: Send + 'static>(
     rx.recv_timeout(budget).ok()
 }
 
-/// Read every mime the clipboard is currently offering, so the restore after
-/// paste can put back an image, files, or anything else - not just text. The
-/// old text-only read returned None for an image and silently lost it, leaving
-/// the transcript on the clipboard.
+/// One format of the clipboard, read to the end. Every format is kept, not
+/// just text, so the restore after a paste can put back an image or files too.
 ///
-/// Best effort - an empty clipboard or a read failure on any mime is normal.
-/// Always call this through [`snapshot_clipboard`], never directly: on its own
-/// it can block forever.
-fn read_clipboard() -> Vec<MimeSource> {
-    let Ok(mimes) = paste::get_mime_types(ClipboardType::Regular, Seat::Unspecified) else {
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(mimes.len());
-    for mime in mimes {
-        let Ok((mut reader, _)) = paste::get_contents(
-            ClipboardType::Regular,
-            Seat::Unspecified,
-            PasteMime::Specific(&mime),
-        ) else {
-            continue;
-        };
-        let mut bytes = Vec::new();
-        if std::io::Read::read_to_end(&mut reader, &mut bytes).is_err() {
-            continue;
-        }
-        out.push(MimeSource {
-            source: Source::Bytes(bytes.into_boxed_slice()),
-            mime_type: CopyMime::Specific(mime),
-        });
-    }
-    out
+/// Can block forever: only ever call it from a thread [`read_formats`] is
+/// willing to abandon.
+fn read_format(mime: &str) -> Option<Vec<u8>> {
+    let (mut reader, _) = paste::get_contents(
+        ClipboardType::Regular,
+        Seat::Unspecified,
+        PasteMime::Specific(mime),
+    )
+    .ok()?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut bytes).ok()?;
+    Some(bytes)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{InitialPasteRoute, initial_paste_route};
+    use super::{
+        CopyMime, InitialPasteRoute, MimeSource, Source, give_back, initial_paste_route, put_aside,
+        read_formats, take_put_aside,
+    };
+    use std::time::{Duration, Instant};
+
+    fn kept(mimes: &[&str], read: fn(&str) -> Option<Vec<u8>>) -> (Vec<String>, Duration) {
+        let started = Instant::now();
+        let saved = read_formats(
+            mimes.iter().map(|mime| mime.to_string()),
+            started + Duration::from_millis(300),
+            read,
+        );
+        let mut names: Vec<String> = saved
+            .into_iter()
+            .map(|format| match format.mime_type {
+                CopyMime::Specific(name) => name,
+                other => panic!("snapshot stored {other:?}"),
+            })
+            .collect();
+        names.sort();
+        (names, started.elapsed())
+    }
+
+    /// Zen advertises COMPOUND_TEXT, TEXT and SAVE_TARGETS on every text copy
+    /// and never serves them. Read in sequence under one deadline, the first of
+    /// them threw away the formats already read, and the transcript replaced
+    /// the user's clipboard for good.
+    #[test]
+    fn a_format_that_never_answers_costs_only_itself() {
+        let (names, _) = kept(&["text/plain", "SAVE_TARGETS", "UTF8_STRING"], |mime| {
+            if mime == "SAVE_TARGETS" {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+            Some(mime.as_bytes().to_vec())
+        });
+        assert_eq!(names, ["UTF8_STRING", "text/plain"]);
+    }
+
+    /// Dictations queue, so the next can paste inside the previous one's
+    /// restore delay. Reading the clipboard then saves the previous transcript
+    /// as if it were the user's, and the user's own clipboard never comes back.
+    #[test]
+    fn a_dictation_inside_the_restore_delay_hands_back_the_users_clipboard() {
+        let image = || {
+            vec![MimeSource {
+                source: Source::Bytes(Box::new([1, 2, 3])),
+                mime_type: CopyMime::Specific("image/png".into()),
+            }]
+        };
+        put_aside(1, image());
+
+        let saved = take_put_aside().expect("the user's clipboard, not the transcript");
+        put_aside(2, saved);
+
+        let mut restored = None;
+        give_back(1, |saved| restored = Some(saved));
+        assert_eq!(restored, None, "the superseded restore must not fire");
+        give_back(2, |saved| restored = Some(saved));
+        assert_eq!(restored, Some(image()));
+    }
+
+    #[test]
+    fn a_clipboard_that_answers_is_not_held_to_the_deadline() {
+        let (names, elapsed) = kept(&["image/png"], |_| Some(vec![0; 16]));
+        assert_eq!(names, ["image/png"]);
+        assert!(elapsed < Duration::from_millis(100), "took {elapsed:?}");
+    }
 
     #[test]
     fn the_portable_route_is_the_default() {
