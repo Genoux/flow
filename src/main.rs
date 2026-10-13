@@ -337,7 +337,7 @@ fn probe(porcelain: bool) -> Result<()> {
         ),
         refine::Reachability::Accepted => (
             if porcelain { "accepted" } else { "Connected" }.to_string(),
-            router::REFINE_MODEL.to_string(),
+            router::REFINE.id.to_string(),
         ),
         refine::Reachability::Rejected(reason) => (
             if porcelain { "rejected" } else { "Rejected" }.to_string(),
