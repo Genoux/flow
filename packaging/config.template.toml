@@ -34,8 +34,8 @@
 # in the Flow window:
 #
 #   none     types exactly what you said
-#   light    removes filler words
-#   medium   fixes grammar and punctuation
+#   light    fixes grammar and punctuation, and removes stumbles
+#            (medium and hard are still read, and mean light)
 #
 # cleanup = light
 

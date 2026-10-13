@@ -25,14 +25,14 @@ fn missing_file_is_the_normal_state() {
 #[test]
 fn file_overrides_every_key() {
     let parsed =
-        Config::parse("push_to_talk = false\nduck = 20\ncleanup = medium\ndenoise = true\n")
+        Config::parse("push_to_talk = false\nduck = 20\ncleanup = light\ndenoise = true\n")
             .expect("parse");
     assert_eq!(
         parsed,
         Config {
             push_to_talk: false,
             duck: 20,
-            cleanup: Cleanup::Medium,
+            cleanup: Cleanup::Light,
             chord: Default::default(),
             gpu: None,
             denoise: true,
@@ -67,16 +67,20 @@ fn the_old_refine_key_still_parses() {
     );
 }
 
-/// `hard` was a fourth level until it measured indistinguishable from Medium.
-/// Anyone who selected it has it written to disk, and the daemon refusing to
-/// start over a level that no longer exists would be a far worse regression
-/// than silently giving them the closest one that does.
+/// `medium` and `hard` were levels once. Anyone who selected one has it written
+/// to disk, and the daemon refusing to start over a level that no longer exists
+/// would be a far worse regression than silently giving them the closest one
+/// that does.
 #[test]
-fn the_removed_hard_level_still_starts_the_daemon() {
-    assert_eq!(
-        Config::parse("cleanup = hard\n").expect("hard").cleanup,
-        Cleanup::Medium
-    );
+fn the_removed_levels_still_start_the_daemon() {
+    for removed in ["medium", "hard"] {
+        assert_eq!(
+            Config::parse(&format!("cleanup = {removed}\n"))
+                .expect(removed)
+                .cleanup,
+            Cleanup::Light
+        );
+    }
 }
 
 #[test]
@@ -240,8 +244,8 @@ fn flags_win_over_the_file() {
 
     // `--cleanup` names a level outright, where `--raw` only ever means none.
     let levelled =
-        from_file.overridden_by(["daemon", "--cleanup", "medium"].map(String::from).as_ref());
-    assert_eq!(levelled.cleanup, Cleanup::Medium);
+        from_file.overridden_by(["daemon", "--cleanup", "none"].map(String::from).as_ref());
+    assert_eq!(levelled.cleanup, Cleanup::None);
 }
 
 #[test]

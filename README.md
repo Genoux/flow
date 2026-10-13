@@ -14,7 +14,7 @@ island that appears while you speak.
 | Session | Wayland (wlroots — Hyprland, Sway) |
 | Audio | PipeWire or ALSA |
 | Network | Only for refining, and not even that at `cleanup = "none"` |
-| Account | An [OpenRouter](https://openrouter.ai) key, for the cleanup levels above `none` |
+| Account | An [OpenRouter](https://openrouter.ai) key, for `cleanup = light` |
 | Access | Your user in the `input` group, and `/dev/uinput` writable |
 
 ## Install
@@ -83,7 +83,7 @@ of them. The ones people actually change:
 ```toml
 hotkey = "super+shift+d"   # the combination to hold
 duck = 50                  # volume of other apps while recording, in percent
-cleanup = "light"          # none, light or medium
+cleanup = "light"          # none or light
 openrouter_key = "sk-or-…" # easier to paste in Settings than to type here
 ```
 

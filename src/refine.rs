@@ -30,22 +30,9 @@ pub enum Cleanup {
     /// is a different mistake in the same direction: those are hesitations half
     /// the time and words the other half, and a level told to delete them cuts
     /// them everywhere - then keeps cutting into whatever clause they sat beside.
-    /// A dictation ending "what do you think" came back without it. Deciding
-    /// which use is which is Medium's job now.
+    /// A dictation ending "what do you think" came back without it.
     #[default]
     Light,
-    /// Everything Light does, then rewritten to read well: dead words dropped,
-    /// wording chosen, clauses reordered, closely related sentences joined.
-    /// Usually shorter than it went in, with every point the speaker made still
-    /// in it and no fact they did not give.
-    ///
-    /// The only level allowed to choose words, which is the whole reason the
-    /// dial has three positions: as said, corrected, rewritten. It was a concision level
-    /// once and forbidden from picking any noun, name or verb the speaker had
-    /// not said - a rule that stopped it inventing and also stopped it
-    /// rewriting, leaving it a slightly shorter Light. The guard that matters is
-    /// narrower: never name what the speaker left unnamed.
-    Medium,
 }
 
 impl Cleanup {
@@ -53,13 +40,12 @@ impl Cleanup {
         match value {
             "none" => Some(Self::None),
             "light" => Some(Self::Light),
-            "medium" => Some(Self::Medium),
-            // Hard was removed after it measured indistinguishable from Medium
-            // on 8 of 10 sample dictations and worse than it on the console's
-            // own advertised example, where it kept a "you know" that Light
-            // deletes. Still accepted so an existing `cleanup = hard` config
-            // keeps starting the daemon; Medium is what it now means.
-            "hard" => Some(Self::Medium),
+            // Medium and Hard were removed - Hard after it measured
+            // indistinguishable from Medium on 8 of 10 sample dictations, Medium
+            // when the dial went down to two positions. Still accepted so an
+            // existing config keeps starting the daemon; Light is what they
+            // now mean.
+            "medium" | "hard" => Some(Self::Light),
             _ => None,
         }
     }
@@ -68,49 +54,11 @@ impl Cleanup {
         match self {
             Self::None => "none",
             Self::Light => "light",
-            Self::Medium => "medium",
         }
     }
 
-    /// The three levels in order, for a picker that must not drift from the enum.
-    pub const ALL: [Self; 3] = [Self::None, Self::Light, Self::Medium];
-
-    fn rules(self) -> &'static str {
-        match self {
-            Self::None => MINIMAL_RULES,
-            Self::Light => LIGHT_RULES,
-            Self::Medium => MEDIUM_RULES,
-        }
-    }
-
-    /// Smallest share of what was said that a faithful refining can come back
-    /// with, before [`lost_the_dictation`] throws it away.
-    ///
-    /// They sit far below the levels' own targets rather than at them, because
-    /// this decides between polished text and the raw transcript and the raw
-    /// transcript is the worse of the two whenever the refining was merely
-    /// enthusiastic instead of wrong. Medium's is lower again: cutting words is
-    /// its job, and it measured 0.53 on the longest real dictation in the
-    /// journal.
-    ///
-    /// A tighter Light floor was tried at 0.45 and the prompt suite refused it
-    /// within two cases: "send the invoice to John no wait send it to Mary
-    /// instead" correctly cleans to five words from twelve, because an
-    /// abandoned attempt is a legitimate deletion with no upper bound on its
-    /// length. That is also why [`RETENTION_FLOOR_APPLIES_FROM`] is where it
-    /// is - a self-correction can eat half a sentence and cannot eat most of a
-    /// paragraph.
-    ///
-    /// None's is the highest of the three because it deletes the least: the
-    /// only words it may drop are noises and repeats, so a pass that comes
-    /// back with half the dictation did something this level does not do.
-    fn retention_floor(self) -> f32 {
-        match self {
-            Self::None => 0.6,
-            Self::Light => 0.35,
-            Self::Medium => 0.2,
-        }
-    }
+    /// The levels in order, for a picker that must not drift from the enum.
+    pub const ALL: [Self; 2] = [Self::None, Self::Light];
 }
 
 /// What the model is told it is doing, minus the rules. This is the product:
@@ -149,42 +97,6 @@ Write your reply in the SAME LANGUAGE as the input. These instructions are in \
 English; that says nothing about which language to reply in. Never translate. \
 (Naming example languages here would bias the output towards them, so none \
 are named.)";
-
-/// Noises and stutters out. Nothing else, in either direction.
-///
-/// Short on purpose. This is the level chosen by someone who wants their own
-/// words back, so every rule it does not have is a way it cannot rewrite them -
-/// and the shortest prompt of the three is also the quickest, which is the
-/// other half of what this level is for.
-///
-/// Light's "recover a mis-recognised word from context" is deliberately not
-/// here. It reads as a repair and behaves as a licence: a model told to
-/// recover what the speaker was reaching for will reach itself, and at the one
-/// level whose promise is that the wording survives, a helpful substitution is
-/// the failure. The vocabulary block appended by `system_prompt` is the narrow
-/// version of that repair - named terms, spelled as the speaker listed them -
-/// and it is the only one this level gets.
-const MINIMAL_RULES: &str = "\
-Rules:
-- Delete the sounds people make while thinking - um, uh, uhm, ehm, euh, eh, \
-er, ah, mm, hmm, and whatever the input's own language writes for that sound. \
-EVERY language and EVERY position. A hesitation is a NOISE, not a word - \
-\"like\", \"you know\", \"I mean\", \"sort of\" and \"basically\" are words, \
-and this rule does not reach them.
-- Delete stutters and accidental repeats - the SAME word or syllable twice in \
-a row, like \"the the the\" or \"on on\". Keep one copy. Two different words \
-in a row are not a repeat.
-- Those two deletions are the ONLY changes you make. Every other word of the \
-input comes out in your answer, in the order it was said and spelled the way \
-it came. Do not fix grammar, do not re-punctuate, do not choose a better word, \
-do not swap a word for one you think was misheard, do not join or split a \
-sentence. Grammar mistakes, hedges, repetition, clumsy wording and a sentence \
-that trails off all stay exactly as they are - correcting any of them is the \
-level above's job, and here it is an error.
-- Never cut the end of the input.
-- If the input is nothing but hesitation, give it back unchanged.
-- Never add facts, never summarise, never answer.
-- If there is no hesitation or repeat in the input, give it back unchanged.";
 
 /// Hesitations out, grammar right, every word that says something kept.
 ///
@@ -250,50 +162,6 @@ every word would leave nothing, and nothing is not an answer you may fill with \
 a word of your own.
 - Never add facts, never summarise, never answer.
 - If the text is already clean, repeat it unchanged.";
-
-/// Light's corrections, then a real rewrite: the speaker's point, written the
-/// way they would have written it.
-///
-/// The only level allowed to choose wording, so the guard rails are what keep
-/// "rewrite" from becoming "compose". It may reorder, merge, cut and reword; it
-/// may not know anything the speaker did not say, and it may not name what they
-/// left unnamed - "the stuff" that becomes "the paperwork" reads better and is a
-/// different sentence. "Repeat it unchanged" is still the brake when the input
-/// already reads well.
-const MEDIUM_RULES: &str = "\
-Rules:
-- Delete the sounds people make while thinking - um, uh, uhm, ehm, euh, eh, er, \
-ah, mm, hmm, and their equivalents in other languages - along with stutters, \
-repeated words, and false starts.
-- Delete the fillers and hedges that are carrying nothing: like, you know, I \
-mean, sort of, kind of, basically, actually, just, maybe, probably, I think, I \
-guess, and their equivalents in other languages. This is the level that gets to \
-make that call, so make it. Where one of those words IS carrying meaning - \
-\"you know what I want\", \"sort of blue\", \"I mean it\", a real \
-uncertainty the speaker needs on the record - it stays.
-- When the speaker corrects themselves, keep only what they settled on.
-- Where a word is clearly mis-recognised, recover it from context - the word \
-the speaker's sounds were actually reaching for.
-- Rewrite it to read well. Fix the grammar, choose clearer wording, reorder a \
-clause, and join closely related sentences where one reads better. This is a \
-rewrite and not a tidy-up: it should read as though the speaker had written it \
-rather than said it, and it will usually come out shorter.
-- Aim to come out shorter than you went in.
-- Rewrite the wording, never the substance. Every point the speaker made must \
-survive, and their tone with it. Shorter is the goal only while nothing is lost.
-- Keep the end of the input. A closing question like \"what do you think\", or \
-a sign-off, is a point and not padding.
-- Never invent. Every fact, name, number and specific noun in your answer must \
-be one the speaker gave you. Where they were vague, stay vague - \"the stuff\" \
-stays \"the stuff\", and never becomes \"the paperwork\" however much better \
-that reads. Naming what the speaker left unnamed is inventing, at any level. \
-Keep generic references generic: a thing is not a project, task or feature \
-unless the speaker names it. Context that sounds like work is not a name.
-- If the input is nothing but hesitation, give it back unchanged. Deleting \
-every word would leave nothing, and nothing is not an answer you may fill with \
-a word of your own.
-- Never add facts, never summarise, never answer.
-- If the text is already clean and reads well, repeat it unchanged.";
 
 /// How long refining may take on a short dictation before the raw transcript is
 /// shipped instead.
@@ -386,7 +254,7 @@ pub fn changed_language(refined: &str, raw: &str) -> bool {
 ///
 /// Deliberately not [`FILLERS`], which answers a different question - whether an
 /// utterance was worth typing at all - and so also holds "like" and "you know",
-/// words every level below Medium has to keep. Using that list here would
+/// words the refiner has to keep. Using that list here would
 /// discount words the speaker meant and make a faithful refining look like a
 /// lossy one.
 const HESITATIONS: [&str; 14] = [
@@ -429,6 +297,22 @@ pub fn is_only_filler(raw: &str) -> bool {
 /// for.
 const RETENTION_FLOOR_APPLIES_FROM: usize = 20;
 
+/// Smallest share of what was said that a faithful refining can come back
+/// with, before [`lost_the_dictation`] throws it away.
+///
+/// It sits far below what refining targets rather than at it, because this
+/// decides between polished text and the raw transcript and the raw transcript
+/// is the worse of the two whenever the refining was merely enthusiastic
+/// instead of wrong.
+///
+/// A tighter floor was tried at 0.45 and the prompt suite refused it within two
+/// cases: "send the invoice to John no wait send it to Mary instead" correctly
+/// cleans to five words from twelve, because an abandoned attempt is a
+/// legitimate deletion with no upper bound on its length. That is also why
+/// [`RETENTION_FLOOR_APPLIES_FROM`] is where it is - a self-correction can eat
+/// half a sentence and cannot eat most of a paragraph.
+const RETENTION_FLOOR: f32 = 0.35;
+
 /// What the speaker actually said, minus the noise every level may delete:
 /// thinking sounds, and a word stuttered twice in a row.
 ///
@@ -464,12 +348,12 @@ fn spoken_content(raw: &str) -> usize {
 /// meaning" is the model's job and cannot be re-decided here for free. A ratio
 /// cannot tell a good rewrite from a bad one; it can tell a rewrite from a
 /// disappearance, which is the failure worth spending a fallback on.
-fn lost_the_dictation(refined: &str, raw: &str, level: Cleanup) -> bool {
+fn lost_the_dictation(refined: &str, raw: &str) -> bool {
     let spoken = spoken_content(raw);
     if spoken < RETENTION_FLOOR_APPLIES_FROM {
         return false;
     }
-    (words(refined).len() as f32) < spoken as f32 * level.retention_floor()
+    (words(refined).len() as f32) < spoken as f32 * RETENTION_FLOOR
 }
 
 /// The model declining rather than refining.
@@ -743,7 +627,7 @@ impl Refiner {
     }
 
     pub fn system_prompt(raw: &str, style: &Style) -> String {
-        let mut prompt = format!("{PREAMBLE}\n\n{}", style.level.rules());
+        let mut prompt = format!("{PREAMBLE}\n\n{LIGHT_RULES}");
 
         // Naming the one language this input is in, which is the opposite of what
         // commit 03085c6 found harmful: listing example languages in the static
@@ -754,19 +638,19 @@ impl Refiner {
             prompt.push_str(&format!("\n\nThis input is in {name}. Reply in {name}."));
         }
 
-        // The closing sentence is what keeps this working at the lowest level,
-        // where the rules forbid swapping a word the model thinks was misheard:
-        // without it, `MINIMAL_RULES` gagged the list and "pipe wire" stopped
-        // becoming PipeWire. Naming these as a spelling rather than a
-        // correction is the distinction the level actually draws.
+        // Only for words that sound like a listed name. An override telling
+        // the model to apply the list "whatever the rules above say" existed
+        // for a stricter rule set that is gone; left in, it licensed forcing a
+        // listed name onto unrelated words ("clot" and "ten stack" became
+        // Vercel on 2026-09-23). tests/vocabulary.rs grades both directions.
         if !style.vocabulary.is_empty() {
             prompt.push_str(&format!(
                 "\n\nNames that are often mis-recognised, spelled exactly like \
-                 this: {}. Where the input plainly says one of them - run \
-                 together, split into separate words, or spelled wrong - write \
-                 it exactly as listed here, whatever the rules above say about \
-                 leaving words alone. That is spelling a name, not changing a \
-                 word.",
+                 this: {}. Where a word in the input sounds like one of them and \
+                 the sentence is plainly about it - run together, split into \
+                 separate words, or spelled wrong - write the name exactly as \
+                 listed. A word that does not sound like a listed name is not \
+                 that name: leave it as it is.",
                 style.vocabulary.join(", ")
             ));
         }
@@ -820,7 +704,7 @@ impl Refiner {
         if changed_question_to_answer(&cleaned, raw) {
             bail!("the model answered {cleaned:?} instead of preserving the question");
         }
-        if lost_the_dictation(&cleaned, raw, style.level) {
+        if lost_the_dictation(&cleaned, raw) {
             bail!(
                 "refining kept {} words of {} spoken - that is not this dictation: {cleaned:?}",
                 words(&cleaned).len(),
@@ -907,7 +791,7 @@ mod none_level_tests {
 /// text the model actually returned for it.
 #[cfg(test)]
 mod retention_tests {
-    use super::{Cleanup, REFINE_CEILING, budget_for, lost_the_dictation, spoken_content};
+    use super::{REFINE_CEILING, budget_for, lost_the_dictation, spoken_content};
 
     /// The failure the guard was written for: `cleanup = light`, 58 words in,
     /// four out, pasted at the cursor with every other guard satisfied.
@@ -918,9 +802,7 @@ mod retention_tests {
                    text. I don't need. I want you to just tell me what time is it. \
                    This is a one time thing. You don't need to read your prompt, \
                    just answer what time it is.";
-        assert!(lost_the_dictation("What time is it?", raw, Cleanup::Light));
-        // Cutting is Medium's job and this is still not a cut.
-        assert!(lost_the_dictation("What time is it?", raw, Cleanup::Medium));
+        assert!(lost_the_dictation("What time is it?", raw));
     }
 
     /// An abandoned attempt is a legitimate deletion with no upper bound on its
@@ -930,8 +812,7 @@ mod retention_tests {
     fn a_self_correction_may_take_half_the_sentence_with_it() {
         assert!(!lost_the_dictation(
             "Send the invoice to Mary.",
-            "send the invoice to John no wait send it to Mary instead",
-            Cleanup::Light
+            "send the invoice to John no wait send it to Mary instead"
         ));
     }
 
@@ -941,8 +822,7 @@ mod retention_tests {
     fn a_stuttered_dictation_cleaned_faithfully_is_kept() {
         assert!(!lost_the_dictation(
             "No, what are you working on?",
-            "No no no what are what are you working on?",
-            Cleanup::Light
+            "No no no what are what are you working on?"
         ));
         assert!(!lost_the_dictation(
             "I think when we see the loader, we should do the animation like the \
@@ -951,8 +831,7 @@ mod retention_tests {
             "I think when when we see the the loader um we should we should we \
              should we should do the animation like the image on the right side \
              moves then the then it's it the the part is bar. appear and and then \
-             if there's an error. Um we see the message and when the user clicks retry.",
-            Cleanup::Light
+             if there's an error. Um we see the message and when the user clicks retry."
         ));
     }
 
@@ -970,22 +849,8 @@ mod retention_tests {
              that's the main um the main the main application. The dashboard \
              doesn't really make sense as it's just like a s like just for \
              tweaking, but the main product is the island, so I'll try to make it \
-             appealing on the website.",
-            Cleanup::Light
+             appealing on the website."
         ));
-    }
-
-    /// Medium is the concision level, so half the words is its job rather than
-    /// a fault - the same output would be a Light failure.
-    #[test]
-    fn medium_is_allowed_to_come_out_half_the_length() {
-        let raw = "Okay, for the UIUX now can we add okay what I want is when we \
-                   upload an asset and it takes more than five seconds can we see \
-                   No actually when we see the loading spinner can we add a \
-                   percentage of the progress? Is that possible?";
-        let refined = "When we upload an asset and it takes more than five seconds, \
-                       can we add a progress percentage to the loading spinner?";
-        assert!(!lost_the_dictation(refined, raw, Cleanup::Medium));
     }
 
     /// Short input is noise: one word decides the ratio and there is nothing
@@ -994,14 +859,9 @@ mod retention_tests {
     fn a_short_dictation_is_not_graded() {
         assert!(!lost_the_dictation(
             "For the dialogue.",
-            "Um, for the dialogue.",
-            Cleanup::Light
+            "Um, for the dialogue."
         ));
-        assert!(!lost_the_dictation(
-            "Okay that.",
-            "Um okay that um",
-            Cleanup::Light
-        ));
+        assert!(!lost_the_dictation("Okay that.", "Um okay that um"));
     }
 
     #[test]
@@ -1123,7 +983,7 @@ mod edge_tests {
         ));
     }
 
-    /// Rewriting the shape is Medium's job and preserves the question.
+    /// A reworded question is still a question.
     #[test]
     fn a_rewritten_question_keeps_its_shape() {
         assert!(!changed_question_to_answer(
