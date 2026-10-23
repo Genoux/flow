@@ -336,9 +336,10 @@ pub enum Event {
     Stop,
 }
 
-/// Native press and compositor `flow start` are the same physical tap, a few
-/// milliseconds apart. Acting on both would start a dictation and stop it
-/// before the mic opened.
+/// Native press and compositor `flow start` are the same physical tap, ~25ms
+/// apart. Acting on both would start a dictation and stop it before the mic
+/// opened, or stop one and start the next. Measured from when the daemon
+/// finished acting on the tap, not when it began - see `last_tap` in daemon.rs.
 pub const TAP_ECHO: Duration = Duration::from_millis(150);
 
 /// What a tap-to-talk event does to the session.

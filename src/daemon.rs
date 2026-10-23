@@ -240,9 +240,12 @@ pub fn run(
         let mut session: Option<Session> = None;
         let mut chord_watch: Option<hotkey::ChordWatch> = None;
         let mut hold_started: Option<Instant> = None;
-        // Last time tap-to-talk actually began or finished a session. Native
-        // press and compositor `flow start` of the same tap land a few
-        // milliseconds apart; without this the second one would toggle back.
+        // When the loop last finished acting on a tap-to-talk tap. Native press
+        // and compositor `flow start` of the same tap arrive ~25ms apart, but
+        // finishing a session waits on the stream lock for up to a chunk, so
+        // the echo was read 240-330ms after the key and started a new session.
+        // Stamping after the work, not before it, keeps queued echoes inside
+        // `TAP_ECHO` however long the work took.
         let mut last_tap: Option<Instant> = None;
         // An event peeked while debouncing a release (see `RELEASE_DEBOUNCE`
         // below) that turned out not to be chatter, and so still needs
@@ -265,6 +268,7 @@ pub fn run(
             // need a restart.
             let hold_to_talk = live.lock().expect("config").push_to_talk;
             let echo = last_tap.is_some_and(|at| at.elapsed() < hotkey::TAP_ECHO);
+            let mut tapped = false;
             // Ending a session drops its ducker, so other apps come back to volume
             // as soon as recording stops rather than after transcription.
             let finished = match event {
@@ -278,14 +282,13 @@ pub fn run(
                     match hotkey::tap_action(event, session.is_some(), echo) {
                         hotkey::TapAction::Ignore => None,
                         hotkey::TapAction::Finish => {
-                            last_tap = Some(Instant::now());
+                            tapped = true;
                             hold_started.take();
                             session.take().map(|s| s.finish(&capture))
                         }
                         hotkey::TapAction::Begin => {
-                            last_tap = Some(Instant::now());
                             hold_started = None;
-                            if begin(
+                            tapped = begin(
                                 &capture,
                                 &mut session,
                                 live,
@@ -295,8 +298,8 @@ pub fn run(
                                 held,
                                 &incoming,
                             )
-                            .is_some()
-                            {
+                            .is_none();
+                            if !tapped {
                                 last_tap = None;
                             }
                             None
@@ -458,6 +461,9 @@ pub fn run(
                     .is_err()
             {
                 break;
+            }
+            if tapped {
+                last_tap = Some(Instant::now());
             }
         }
         drop(jobs);
