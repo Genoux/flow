@@ -277,15 +277,19 @@ pub fn run(
                     }
                     match hotkey::tap_action(event, session.is_some(), echo) {
                         hotkey::TapAction::Ignore => None,
+                        // Stamped once the action is done, not before: finishing
+                        // blocks on the post-roll, and a chatter re-press queued
+                        // behind it used to outlive the window and start a new
+                        // recording on every tap that should have ended one.
                         hotkey::TapAction::Finish => {
-                            last_tap = Some(Instant::now());
                             hold_started.take();
-                            session.take().map(|s| s.finish(&capture))
+                            let samples = session.take().map(|s| s.finish(&capture));
+                            last_tap = Some(Instant::now());
+                            samples
                         }
                         hotkey::TapAction::Begin => {
-                            last_tap = Some(Instant::now());
                             hold_started = None;
-                            if begin(
+                            last_tap = if begin(
                                 &capture,
                                 &mut session,
                                 live,
@@ -297,8 +301,10 @@ pub fn run(
                             )
                             .is_some()
                             {
-                                last_tap = None;
-                            }
+                                None
+                            } else {
+                                Some(Instant::now())
+                            };
                             None
                         }
                     }

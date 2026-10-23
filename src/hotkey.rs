@@ -337,9 +337,10 @@ pub enum Event {
 }
 
 /// Native press and compositor `flow start` are the same physical tap, a few
-/// milliseconds apart. Acting on both would start a dictation and stop it
-/// before the mic opened.
-pub const TAP_ECHO: Duration = Duration::from_millis(150);
+/// milliseconds apart, and keyd chatters a spurious re-press 45-215ms after a
+/// real one (see `RELEASE_DEBOUNCE` in daemon.rs). Acting on either would
+/// start a dictation and stop it at once, or stop one and start another.
+pub const TAP_ECHO: Duration = Duration::from_millis(250);
 
 /// What a tap-to-talk event does to the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
