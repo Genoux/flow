@@ -1,6 +1,6 @@
 # Maintainer: John Barry
 pkgname=flow
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="Voice dictation daemon with a local speech model and a system tray console"
 arch=('x86_64')
@@ -16,7 +16,7 @@ depends=('alsa-lib' 'wayland' 'hicolor-icon-theme')
 optdepends=('vulkan-icd-loader: GPU-accelerated local speech model inference')
 install=flow.install
 source=("https://github.com/Genoux/flow/releases/download/v${pkgver}/flow-v${pkgver}-${CARCH}-linux.tar.gz")
-sha256sums=('1284ecffef005e8fdddfa2256f8fa6f6722d3b7c5bfec6e371b9a7d842bdfd53')
+sha256sums=('5878a706634b9f99b3b5ba17303ce4e5322cd3415c3b9a50b1be10719675e112')
 
 package() {
 	local srcname="flow-v${pkgver}-${CARCH}-linux"
