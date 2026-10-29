@@ -25,6 +25,34 @@ pub(crate) fn flow_program() -> String {
         )
 }
 
+/// Every input, as (name, label). CoreAudio's own name is both: it is what the
+/// daemon matches `input_device` against and what a person knows the mic by.
+///
+/// Asked of the daemon binary rather than CoreAudio, so the names are the ones
+/// `audio::open_input` will find - see `flow inputs`.
+pub(crate) fn input_sources() -> Vec<(String, String)> {
+    run(&flow_program(), &["inputs"])
+        .map(|output| inputs(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_default()
+}
+
+/// What Automatic records from: the input the system has as its default.
+pub(crate) fn default_input() -> Option<String> {
+    let output = run(&flow_program(), &["inputs", "--default"])?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// One name per line, in the order printed, which is already sorted.
+fn inputs(listing: &str) -> Vec<(String, String)> {
+    listing
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| (name.to_owned(), name.to_owned()))
+        .collect()
+}
+
 fn home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -363,6 +391,32 @@ mod tests {
             plan(Verb::Restart, Job::NotLoaded, true),
             [Enable, Bootstrap, Disable]
         );
+    }
+
+    #[test]
+    fn each_line_of_the_listing_is_one_input() {
+        assert_eq!(
+            inputs("MacBook Pro Microphone\nAirPods Pro\n"),
+            [
+                (
+                    "MacBook Pro Microphone".to_owned(),
+                    "MacBook Pro Microphone".to_owned()
+                ),
+                ("AirPods Pro".to_owned(), "AirPods Pro".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn blank_lines_and_padding_are_not_inputs() {
+        assert_eq!(
+            inputs("\n  Studio Display Microphone  \n\n"),
+            [(
+                "Studio Display Microphone".to_owned(),
+                "Studio Display Microphone".to_owned()
+            )]
+        );
+        assert!(inputs("").is_empty());
     }
 
     #[test]

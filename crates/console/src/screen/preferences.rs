@@ -41,14 +41,16 @@ impl Console {
             group("General", self.general_rows()),
             group("Shortcut", self.shortcut_rows()),
         ];
-        // A Mac has none of the rest: picking a mic and ducking both go through
-        // PipeWire, and there is one app slot, so no second build to switch to.
+        // A Mac has no second build to switch to - there is one app slot. It
+        // does pick a microphone, but ducking goes through PipeWire, so the
+        // Microphone group is there without its Lower other apps row.
+        let body = body
+            .push(group("Microphone", self.microphone_rows()))
+            .push(group("OpenRouter", self.openrouter_rows()));
         let body = if cfg!(target_os = "macos") {
-            body.push(group("OpenRouter", self.openrouter_rows()))
+            body
         } else {
-            body.push(group("Microphone", self.microphone_rows()))
-                .push(group("OpenRouter", self.openrouter_rows()))
-                .push(group("Build", self.channel_rows()))
+            body.push(group("Build", self.channel_rows()))
         };
 
         // No subtitle. It was a table of contents for three group headings
@@ -266,13 +268,13 @@ impl Console {
     }
 
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {
-        vec![
-            setting(
-                "Input",
-                self.input_hint(),
-                action_msg("Change", false, Message::PickInput),
-            ),
-            setting(
+        let mut rows = vec![setting(
+            "Input",
+            self.input_hint(),
+            action_msg("Change", false, Message::PickInput),
+        )];
+        if !cfg!(target_os = "macos") {
+            rows.push(setting(
                 "Lower other apps",
                 "",
                 value_slider(
@@ -281,8 +283,9 @@ impl Console {
                     Message::Duck,
                     &format!("{}%", self.settings.duck),
                 ),
-            ),
-        ]
+            ));
+        }
+        rows
     }
 
     /// The line under Input, which is the microphone itself.
@@ -351,9 +354,13 @@ impl Console {
             // list is one line per choice. Not the microphone it resolves to
             // today: that read as settled when it is only a reading, and it put
             // the same string on two rows stacked one above the other.
-            match &self.input {
-                Some(_) => "Auto-detect (system default)",
-                None => "Auto-detect (no system default)",
+            match (&self.input, cfg!(target_os = "macos")) {
+                // A headset that becomes the default would put itself into
+                // call mode the moment Flow opened it, so Flow does not follow
+                // it there.
+                (Some(_), true) => "Auto-detect (built-in over Bluetooth)",
+                (Some(_), false) => "Auto-detect (system default)",
+                (None, _) => "Auto-detect (no system default)",
             },
             String::new(),
             self.settings.input_device.is_none(),

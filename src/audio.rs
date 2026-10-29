@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 pub const SAMPLE_RATE: u32 = 16_000;
 
 /// Audio from just before the bind. A source that arrives over a network is
@@ -37,12 +40,112 @@ const POST_ROLL_CAP: Duration = Duration::from_millis(400);
 /// because it is talking to PipeWire rather than to the hardware, and opening a
 /// raw `hw:` PCM through cpal fails outright.
 ///
-/// Choosing a microphone therefore happens one layer up, by moving the stream
-/// this opens onto another source - see [`Capture::set_source`].
+/// On Linux choosing a microphone therefore happens one layer up, by moving the
+/// stream this opens onto another source - see [`Capture::set_source`]. A Mac
+/// cannot move a stream, so there the choice is made when it is opened - see
+/// [`open_input`].
 pub fn open_device() -> Result<Device> {
     cpal::default_host()
         .default_input_device()
         .ok_or_else(|| anyhow!("no input device available"))
+}
+
+/// The name CoreAudio gives an input, which is what `input_device` holds on a
+/// Mac. Not [`DeviceTrait::id`]: that carries a host prefix and a uid nobody
+/// would type into a config file.
+pub fn device_name(device: &Device) -> Option<String> {
+    device
+        .description()
+        .ok()
+        .map(|description| description.name().to_owned())
+}
+
+fn input_devices() -> Vec<(String, Device)> {
+    cpal::default_host()
+        .input_devices()
+        .into_iter()
+        .flatten()
+        .filter_map(|device| Some((device_name(&device)?, device)))
+        .collect()
+}
+
+/// Every input by name, in the spelling [`open_input`] matches against. The
+/// console asks for this through `flow inputs` instead of linking cpal itself,
+/// so the names it offers are the ones the daemon will find.
+pub fn input_names() -> Vec<String> {
+    let mut names: Vec<String> = input_devices().into_iter().map(|(name, _)| name).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The device called `wanted`, or `None` for the caller to fall back on the
+/// default - a pinned microphone that is unplugged must not end a dictation.
+#[cfg(any(target_os = "macos", test))]
+fn pinned<T>(devices: Vec<(String, T)>, wanted: &str) -> Option<T> {
+    devices
+        .into_iter()
+        .find_map(|(name, device)| (name == wanted).then_some(device))
+}
+
+/// How an input is connected, as far as choosing one cares.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transport {
+    BuiltIn,
+    Bluetooth,
+    Other,
+}
+
+/// The input to record from: the pinned one if there is one and it is present,
+/// otherwise the system default - unless that is a Bluetooth input and a
+/// built-in one exists.
+///
+/// Opening a Bluetooth microphone forces the whole headset into call mode
+/// (HFP): mono, 16 kHz, for as long as it is open, whatever else is playing.
+/// macOS makes a headset the default input whenever it reconnects, so following
+/// the default means the user's music degrades every time they put it on. A
+/// pin is an explicit choice and is honoured even then.
+#[cfg(any(target_os = "macos", test))]
+fn choose_input<'a>(
+    wanted: Option<&str>,
+    inputs: &'a [(String, Transport)],
+    default: Option<&str>,
+) -> Option<&'a str> {
+    let named = |name: &str| inputs.iter().find(|(known, _)| known == name);
+    if let Some((name, _)) = wanted.and_then(named) {
+        return Some(name);
+    }
+    let (name, transport) = default.and_then(named)?;
+    if *transport == Transport::Bluetooth
+        && let Some((built_in, _)) = inputs
+            .iter()
+            .find(|(_, transport)| *transport == Transport::BuiltIn)
+    {
+        return Some(built_in);
+    }
+    Some(name)
+}
+
+/// What capture should open. See [`choose_input`] for the rule on a Mac.
+///
+/// Only a Mac chooses. PipeWire routes a live stream to the pinned source after
+/// the fact - see [`Capture::set_source`] - while CoreAudio binds a stream to
+/// the device it was opened on, so the choice has to be made here.
+pub fn open_input(wanted: Option<&str>) -> Result<Device> {
+    #[cfg(target_os = "macos")]
+    {
+        let default = open_device().ok().and_then(|device| device_name(&device));
+        let inputs = macos::input_transports();
+        if let Some(device) = choose_input(wanted, &inputs, default.as_deref())
+            .and_then(|name| pinned(input_devices(), name))
+        {
+            return Ok(device);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = wanted;
+    open_device()
 }
 
 /// PipeWire suspends idle sources. A phone mic then wakes with a burst of
@@ -395,6 +498,16 @@ pub struct Capture {
     /// is a new source-output id, so what was wanted outlives what was applied.
     wanted_source: Mutex<Option<String>>,
     routed_to: Mutex<Option<String>>,
+    /// The device the stream is bound to. Only a Mac needs it: a stream there
+    /// stays on the device it opened on, so it is how `follow_input` can tell
+    /// that the pin or the system default has moved.
+    attached_to: Mutex<Option<String>>,
+    /// Held across any change of stream, and by `begin_inner` from its own
+    /// check through the moment it goes live. Without it the thread that
+    /// follows a changed pin could rebuild the stream under a press that is
+    /// starting, leaving two streams feeding one recording. Always taken
+    /// before any other lock here.
+    reopen: Mutex<()>,
 }
 
 /// What to open the device with, and what has to convert its audio afterwards.
@@ -444,6 +557,8 @@ impl Capture {
             heard: Arc::new(AtomicU64::new(0)),
             wanted_source: Mutex::new(None),
             routed_to: Mutex::new(None),
+            attached_to: Mutex::new(None),
+            reopen: Mutex::new(()),
         };
         capture.attach(device)?;
         Ok(capture)
@@ -492,7 +607,41 @@ impl Capture {
         // to something that no longer exists. `begin_inner` re-applies from
         // `wanted_source` on the next press.
         *self.routed_to.lock().unwrap() = None;
+        *self.attached_to.lock().unwrap() = device_name(device);
         Ok(())
+    }
+
+    /// Reopen onto the input capture should be on when it is on another one.
+    ///
+    /// CoreAudio does not move a live stream when the default input changes.
+    /// A change of default is caught here at every `begin`; a pin changed in
+    /// the console is caught when the config reloads, so the stream is already
+    /// warm, with pre-roll, by the next press. Never mid-recording: the rebuilt
+    /// stream would drop what is being said. A failed rebuild keeps the old
+    /// stream, as in [`Capture::attach`].
+    pub fn follow_input(&self) {
+        let _reopen = self.reopen.lock().unwrap();
+        self.follow_input_locked();
+    }
+
+    /// [`Capture::follow_input`] for a caller already holding `reopen`, which
+    /// is also what makes the `live` check below stay true until it returns.
+    fn follow_input_locked(&self) {
+        if !cfg!(target_os = "macos") || self.live.load(Ordering::Relaxed) {
+            return;
+        }
+        let wanted = self.wanted_source.lock().unwrap().clone();
+        let Ok(device) = open_input(wanted.as_deref()) else {
+            return;
+        };
+        let target = device_name(&device);
+        if *self.attached_to.lock().unwrap() == target {
+            return;
+        }
+        match self.attach(&device) {
+            Ok(()) => eprintln!("mic source: {}", target.unwrap_or_default()),
+            Err(err) => eprintln!("could not switch microphone: {err:#}"),
+        }
     }
 
     /// Record from `wanted`, or from the system default when it is `None`.
@@ -580,6 +729,12 @@ impl Capture {
     /// stream to the new source by itself (verified by watching the graph relink
     /// mid-recording). This only handles the stream being destroyed.
     pub fn ensure_live(&self) -> bool {
+        let _reopen = self.reopen.lock().unwrap();
+        self.ensure_live_locked()
+    }
+
+    /// [`Capture::ensure_live`] for a caller already holding `reopen`.
+    fn ensure_live_locked(&self) -> bool {
         if self.silent_for() < STREAM_TIMEOUT {
             return true;
         }
@@ -587,7 +742,8 @@ impl Capture {
             "capture stopped delivering {:?} ago - reopening",
             self.silent_for()
         );
-        match open_device().and_then(|device| self.attach(&device)) {
+        let wanted = self.wanted_source.lock().unwrap().clone();
+        match open_input(wanted.as_deref()).and_then(|device| self.attach(&device)) {
             Ok(()) => {
                 if let Some(name) = default_source_name() {
                     eprintln!("mic source: {name}");
@@ -653,12 +809,16 @@ impl Capture {
     }
 
     fn begin_inner(&self, keep_pre_roll: bool) {
+        // Held until the recording is live: from then on `follow_input` sees
+        // it and leaves the stream alone.
+        let _reopen = self.reopen.lock().unwrap();
         // Before the pre-roll is copied: a rebuilt stream starts with an empty
         // ring, and taking the stale one would prepend audio from another device.
-        self.ensure_live();
+        self.ensure_live_locked();
         // After it, not before: a reopen builds a new source-output, so the
         // routing has to be re-applied to the stream that now exists.
         self.apply_source();
+        self.follow_input_locked();
         self.wake_current();
         let pre = self.pre_roll.lock().unwrap();
         let mut samples = self.samples.lock().unwrap();
@@ -817,6 +977,80 @@ Source Output #6192836
 \t\tapplication.name = \"PipeWire ALSA [flow]\"
 \t\tnode.name = \"alsa_capture.flow\"
 ";
+
+    fn inputs() -> Vec<(String, Transport)> {
+        vec![
+            ("Jobose".to_owned(), Transport::Bluetooth),
+            ("MacBook Pro Microphone".to_owned(), Transport::BuiltIn),
+            ("Studio Display Microphone".to_owned(), Transport::Other),
+        ]
+    }
+
+    #[test]
+    fn a_bluetooth_default_gives_way_to_the_built_in_microphone() {
+        assert_eq!(
+            choose_input(None, &inputs(), Some("Jobose")),
+            Some("MacBook Pro Microphone")
+        );
+    }
+
+    #[test]
+    fn an_explicit_pin_to_bluetooth_is_honoured() {
+        assert_eq!(
+            choose_input(Some("Jobose"), &inputs(), Some("Jobose")),
+            Some("Jobose")
+        );
+    }
+
+    #[test]
+    fn a_default_that_is_not_bluetooth_is_followed() {
+        assert_eq!(
+            choose_input(None, &inputs(), Some("Studio Display Microphone")),
+            Some("Studio Display Microphone")
+        );
+    }
+
+    #[test]
+    fn a_bluetooth_default_with_no_built_in_is_still_used() {
+        let only = vec![("Jobose".to_owned(), Transport::Bluetooth)];
+        assert_eq!(choose_input(None, &only, Some("Jobose")), Some("Jobose"));
+    }
+
+    /// An unplugged pin falls back the same way Automatic does, so a pinned
+    /// headset that is off does not land the user on a Bluetooth default.
+    #[test]
+    fn a_missing_pin_is_treated_as_automatic() {
+        assert_eq!(
+            choose_input(Some("Gone"), &inputs(), Some("Jobose")),
+            Some("MacBook Pro Microphone")
+        );
+    }
+
+    #[test]
+    fn no_default_leaves_the_choice_to_the_caller() {
+        assert_eq!(choose_input(None, &inputs(), None), None);
+    }
+
+    #[test]
+    fn a_pinned_input_that_is_present_is_chosen() {
+        let devices = vec![
+            ("Headset".to_owned(), 1),
+            ("MacBook Pro Microphone".to_owned(), 2),
+        ];
+        assert_eq!(pinned(devices, "MacBook Pro Microphone"), Some(2));
+    }
+
+    #[test]
+    fn a_missing_pin_leaves_the_default_to_the_caller() {
+        let devices = vec![("Headset".to_owned(), 1)];
+        assert_eq!(pinned(devices, "MacBook Pro Microphone"), None);
+    }
+
+    #[test]
+    fn a_name_must_match_whole() {
+        let devices = vec![("MacBook Pro Microphone".to_owned(), 1)];
+        assert_eq!(pinned(devices, "MacBook"), None);
+    }
 
     #[test]
     fn our_own_stream_is_the_one_that_moves() {
