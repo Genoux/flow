@@ -22,7 +22,9 @@
 # every keyboard. Change it if your desktop already uses it: modifiers are
 # super, shift, ctrl, alt (meta/win/cmd and option are accepted too), and the
 # last part is the key you press - a letter, a digit, f1-f12, space, tab, enter,
-# or a named modifier on its own like rightctrl.
+# or a named modifier on its own like rightctrl. fn (or globe) is the Fn key.
+# On macOS the default is fn alone. If pressing the globe key opens the emoji
+# picker or dictation, set System Settings > Keyboard > "Press 🌐 key to" > Do Nothing.
 # hotkey = super+shift+d
 
 # Volume of other apps while recording, as a percentage of where each one

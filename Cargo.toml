@@ -26,19 +26,28 @@ serde_json = "1.0.151"
 realfft = "3.5.0"
 rubato = "5.0.1"
 signal-hook = "0.4.4"
+whatlang = "0.18.0"
+fontdue = "0.9.4"
+png = "0.18.1"
+parakeet-rs = "0.3.7"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31.15"
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wl-clipboard-rs = "0.9.3"
-whatlang = "0.18.0"
-fontdue = "0.9.4"
 # `blocking` is only the API shape - it enables no reactor, so zbus underneath
 # it will not build alone. `async-io` is the runtime, chosen over tokio because
 # the daemon has no async anywhere else and this way it does not gain one: the
 # tray owns its thread and the rest of the process never sees it.
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
-png = "0.18.1"
-parakeet-rs = "0.3.7"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFMachPort", "CFRunLoop"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"] }
 
 # Line tables instead of full DWARF. Backtraces still name file and line,
 # which is all the daemon's panics are ever read for, but the debug binaries

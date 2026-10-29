@@ -117,7 +117,12 @@ fn the_gpu_index_is_optional() {
 /// shortcut is fixable without rebuilding.
 #[test]
 fn the_hotkey_is_configurable() {
-    assert_eq!(Config::default().chord.to_string(), "super+shift+d");
+    let default = if cfg!(target_os = "macos") {
+        "fn"
+    } else {
+        "super+shift+d"
+    };
+    assert_eq!(Config::default().chord.to_string(), default);
     assert_eq!(
         Config::parse("hotkey = ctrl+alt+space\n")
             .expect("parse")

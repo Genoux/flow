@@ -96,20 +96,27 @@ pub fn models_root() -> PathBuf {
 // ponytail: sha256sum from coreutils rather than a hashing crate. Already
 // shelling out to curl for the download, and this keeps a 2.4GB verify out of
 // process memory. Swap in the sha2 crate if flow ever needs to run somewhere
-// without it.
+// without it. macOS ships `shasum` instead and prints the same
+// `<hash>  <path>` line.
 pub fn sha256(path: &Path) -> Result<String> {
-    let output = Command::new("sha256sum")
+    let (program, flags): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("shasum", &["-a", "256"])
+    } else {
+        ("sha256sum", &[])
+    };
+    let output = Command::new(program)
+        .args(flags)
         .arg(path)
         .output()
-        .context("running sha256sum - is coreutils installed?")?;
+        .with_context(|| format!("running {program} - is it installed?"))?;
     if !output.status.success() {
-        bail!("sha256sum failed on {}", path.display());
+        bail!("{program} failed on {}", path.display());
     }
-    let text = String::from_utf8(output.stdout).context("sha256sum output")?;
+    let text = String::from_utf8(output.stdout).with_context(|| format!("{program} output"))?;
     Ok(text
         .split_whitespace()
         .next()
-        .context("empty sha256sum output")?
+        .with_context(|| format!("empty {program} output"))?
         .to_string())
 }
 

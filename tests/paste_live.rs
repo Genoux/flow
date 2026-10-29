@@ -14,6 +14,7 @@
 //! Takes focus for a second and briefly replaces the clipboard, which
 //! `inject` puts back. Needs a Wayland session, kitty, and /dev/input:
 //!   cargo test --release --test paste_live -- --ignored --nocapture
+#![cfg(target_os = "linux")]
 
 use flow::inject::Injector;
 use std::process::{Child, Command};

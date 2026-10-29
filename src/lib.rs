@@ -15,6 +15,8 @@ pub mod refine;
 pub mod router;
 pub mod status;
 pub mod stt;
+#[cfg(target_os = "linux")]
 pub mod tray;
 pub mod wav;
+#[cfg(target_os = "linux")]
 pub mod wayland_vk;
