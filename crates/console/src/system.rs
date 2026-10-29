@@ -564,7 +564,14 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         assert!(super::daemon_listening(&socket));
         drop(listener);
-        assert!(!super::daemon_listening(&socket));
+        // Polled, not asserted once: a process another test spawns at this
+        // moment holds a copy of the listener between its fork and its exec,
+        // and the socket answers until that copy closes.
+        let stale = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            !super::daemon_listening(&socket)
+        });
+        assert!(stale);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
