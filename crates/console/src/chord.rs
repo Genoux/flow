@@ -13,8 +13,11 @@
 //! is how push-to-talk works at all. This reads the same way, for as long as
 //! the user is choosing a chord and no longer.
 
-use evdev::{Device, EventSummary, KeyCode};
+use evdev::KeyCode;
+#[cfg(target_os = "linux")]
+use evdev::{Device, EventSummary};
 use std::collections::HashSet;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 /// Modifier keycodes, and the word the daemon's config uses for each. Both
@@ -33,9 +36,14 @@ const MODIFIERS: [(KeyCode, &str); 8] = [
 
 /// The order modifiers are written in, so the same chord always spells the
 /// same way regardless of the order they were pressed.
-const ORDER: [&str; 4] = ["super", "ctrl", "alt", "shift"];
+const ORDER: [&str; 5] = ["fn", "super", "ctrl", "alt", "shift"];
 
 fn modifier_word(key: KeyCode) -> Option<&'static str> {
+    // The Globe key is the macOS default trigger, and the daemon spells it as a
+    // modifier. No evdev keyboard sends it, so on Linux it is not one.
+    if cfg!(target_os = "macos") && key == KeyCode::KEY_FN {
+        return Some("fn");
+    }
     MODIFIERS
         .iter()
         .find(|(code, _)| *code == key)
@@ -67,6 +75,7 @@ fn modifier_word(key: KeyCode) -> Option<&'static str> {
 /// `/proc/bus/input/devices` carries the three things this needs - the name, the
 /// event node, and the key bitmap - for every device in one read, with no
 /// descriptor opened on any of them.
+#[cfg(target_os = "linux")]
 fn keyboard_paths() -> Vec<PathBuf> {
     let Ok(listing) = std::fs::read_to_string("/proc/bus/input/devices") else {
         return Vec::new();
@@ -101,6 +110,7 @@ fn keyboard_paths() -> Vec<PathBuf> {
 /// Devices are separated by a blank line, and a device with no `eventN` handler
 /// cannot be read at all - a keyboard behind a driver that only exposes `kbd`
 /// is not one this window can offer.
+#[cfg(target_os = "linux")]
 fn listed_keyboards(listing: &str) -> Vec<(String, PathBuf)> {
     listing
         .split("\n\n")
@@ -135,6 +145,7 @@ fn listed_keyboards(listing: &str) -> Vec<(String, PathBuf)> {
 ///
 /// The bitmap is written as hex words, most significant first, so `KEY_A` at 30
 /// is in the last word and no other word has to be read.
+#[cfg(target_os = "linux")]
 fn types_letters(bitmap: &str) -> bool {
     bitmap
         .split_whitespace()
@@ -146,6 +157,7 @@ fn types_letters(bitmap: &str) -> bool {
 /// The same keyboards, opened for reading. Only the two or three that are
 /// really keyboards pay for a descriptor, which is what keeps the cost above
 /// off the window's startup.
+#[cfg(target_os = "linux")]
 fn keyboards() -> Vec<Device> {
     keyboard_paths()
         .iter()
@@ -221,6 +233,7 @@ impl Capture {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn capture(cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
     let mut devices = keyboards();
     if devices.is_empty() {
@@ -266,10 +279,128 @@ pub fn capture(cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
 /// One device is opened and no more - `any` stops at the first that answers -
 /// because the listing says which keyboards exist and only a descriptor says
 /// whether this user may have one.
+#[cfg(target_os = "linux")]
 pub fn available() -> bool {
     keyboard_paths()
         .iter()
         .any(|path| std::fs::File::open(path).is_ok())
+}
+
+/// The keyboard on a Mac is read by the daemon binary's event tap, as
+/// `flow keys`, rather than here: the tap is what holds Input Monitoring, and
+/// its key table is the daemon's, so there is one mapping from a Mac's key codes
+/// to the keys a chord is written in. This only reads what it prints.
+///
+/// Killed on the way out, and its stdin is the lifeline for when that never
+/// runs: the pipe closes with this process, and `flow keys` ends with it.
+#[cfg(target_os = "macos")]
+struct Watcher {
+    child: std::process::Child,
+    edges: std::sync::mpsc::Receiver<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl Watcher {
+    fn start() -> Result<Self, String> {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(crate::system::flow_program())
+            .arg("keys")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Cannot read the keyboard: {e}"))?;
+        let stdout = child.stdout.take().ok_or("Cannot read the keyboard.")?;
+        let (sender, edges) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Self { child, edges })
+    }
+
+    /// Why the tap ended before a shortcut arrived, in the daemon's own words.
+    /// Without Input Monitoring that is the instruction to grant it.
+    fn failure(&mut self) -> String {
+        use std::io::Read;
+
+        let _ = self.child.wait();
+        let mut said = String::new();
+        if let Some(mut stderr) = self.child.stderr.take() {
+            let _ = stderr.read_to_string(&mut said);
+        }
+        said.lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().trim_start_matches("Error: ").to_owned())
+            .unwrap_or_else(|| "Cannot read the keyboard. Try again.".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn capture(cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::{Duration, Instant};
+
+    let mut watcher = Watcher::start()?;
+    let mut state = Capture::default();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if cancel() {
+            return Ok(None);
+        }
+        if Instant::now() >= deadline {
+            return Err("No shortcut detected. Click Change to try again.".into());
+        }
+        match watcher.edges.recv_timeout(Duration::from_millis(10)) {
+            Ok(line) => {
+                let Some((key, value)) = parse_edge(&line) else {
+                    continue;
+                };
+                if let Some(binding) = state.apply(key, value)? {
+                    return Ok(binding);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(watcher.failure()),
+        }
+    }
+}
+
+/// Offered whenever the daemon binary is there to ask. Whether Input
+/// Monitoring has been granted cannot be known without trying, so a missing
+/// grant is reported by [`capture`] where the picker has room to say so.
+#[cfg(target_os = "macos")]
+pub fn available() -> bool {
+    std::path::Path::new(&crate::system::flow_program()).is_file()
+}
+
+/// One line of `flow keys`: `KEY_D 1` for a press, `KEY_D 0` for a release.
+#[cfg(any(target_os = "macos", test))]
+fn parse_edge(line: &str) -> Option<(KeyCode, i32)> {
+    let mut words = line.split_whitespace();
+    let key = words.next()?.parse().ok()?;
+    let value = match words.next()? {
+        "1" => 1,
+        "0" => 0,
+        _ => return None,
+    };
+    Some((key, value))
 }
 
 #[cfg(test)]
@@ -278,6 +409,7 @@ mod tests {
 
     /// The listing this window reads, cut down to one keyboard and the two
     /// kinds of device that also report key events and are not keyboards.
+    #[cfg(target_os = "linux")]
     const LISTING: &str = "\
 I: Bus=0019 Vendor=0000 Product=0001 Version=0000
 N: Name=\"Power Button\"
@@ -345,6 +477,7 @@ B: SW=140
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn only_real_keyboards_are_read_from_the_listing() {
         let found = listed_keyboards(LISTING);
         assert_eq!(
@@ -359,6 +492,7 @@ B: SW=140
     /// A power button reports key events and is not a keyboard, which is the
     /// whole reason the bitmap is read rather than the `EV=` line.
     #[test]
+    #[cfg(target_os = "linux")]
     fn a_device_with_keys_but_no_letters_is_not_a_keyboard() {
         assert!(types_letters(
             "733eff 0 0 483ffff17aff32d bfd4444600000000 1 130c730b17c007 ffbf7bfad941dfff febeffdfffefffff fffffffffffffffe"
@@ -388,6 +522,7 @@ B: SW=140
     /// cannot see. Ignored by default: it needs `/dev/uinput` and a readable
     /// `/dev/input`.
     #[test]
+    #[cfg(target_os = "linux")]
     #[ignore = "needs /dev/uinput and membership of the input group"]
     fn a_synthetic_chord_is_captured() {
         use evdev::uinput::VirtualDevice;
@@ -479,5 +614,49 @@ B: SW=140
         assert_eq!(modifier_word(KeyCode::KEY_RIGHTMETA), Some("super"));
         assert_eq!(modifier_word(KeyCode::KEY_RIGHTSHIFT), Some("shift"));
         assert_eq!(modifier_word(KeyCode::KEY_D), None);
+    }
+
+    #[test]
+    fn a_line_from_the_tap_is_a_key_and_an_edge() {
+        assert_eq!(parse_edge("KEY_D 1"), Some((KeyCode::KEY_D, 1)));
+        assert_eq!(
+            parse_edge("KEY_LEFTMETA 0\n"),
+            Some((KeyCode::KEY_LEFTMETA, 0))
+        );
+        assert_eq!(parse_edge("KEY_FN 1"), Some((KeyCode::KEY_FN, 1)));
+    }
+
+    #[test]
+    fn anything_else_on_the_tap_is_ignored() {
+        assert_eq!(parse_edge(""), None);
+        assert_eq!(parse_edge("KEY_D"), None);
+        assert_eq!(parse_edge("KEY_D 2"), None);
+        assert_eq!(parse_edge("not-a-key 1"), None);
+    }
+
+    /// The default chord on a Mac, and the one the daemon spells as a modifier:
+    /// the picker has to be able to write it back.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_globe_key_is_captured_as_fn() {
+        let mut capture = Capture::default();
+        assert_eq!(capture.apply(KeyCode::KEY_FN, 1), Ok(None));
+        assert_eq!(
+            capture.apply(KeyCode::KEY_FN, 0),
+            Ok(Some(Some("fn".into())))
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn fn_with_a_key_is_written_in_the_daemons_order() {
+        let mut capture = Capture::default();
+        for key in [KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_FN, KeyCode::KEY_D] {
+            assert_eq!(capture.apply(key, 1), Ok(None));
+        }
+        assert_eq!(
+            capture.apply(KeyCode::KEY_D, 0),
+            Ok(Some(Some("fn+shift+d".into())))
+        );
     }
 }
