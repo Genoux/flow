@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-#[cfg(target_os = "linux")]
 use flow::tray;
 use flow::{audio, config, daemon, inject, install, ipc, refine, router, status, stt, wav};
 use std::time::{Duration, Instant};
@@ -52,14 +51,15 @@ fn main() -> Result<()> {
     run()
 }
 
-/// The overlay is AppKit, which only works from the main thread - so the
-/// daemon, and only the daemon, runs beside it. Everything else is a short
-/// command that opens no window and has no use for a window server.
+/// The overlay and the menu bar item are AppKit, which only works from the main
+/// thread - so the daemon and the tray, and only they, run beside it.
+/// Everything else is a short command that opens no window and has no use for a
+/// window server.
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if command(&args) == Some("daemon") {
-        return flow::overlay::host(run);
+    if matches!(command(&args), Some("daemon" | "tray")) {
+        return flow::appkit::host(run);
     }
     run()
 }
@@ -147,10 +147,7 @@ fn run() -> Result<()> {
     // returns before either model check so a damaged or stopped dictation
     // service can still be opened and repaired from its icon.
     if command(&args) == Some("tray") {
-        #[cfg(target_os = "linux")]
         return tray::run(settings);
-        #[cfg(not(target_os = "linux"))]
-        bail!("the tray is not supported on macOS yet");
     }
 
     // Isolates injection from the mic and the model, so a silent uinput failure

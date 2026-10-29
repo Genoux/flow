@@ -24,8 +24,6 @@ mod wayland;
 
 #[cfg(target_os = "macos")]
 use macos::Surface;
-#[cfg(target_os = "macos")]
-pub use macos::host;
 #[cfg(target_os = "linux")]
 use wayland::Surface;
 

@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+pub mod appkit;
 pub mod audio;
 pub mod chime;
 pub mod config;
@@ -15,7 +17,6 @@ pub mod refine;
 pub mod router;
 pub mod status;
 pub mod stt;
-#[cfg(target_os = "linux")]
 pub mod tray;
 pub mod wav;
 #[cfg(target_os = "linux")]

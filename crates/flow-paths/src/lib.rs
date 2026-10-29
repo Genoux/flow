@@ -13,6 +13,9 @@
 //! Deliberately dependency-free. The console is its own workspace so that
 //! iced's tree and llama.cpp's tree never meet, and this crate sits under both.
 
+pub mod launchd;
+pub mod process;
+
 use std::path::PathBuf;
 
 /// `$XDG_RUNTIME_DIR`, falling back to a private per-user temporary directory.
