@@ -5,6 +5,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Volumes are moved through `pactl`, so only PipeWire can be ducked. A duck
+/// that cannot lower anything must not be asked for: the daemon drops the
+/// pre-roll whenever it ducks, which would cost the first word for nothing.
+pub const SUPPORTED: bool = cfg!(target_os = "linux");
+
 /// Playback streams are lowered while recording, then put back. This matters
 /// beyond comfort: with a phone-over-network microphone the speakers bleed into
 /// the capture, and music has been transcribed as if it were speech.

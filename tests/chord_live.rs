@@ -7,6 +7,7 @@
 //!   systemctl --user stop flow.service
 //!   cargo test --release --test chord_live -- --ignored --nocapture
 //!   systemctl --user start flow.service
+#![cfg(target_os = "linux")]
 
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};

@@ -9,6 +9,12 @@ const SUPER: KeyCode = KeyCode::KEY_LEFTMETA;
 const SHIFT: KeyCode = KeyCode::KEY_LEFTSHIFT;
 const D: KeyCode = KeyCode::KEY_D;
 
+/// Spelled out rather than taken from `Chord::default()`, which is Fn alone on
+/// macOS: these tests are about how a three-key chord behaves.
+fn super_shift_d() -> Chord {
+    Chord::parse("super+shift+d").expect("chord")
+}
+
 fn bare() -> PttState {
     PttState::new(Chord::bare(BARE))
 }
@@ -18,6 +24,7 @@ fn bare() -> PttState {
 /// Super+Shift+D, matching the compositor binding people already use, and
 /// reachable on every keyboard: Super is one evdev code (KEY_LEFTMETA) whether
 /// the keycap says Windows or Command.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_default_is_super_shift_d() {
     let chord = Chord::default();
@@ -89,7 +96,7 @@ fn a_second_tap_ends_the_dictation() {
 /// `deliberate()` still exists, but now only decides whether a stray key cancels.
 #[test]
 fn only_bare_keys_cancel_on_a_stray_key() {
-    assert!(Chord::default().deliberate());
+    assert!(super_shift_d().deliberate());
     assert!(!Chord::bare(BARE).deliberate());
 }
 
@@ -97,7 +104,7 @@ fn only_bare_keys_cancel_on_a_stray_key() {
 
 #[test]
 fn the_chord_starts_only_once_every_key_is_down() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     assert_eq!(state.apply(SUPER, true), None, "super alone");
     assert_eq!(state.apply(SHIFT, true), None, "super+shift alone");
     assert_eq!(state.apply(D, true), Some(Event::Pressed));
@@ -105,21 +112,21 @@ fn the_chord_starts_only_once_every_key_is_down() {
 
 #[test]
 fn the_trigger_without_its_modifiers_does_nothing() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     assert_eq!(state.apply(D, true), None, "a plain d must stay a plain d");
     assert_eq!(state.apply(D, false), None);
 }
 
 #[test]
 fn a_missing_modifier_does_not_start() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(SUPER, true);
     assert_eq!(state.apply(D, true), None, "shift was never held");
 }
 
 #[test]
 fn releasing_the_trigger_ends_the_hold() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
@@ -160,7 +167,7 @@ fn a_chord_is_released_as_soon_as_one_key_it_saw_is_up() {
 #[test]
 fn any_key_of_the_chord_ends_the_hold() {
     for lifted in [SUPER, SHIFT, D] {
-        let mut state = PttState::new(Chord::default());
+        let mut state = PttState::new(super_shift_d());
         state.apply(SUPER, true);
         state.apply(SHIFT, true);
         state.apply(D, true);
@@ -175,7 +182,7 @@ fn any_key_of_the_chord_ends_the_hold() {
 /// next lift would fire a phantom release.
 #[test]
 fn the_rest_of_the_chord_lifting_is_quiet() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
@@ -197,7 +204,7 @@ fn the_chord_starts_whichever_key_completes_it() {
         [[D, SUPER, SHIFT], [SHIFT, D, SUPER], [D, SHIFT, SUPER]];
 
     for order in orders {
-        let mut state = PttState::new(Chord::default());
+        let mut state = PttState::new(super_shift_d());
         let events: Vec<_> = order.iter().map(|key| state.apply(*key, true)).collect();
         assert_eq!(
             events
@@ -217,7 +224,7 @@ fn the_chord_starts_whichever_key_completes_it() {
 
 #[test]
 fn either_side_of_a_modifier_satisfies_it() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(KeyCode::KEY_RIGHTMETA, true);
     state.apply(KeyCode::KEY_RIGHTSHIFT, true);
     assert_eq!(state.apply(D, true), Some(Event::Pressed));
@@ -226,7 +233,7 @@ fn either_side_of_a_modifier_satisfies_it() {
 /// Key repeat while the chord is held must not restart anything.
 #[test]
 fn autorepeat_on_the_trigger_is_ignored() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     assert_eq!(state.apply(D, true), Some(Event::Pressed));
@@ -248,7 +255,7 @@ fn a_deliberate_chord_never_discards_on_an_unrelated_key() {
         KeyCode::KEY_LEFTALT,
         KeyCode::KEY_X,
     ] {
-        let mut state = PttState::new(Chord::default());
+        let mut state = PttState::new(super_shift_d());
         state.apply(SUPER, true);
         state.apply(SHIFT, true);
         state.apply(D, true);
@@ -299,7 +306,7 @@ fn a_held_bare_key_does_not_start_on_someone_elses_shortcut() {
 /// they must never look like a cancelling keystroke.
 #[test]
 fn building_up_to_the_chord_never_cancels() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     assert_eq!(state.apply(KeyCode::KEY_LEFTCTRL, true), None);
     assert_eq!(state.apply(KeyCode::KEY_LEFTCTRL, false), None);
     state.apply(SUPER, true);
@@ -311,7 +318,7 @@ fn building_up_to_the_chord_never_cancels() {
 /// must not look like a second press.
 #[test]
 fn duplicate_chord_reports_are_ignored() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(SUPER, true);
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
@@ -323,7 +330,7 @@ fn duplicate_chord_reports_are_ignored() {
 /// has to produce a hold, however short.
 #[test]
 fn a_fast_chord_tap_still_dictates() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
@@ -335,7 +342,7 @@ fn a_fast_chord_tap_still_dictates() {
 
 #[test]
 fn the_chord_can_be_used_twice() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     for round in 1..=2 {
         state.apply(SUPER, true);
         state.apply(SHIFT, true);
@@ -353,7 +360,7 @@ fn the_chord_can_be_used_twice() {
 /// bare modifier lift would fire a phantom release.
 #[test]
 fn a_modifier_lift_after_the_hold_ended_is_quiet() {
-    let mut state = PttState::new(Chord::default());
+    let mut state = PttState::new(super_shift_d());
     state.apply(SUPER, true);
     state.apply(SHIFT, true);
     state.apply(D, true);
@@ -425,7 +432,14 @@ fn cancel_fires_once_per_hold() {
 
 #[test]
 fn a_binding_round_trips_through_text() {
-    for text in ["super+shift+d", "rightctrl", "ctrl+alt+space", "super+f1"] {
+    for text in [
+        "super+shift+d",
+        "rightctrl",
+        "ctrl+alt+space",
+        "super+f1",
+        "fn",
+        "shift+fn",
+    ] {
         let parsed = Chord::parse(text).expect(text);
         assert_eq!(parsed.to_string(), text, "{text} did not round-trip");
     }
@@ -453,7 +467,7 @@ fn every_letter_and_function_key_round_trips() {
 
 #[test]
 fn binding_text_is_forgiving_about_shape() {
-    let expected = Chord::default();
+    let expected = super_shift_d();
     for text in [
         "SUPER+SHIFT+D",
         " super + shift + d ",
@@ -570,4 +584,60 @@ fn modifier_combinations_cancel_when_used_for_another_shortcut() {
     );
     assert_eq!(state.apply(KeyCode::KEY_V, true), Some(Event::Cancelled));
     assert_eq!(state.apply(KeyCode::KEY_LEFTSHIFT, false), None);
+}
+
+// -- the Fn key ---------------------------------------------------------------
+
+const FN: KeyCode = KeyCode::KEY_FN;
+
+/// Fn is a key held on its own, like a lone modifier: it names no letter, and
+/// the board's globe key is what people call it.
+#[test]
+fn fn_alone_is_a_single_key_chord() {
+    for name in ["fn", "globe", "FN"] {
+        let chord = Chord::parse(name).expect(name);
+        assert_eq!(chord.trigger, FN, "{name}");
+        assert!(chord.modifiers.is_empty(), "{name}");
+        assert_eq!(chord.to_string(), "fn", "{name}");
+    }
+}
+
+#[test]
+fn fn_can_qualify_another_key() {
+    let chord = Chord::parse("fn+d").expect("fn+d");
+    assert_eq!(chord.modifiers, vec![Modifier::Fn]);
+    assert_eq!(chord.to_string(), "fn+d");
+}
+
+#[test]
+fn fn_alone_records_while_held() {
+    let mut state = PttState::new(Chord::parse("fn").expect("fn"));
+    assert_eq!(state.apply(FN, true), Some(Event::Pressed));
+    assert!(matches!(
+        state.apply(FN, false),
+        Some(Event::Released { .. })
+    ));
+}
+
+/// Fn+arrow is Home/End/PageUp on a laptop: a shortcut, not dictation.
+#[test]
+fn a_stray_key_during_an_fn_hold_cancels_it() {
+    let mut state = PttState::new(Chord::parse("fn").expect("fn"));
+    state.apply(FN, true);
+    assert_eq!(state.apply(KeyCode::KEY_LEFT, true), Some(Event::Cancelled));
+}
+
+#[test]
+fn an_unrelated_fn_press_does_not_start_a_modifier_chord() {
+    let mut state = PttState::new(Chord::parse("super+shift+d").expect("chord"));
+    assert_eq!(state.apply(FN, true), None);
+}
+
+/// Linux keeps its answer: a key that rarely reports at all must not be able to
+/// hold a paste back.
+#[cfg(target_os = "linux")]
+#[test]
+fn fn_does_not_hold_up_a_paste_on_linux() {
+    let held: HashSet<KeyCode> = [FN].into();
+    assert!(!flow::hotkey::any_modifier_in(&held));
 }

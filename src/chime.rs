@@ -46,7 +46,7 @@ pub fn hide() {
 }
 
 fn play(wav: &'static [u8]) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !ENABLED.load(Ordering::Relaxed) || !cfg!(target_os = "linux") {
         return;
     }
 

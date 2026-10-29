@@ -1,11 +1,19 @@
 use anyhow::{Result, anyhow};
-use evdev::{Device, EventType, KeyCode};
+use evdev::KeyCode;
+#[cfg(target_os = "linux")]
+use evdev::{Device, EventType};
 use std::collections::HashSet;
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, channel};
+#[cfg(target_os = "linux")]
+use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 /// A hold shorter than this is a tap, not a dictation, and its audio is thrown
 /// away. Applies to every binding: exempting deliberate chords meant a frustrated
@@ -21,9 +29,11 @@ use std::time::{Duration, Instant};
 const MIN_HOLD: Duration = Duration::from_millis(200);
 
 /// If the chord is not visible by then, the tap already ended and we stop.
+#[cfg(target_os = "linux")]
 const CHORD_APPEAR: Duration = Duration::from_millis(40);
 
 /// Poll interval while waiting for the compositor chord to break.
+#[cfg(target_os = "linux")]
 const CHORD_POLL: Duration = Duration::from_millis(4);
 
 /// Modifiers that must be physically released before we inject. Injected keys
@@ -40,6 +50,21 @@ const MODIFIERS: [KeyCode; 8] = [
     KeyCode::KEY_RIGHTSHIFT,
 ];
 
+/// Keys that make a paste unsafe while they are down. The same eight everywhere,
+/// plus Fn on macOS: there it is how most people hold the chord, and a paste
+/// sent under it is not the Cmd+V it was meant to be. On Linux Fn is
+/// firmware-private on most boards and rarely reports at all, so it stays out
+/// rather than risk holding a paste back for a key that never comes up.
+fn paste_blockers() -> impl Iterator<Item = KeyCode> {
+    MODIFIERS
+        .into_iter()
+        .chain(cfg!(target_os = "macos").then_some(KeyCode::KEY_FN))
+}
+
+fn blocks_paste(key: KeyCode) -> bool {
+    paste_blockers().any(|blocker| blocker == key)
+}
+
 /// One modifier position, satisfied by the key on either side of the board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modifier {
@@ -47,6 +72,8 @@ pub enum Modifier {
     Shift,
     Ctrl,
     Alt,
+    /// The Fn / globe key. One physical key, so both slots are the same code.
+    Fn,
 }
 
 impl Modifier {
@@ -56,6 +83,7 @@ impl Modifier {
             Self::Shift => [KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTSHIFT],
             Self::Ctrl => [KeyCode::KEY_LEFTCTRL, KeyCode::KEY_RIGHTCTRL],
             Self::Alt => [KeyCode::KEY_LEFTALT, KeyCode::KEY_RIGHTALT],
+            Self::Fn => [KeyCode::KEY_FN; 2],
         }
     }
 
@@ -67,6 +95,7 @@ impl Modifier {
             "shift" => Some(Self::Shift),
             "ctrl" | "control" => Some(Self::Ctrl),
             "alt" | "option" => Some(Self::Alt),
+            "fn" | "globe" => Some(Self::Fn),
             _ => None,
         }
     }
@@ -77,6 +106,7 @@ impl Modifier {
             Self::Shift => "shift",
             Self::Ctrl => "ctrl",
             Self::Alt => "alt",
+            Self::Fn => "fn",
         }
     }
 }
@@ -98,11 +128,24 @@ impl Default for Chord {
     ///
     /// Super+D alone is "show desktop" on most desktops; adding Shift steps
     /// around that.
+    ///
+    /// On macOS it is the Fn / globe key alone instead: Super+Shift+D collides
+    /// with app shortcuts there, and every Mac keyboard has the key.
+    #[cfg(target_os = "linux")]
     fn default() -> Self {
         Self {
             trigger: KeyCode::KEY_D,
             modifiers: vec![Modifier::Super, Modifier::Shift],
             trigger_modifier: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn default() -> Self {
+        Self {
+            trigger: KeyCode::KEY_FN,
+            modifiers: Vec::new(),
+            trigger_modifier: Some(Modifier::Fn),
         }
     }
 }
@@ -118,7 +161,9 @@ impl Chord {
     }
 
     pub fn deliberate(&self) -> bool {
-        !self.modifiers.is_empty() && !MODIFIERS.contains(&self.trigger)
+        !self.modifiers.is_empty()
+            && !MODIFIERS.contains(&self.trigger)
+            && self.trigger != KeyCode::KEY_FN
     }
 
     pub fn parse(text: &str) -> Result<Self> {
@@ -136,8 +181,9 @@ impl Chord {
 
         let mut modifiers = Vec::new();
         for name in leading {
-            let modifier = Modifier::parse(name)
-                .ok_or_else(|| anyhow!("{name:?} is not a modifier (super, shift, ctrl, alt)"))?;
+            let modifier = Modifier::parse(name).ok_or_else(|| {
+                anyhow!("{name:?} is not a modifier (super, shift, ctrl, alt, fn)")
+            })?;
             if modifiers.contains(&modifier) {
                 return Err(anyhow!("{name:?} is listed twice"));
             }
@@ -368,6 +414,7 @@ pub fn tap_action(event: Event, recording: bool, echo: bool) -> TapAction {
 /// reading all of them needs no special-casing for the user's input stack.
 /// Probed with a letter rather than a modifier: compact and Apple boards drop the
 /// right-hand modifiers, so testing for one of those would skip a real keyboard.
+#[cfg(target_os = "linux")]
 fn keyboards() -> Vec<(std::path::PathBuf, Device)> {
     evdev::enumerate()
         .filter(|(_, device)| {
@@ -496,6 +543,7 @@ impl PttState {
 /// `chord` is shared rather than owned so a rebinding in the console reaches
 /// the running daemon. The reader adopts it between holds - see
 /// [`PttState::retune`].
+#[cfg(target_os = "linux")]
 pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord>>) -> Result<()> {
     let devices = keyboards();
     if devices.is_empty() {
@@ -539,6 +587,26 @@ pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord
         });
     }
 
+    feed_ptt(raw_rx, events, chord);
+    Ok(())
+}
+
+/// Same contract as the evdev reader: the tap's key edges feed the one
+/// push-to-talk state machine.
+#[cfg(target_os = "macos")]
+pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord>>) -> Result<()> {
+    let raw_rx = macos::listen()?;
+    eprintln!("push-to-talk: {}", chord.lock().expect("chord"));
+    feed_ptt(raw_rx, events, chord);
+    Ok(())
+}
+
+/// Turns raw key edges, from however many devices or taps, into [`Event`]s.
+fn feed_ptt(
+    raw_rx: Receiver<(KeyCode, bool)>,
+    events: Sender<Event>,
+    chord: std::sync::Arc<std::sync::Mutex<Chord>>,
+) {
     WATCHING.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
         let mut state = PttState::new(chord.lock().expect("chord").clone());
@@ -552,7 +620,7 @@ pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord
                     eprintln!("push-to-talk rebound: {wanted}");
                 }
             }
-            if MODIFIERS.contains(&key) {
+            if blocks_paste(key) {
                 let mut observed = observed().lock().expect("observed modifiers");
                 if pressed {
                     observed.insert(key);
@@ -560,15 +628,14 @@ pub fn spawn(events: Sender<Event>, chord: std::sync::Arc<std::sync::Mutex<Chord
                     observed.remove(&key);
                 }
             }
-            if let Some(event) = state.apply(key, pressed)
-                && events.send(event).is_err()
-            {
-                return;
+            if let Some(event) = state.apply(key, pressed) {
+                crate::verbose!("push-to-talk: {event:?}");
+                if events.send(event).is_err() {
+                    return;
+                }
             }
         }
     });
-
-    Ok(())
 }
 
 pub fn was_long_enough(held: Duration) -> bool {
@@ -584,6 +651,7 @@ pub fn chord_released(chord: &HashSet<KeyCode>, now: &HashSet<KeyCode>) -> bool 
 
 /// Prefer keyd's virtual keyboard: it is what Hyprland sees after remap, and
 /// the physical device can report stale pressed keys while keyd has it grabbed.
+#[cfg(target_os = "linux")]
 fn chord_paths() -> &'static [PathBuf] {
     static PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
     PATHS.get_or_init(discover_chord_paths)
@@ -603,6 +671,7 @@ fn chord_paths() -> &'static [PathBuf] {
 ///
 /// Discovery costs ~400ms and opening costs ~50ms, both of which used to be paid
 /// before every single paste.
+#[cfg(target_os = "linux")]
 fn modifier_devices() -> &'static Mutex<Vec<Device>> {
     static DEVICES: OnceLock<Mutex<Vec<Device>>> = OnceLock::new();
     DEVICES.get_or_init(|| {
@@ -618,6 +687,10 @@ fn modifier_devices() -> &'static Mutex<Vec<Device>> {
 
 /// Call once at daemon start so neither the first tap nor the first injection
 /// pays device discovery.
+#[cfg(target_os = "macos")]
+pub fn warmup_devices() {}
+
+#[cfg(target_os = "linux")]
 pub fn warmup_devices() {
     let paths = chord_paths();
     if paths.is_empty() {
@@ -630,6 +703,7 @@ pub fn warmup_devices() {
     let _ = modifier_devices();
 }
 
+#[cfg(target_os = "linux")]
 fn discover_chord_paths() -> Vec<PathBuf> {
     let from_proc = keyd_paths_from_proc();
     if !from_proc.is_empty() {
@@ -660,6 +734,7 @@ fn discover_chord_paths() -> Vec<PathBuf> {
 }
 
 /// `/proc/bus/input/devices` names keyd without opening every evdev node.
+#[cfg(target_os = "linux")]
 fn keyd_paths_from_proc() -> Vec<PathBuf> {
     let Ok(text) = std::fs::read_to_string("/proc/bus/input/devices") else {
         return Vec::new();
@@ -686,6 +761,7 @@ fn keyd_paths_from_proc() -> Vec<PathBuf> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn chord_devices() -> Vec<Device> {
     chord_paths()
         .iter()
@@ -693,6 +769,7 @@ fn chord_devices() -> Vec<Device> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn chord_snapshot(devices: &[Device], chord: &Chord) -> HashSet<KeyCode> {
     let mut keys = HashSet::new();
     for device in devices {
@@ -717,6 +794,7 @@ impl ChordWatch {
     /// Snapshot the dictation chord at `flow start` and emit [`Event::Stop`]
     /// when any of those keys is released. Hyprland's release binds miss
     /// modifier chords; this is what makes compositor-driven hold reliable.
+    #[cfg(target_os = "linux")]
     pub fn arm(events: Sender<Event>, chord: Chord) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
@@ -724,11 +802,22 @@ impl ChordWatch {
         Self { cancel }
     }
 
+    /// Nothing to watch: macOS has no compositor bind that sends `flow start`,
+    /// and the native tap already ends a hold on its own.
+    #[cfg(target_os = "macos")]
+    pub fn arm(_events: Sender<Event>, _chord: Chord) -> Self {
+        eprintln!("chord watch: not available on macos - waiting for `flow stop`");
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn disarm(self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
+#[cfg(target_os = "linux")]
 fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Chord) {
     // Two fds per device: fetch_events blocks one, get_key_state needs the other.
     let state_devices = chord_devices();
@@ -835,7 +924,7 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 
 /// True when a modifier is down. Pure, so the rule is testable without a keyboard.
 pub fn any_modifier_in(held: &HashSet<KeyCode>) -> bool {
-    MODIFIERS.iter().any(|modifier| held.contains(modifier))
+    paste_blockers().any(|modifier| held.contains(&modifier))
 }
 
 /// Which modifiers are currently observed as held. Named for diagnostics when
@@ -843,11 +932,19 @@ pub fn any_modifier_in(held: &HashSet<KeyCode>) -> bool {
 /// we need to know which key is stuck to fix it.
 pub fn currently_held_modifiers() -> Vec<KeyCode> {
     let observed = observed().lock().expect("observed modifiers");
-    MODIFIERS
-        .iter()
+    paste_blockers()
         .filter(|key| observed.contains(key))
-        .copied()
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn device_modifiers_held(devices: &[Device]) -> bool {
+    devices.iter().any(|device| {
+        device
+            .get_key_state()
+            .map(|state| any_modifier_in(&state.iter().collect()))
+            .unwrap_or(false)
+    })
 }
 
 /// Block until no modifier is held, or inspect once when `timeout` is zero.
@@ -860,6 +957,7 @@ pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     let watching = WATCHING.load(Ordering::Relaxed);
     // Only consulted when nothing is watching events - a daemon without
     // push-to-talk, where the compositor is the only trigger.
+    #[cfg(target_os = "linux")]
     let devices = (!watching).then(|| modifier_devices().lock().expect("modifier devices"));
     let mut announced = false;
 
@@ -871,27 +969,30 @@ pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
             // Names them, because a wait this long is either someone resting a
             // hand on the keys or a release event this never saw, and the two
             // need opposite fixes.
-            let stuck: Vec<String> = match &devices {
-                None => observed()
+            let stuck: Vec<String> = if watching {
+                observed()
                     .lock()
                     .expect("observed modifiers")
                     .iter()
-                    .filter(|key| MODIFIERS.contains(key))
+                    .filter(|key| blocks_paste(**key))
                     .map(|key| format!("{key:?}"))
-                    .collect(),
-                Some(_) => vec!["device state".into()],
+                    .collect()
+            } else {
+                vec!["device state".into()]
             };
             eprintln!("waiting to paste - still held: {}", stuck.join(", "));
         }
 
-        let held = match &devices {
-            None => any_modifier_in(&observed().lock().expect("observed modifiers")),
-            Some(devices) => devices.iter().any(|device| {
-                device
-                    .get_key_state()
-                    .map(|state| any_modifier_in(&state.iter().collect()))
-                    .unwrap_or(false)
-            }),
+        let held = if watching {
+            any_modifier_in(&observed().lock().expect("observed modifiers"))
+        } else {
+            #[cfg(target_os = "linux")]
+            let polled = devices
+                .as_deref()
+                .is_some_and(|devices| device_modifiers_held(devices));
+            #[cfg(target_os = "macos")]
+            let polled = macos::modifiers_held();
+            polled
         };
 
         if !held {
