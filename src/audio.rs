@@ -293,6 +293,78 @@ fn now_millis() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+/// Frames handed to the resampler at a time. Output length follows from it, so
+/// a callback never has to line up with anything; 1024 is ~21ms at 48kHz, which
+/// is also the most the tail of a recording can be held back.
+const RESAMPLE_CHUNK: usize = 1024;
+
+/// Turns what a device natively delivers into what the model wants: interleaved
+/// frames of any channel count and rate in, 16kHz mono out.
+///
+/// An FFT resampler rather than linear interpolation: both rates here are fixed
+/// ratios, and aliasing from a cheap one lands in the speech band the
+/// recogniser is listening to. All buffers are sized once in `new`, so `push`
+/// allocates nothing and is safe to call from an audio callback.
+pub struct MonoResampler {
+    channels: usize,
+    resampler: rubato::Fft<f32>,
+    pending: Vec<f32>,
+    output: Vec<f32>,
+}
+
+impl MonoResampler {
+    pub fn new(from_rate: u32, channels: u16) -> Result<Self> {
+        let resampler = rubato::Fft::<f32>::new(
+            from_rate as usize,
+            SAMPLE_RATE as usize,
+            RESAMPLE_CHUNK,
+            1,
+            rubato::FixedSync::Input,
+        )?;
+        let chunk = rubato::Resampler::input_frames_next(&resampler);
+        let output = vec![0.0; rubato::Resampler::output_frames_max(&resampler)];
+        Ok(Self {
+            channels: channels as usize,
+            resampler,
+            pending: Vec::with_capacity(chunk),
+            output,
+        })
+    }
+
+    /// Averages each frame to one sample and hands every finished chunk of
+    /// 16kHz audio to `emit`. Input that does not fill a chunk waits for the
+    /// next call.
+    pub fn push(&mut self, interleaved: &[f32], mut emit: impl FnMut(&[f32])) {
+        let chunk = rubato::Resampler::input_frames_next(&self.resampler);
+        for frame in interleaved.chunks_exact(self.channels) {
+            self.pending
+                .push(frame.iter().sum::<f32>() / self.channels as f32);
+            if self.pending.len() < chunk {
+                continue;
+            }
+            let produced = self.convert(chunk);
+            self.pending.clear();
+            match produced {
+                Ok(frames) => emit(&self.output[..frames]),
+                Err(err) => eprintln!("resampler: dropped a chunk: {err}"),
+            }
+        }
+    }
+
+    fn convert(&mut self, chunk: usize) -> Result<usize> {
+        use rubato::Resampler;
+        use rubato::audioadapter_buffers::direct::SequentialSlice;
+
+        let input = SequentialSlice::new(self.pending.as_slice(), 1, chunk)?;
+        let frames = self.output.len();
+        let mut output = SequentialSlice::new_mut(self.output.as_mut_slice(), 1, frames)?;
+        let (_, produced) = self
+            .resampler
+            .process_into_buffer(&input, &mut output, None)?;
+        Ok(produced)
+    }
+}
+
 /// How long without a single callback before the stream is presumed dead. Well
 /// clear of the few-millisecond callback interval, and of the gap PipeWire
 /// introduces when it suspends an idle source, so a healthy capture is never
@@ -317,6 +389,35 @@ pub struct Capture {
     /// is a new source-output id, so what was wanted outlives what was applied.
     wanted_source: Mutex<Option<String>>,
     routed_to: Mutex<Option<String>>,
+}
+
+/// What to open the device with, and what has to convert its audio afterwards.
+///
+/// Linux asks for 16kHz mono outright and PipeWire converts, so nothing is
+/// left to do here.
+#[cfg(target_os = "linux")]
+fn input_format(_device: &Device) -> Result<(StreamConfig, Option<MonoResampler>)> {
+    let config = StreamConfig {
+        channels: 1,
+        sample_rate: SAMPLE_RATE,
+        buffer_size: cpal::BufferSize::Default,
+    };
+    Ok((config, None))
+}
+
+/// CoreAudio refuses any format but the hardware's own, so the device is opened
+/// as it is and converted here instead.
+#[cfg(target_os = "macos")]
+fn input_format(device: &Device) -> Result<(StreamConfig, Option<MonoResampler>)> {
+    let native = device.default_input_config()?;
+    if native.sample_format() != SampleFormat::F32 {
+        return Err(anyhow!(
+            "input device delivers {:?}, and only f32 is handled",
+            native.sample_format()
+        ));
+    }
+    let resampler = MonoResampler::new(native.sample_rate(), native.channels())?;
+    Ok((native.config(), Some(resampler)))
 }
 
 impl Capture {
@@ -350,18 +451,20 @@ impl Capture {
         let last_write = self.last_write.clone();
         let heard = self.heard.clone();
 
-        let config = StreamConfig {
-            channels: 1,
-            sample_rate: SAMPLE_RATE,
-            buffer_size: cpal::BufferSize::Default,
-        };
+        let (config, mut resampler) = input_format(device)?;
 
         let stream = device.build_input_stream(
             config,
             move |data: &[f32], _: &_| {
                 last_write.store(now_millis(), Ordering::Relaxed);
-                heard.fetch_add(data.len() as u64, Ordering::Relaxed);
-                write_input(&live, &sink, &roll, data)
+                let Some(resampler) = resampler.as_mut() else {
+                    heard.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    return write_input(&live, &sink, &roll, data);
+                };
+                resampler.push(data, |converted| {
+                    heard.fetch_add(converted.len() as u64, Ordering::Relaxed);
+                    write_input(&live, &sink, &roll, converted)
+                });
             },
             |err| eprintln!("stream error: {err}"),
             None,
