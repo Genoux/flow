@@ -105,10 +105,14 @@ mod damage_report {
     }
 
     /// A file of `bytes` length at `dest`, the way a real install leaves it.
+    /// Sparse, because the check only reads lengths: writing the bytes put
+    /// three copies of the 2.6GB model in a tmpfs `/tmp` and filled it.
     fn place(root: &std::path::Path, asset: &install::Asset, bytes: u64) {
         let path = root.join(asset.dest);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
-        std::fs::write(&path, vec![0u8; bytes as usize]).expect("write");
+        std::fs::File::create(&path)
+            .and_then(|file| file.set_len(bytes))
+            .expect("write");
     }
 
     fn whole(root: &std::path::Path) {
