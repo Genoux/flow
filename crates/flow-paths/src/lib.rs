@@ -134,6 +134,13 @@ pub fn duck_state_file() -> PathBuf {
     runtime_dir().join("flow-duck.json")
 }
 
+/// The LaunchAgent's stdout and stderr, which is where `flow logs` reads on
+/// macOS. `~/Library/Logs` is where Console.app already looks.
+#[cfg(target_os = "macos")]
+pub fn log_file() -> PathBuf {
+    home().join("Library/Logs/Flow/flow.log")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,18 +7,16 @@
 # back.
 set -euo pipefail
 
-# Flow is Linux-only and the daemon cannot even be compiled elsewhere: it opens
-# /dev/input and /dev/uinput, talks Wayland, and links a Vulkan llama.cpp. Run
-# on a Mac this used to spend two minutes reaching cmake and then failing inside
-# llama.cpp's Vulkan backend, which reads as a missing dependency rather than as
-# the wrong machine. The console alone does build here, but installing it
-# without a daemon or a systemd unit would be installing a window onto nothing.
-if [ "$(uname -s)" != "Linux" ]; then
-  echo "Flow is Linux-only - this is $(uname -s)." >&2
-  echo "The daemon opens /dev/uinput and talks Wayland, neither of which" >&2
-  echo "exists here. Run this on the machine you dictate on." >&2
-  exit 1
-fi
+# The daemon's Linux backends (/dev/uinput, Wayland, udev) do not exist
+# elsewhere; macOS has its own installer that builds and signs Flow.app.
+case "$(uname -s)" in
+  Linux) ;;
+  Darwin) exec bash "$(dirname "${BASH_SOURCE[0]}")/macos/install.sh" "$@" ;;
+  *)
+    echo "Flow supports Linux and macOS - this is $(uname -s)." >&2
+    exit 1
+    ;;
+esac
 
 # Which build this is. Both live side by side under their own names and a
 # symlink decides which one runs, so switching is repointing a link rather than

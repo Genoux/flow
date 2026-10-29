@@ -104,3 +104,6 @@ jobs:
           python3 tests/packaging_channels.py
           bash -n packaging/install.sh
           bash -n packaging/uninstall.sh
+          bash -n packaging/macos/install.sh
+          bash -n packaging/macos/uninstall.sh
+          bash -n packaging/macos/bundle.sh
