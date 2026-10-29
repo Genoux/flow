@@ -136,6 +136,12 @@ fn run() -> Result<()> {
             }
             return Ok(());
         }
+        // What the console's shortcut picker reads on a Mac, where capturing a
+        // chord needs the event tap and the tap lives here, signed as Flow with
+        // Input Monitoring. One key edge per line, in the daemon's own
+        // vocabulary, until killed.
+        #[cfg(target_os = "macos")]
+        Some("keys") => return print_key_edges(),
         Some("probe") => return probe(args.iter().any(|a| a == "--porcelain")),
         Some("logs") => return logs(&args[1..]),
         _ => {}
@@ -221,6 +227,31 @@ fn run() -> Result<()> {
             Err(_) => bail!("unknown command {other:?} - try `flow help`"),
         },
     }
+}
+
+/// `flow keys` - every key press and release as `KEY_NAME 1` or `KEY_NAME 0`.
+///
+/// Ends when its stdin closes, which is how the console cancels a capture and
+/// how it is cleaned up if the console never gets to.
+#[cfg(target_os = "macos")]
+fn print_key_edges() -> Result<()> {
+    use std::io::Write;
+
+    // The console holds the other end of stdin. When it goes - closed, crashed,
+    // killed - the pipe closes, and a global key tap must not outlive whoever
+    // asked for it.
+    std::thread::spawn(|| {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+        std::process::exit(0);
+    });
+
+    let mut out = std::io::stdout().lock();
+    for (key, pressed) in flow::hotkey::macos::listen()? {
+        if writeln!(out, "{key:?} {}", u8::from(pressed)).is_err() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// The first argument that is not a flag.

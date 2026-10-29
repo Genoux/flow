@@ -21,7 +21,7 @@ flow-paths = { path = "../flow-paths" }
 # Linux-only, and the only dependency here that is: evdev is the chord picker
 # reading /dev/input. Keeping it off other platforms is what lets the window
 # build on a Mac for design work - see the `chord` module in main.rs.
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 evdev = "0.13"
 
 [[bin]]

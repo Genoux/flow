@@ -7,23 +7,7 @@
 //! `config.toml`, `history` reads the transcript log, `vocabulary` edits
 //! `vocabulary.txt`.
 
-#[cfg(target_os = "linux")]
 mod chord;
-
-/// Capturing a chord means reading `/dev/input` below the compositor, and only
-/// Linux has it. Elsewhere the console is a window for looking at and laying
-/// out - the picker reports itself unavailable, which is the same answer Linux
-/// gives when `/dev/input` is not readable, so no call site changes.
-#[cfg(not(target_os = "linux"))]
-mod chord {
-    pub fn available() -> bool {
-        false
-    }
-
-    pub fn capture(_cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
-        Err("Shortcut capture is only available on Linux.".into())
-    }
-}
 
 mod calendar;
 mod card;
