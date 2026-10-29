@@ -134,3 +134,70 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             flow-*.tar.gz flow-*.tar.gz.sha256
+
+  # After the Linux job, which owns the version and channel checks and creates
+  # the draft this only adds to.
+  macos:
+    needs: release
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/console
+          shared-key: build-macos
+          save-if: false
+
+      - name: Test
+        run: |
+          cargo test --release --workspace
+          cargo test --release --manifest-path crates/console/Cargo.toml
+
+      - name: Build
+        run: |
+          cargo build --release
+          cargo build --release --manifest-path crates/console/Cargo.toml
+
+      # The same certificate on every release is what keeps macOS's microphone,
+      # Input Monitoring and Accessibility grants across updates - see
+      # packaging/macos/bundle.sh.
+      - name: Bundle and sign Flow.app
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+        run: |
+          export FLOW_SIGNING_P12="$RUNNER_TEMP/flow-signing.p12"
+          export FLOW_SIGNING_PASSWORD_FILE="$RUNNER_TEMP/p12.pass"
+          printf '%s' "$MACOS_SIGNING_P12" | base64 --decode > "$FLOW_SIGNING_P12"
+          printf '%s' "$MACOS_SIGNING_PASSWORD" > "$FLOW_SIGNING_PASSWORD_FILE"
+          name="flow-${GITHUB_REF_NAME}-aarch64-macos"
+          mkdir -p "$name"
+          bash packaging/macos/bundle.sh target/release/flow \
+            crates/console/target/release/flow-console "${GITHUB_REF_NAME#v}" "$name"
+          codesign -d -r- "$name/Flow.app/Contents/MacOS/flow" 2>&1 | grep -q 'certificate root' || {
+            echo "Flow.app was not signed with the release certificate" >&2
+            exit 1
+          }
+          rm -f "$FLOW_SIGNING_P12" "$FLOW_SIGNING_PASSWORD_FILE"
+
+      # Laid out like the Linux tarball, with Flow.app where that has bin/:
+      # packaging/install.sh installs the prebuilt app when it finds one.
+      - name: Package
+        run: |
+          name="flow-${GITHUB_REF_NAME}-aarch64-macos"
+          cp -R packaging "$name/"
+          cp README.md TROUBLESHOOTING.md LICENSE "$name/"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Add to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" flow-*-aarch64-macos.tar.gz flow-*-aarch64-macos.tar.gz.sha256
