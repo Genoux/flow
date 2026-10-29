@@ -290,16 +290,23 @@ fn recorded_takes() -> Result<Vec<std::path::PathBuf>> {
 fn logs(args: &[String]) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
-    if cfg!(not(target_os = "linux")) {
-        bail!("flow logs is not supported on macOS yet");
-    }
-
     // exec only returns when it failed to happen at all.
-    Err(std::process::Command::new("journalctl")
+    #[cfg(target_os = "linux")]
+    return Err(std::process::Command::new("journalctl")
         .args(["--user", "-u", "flow.service", "-n", "50"])
         .args(args)
         .exec())
-    .context("running journalctl - is this a systemd machine?")
+    .context("running journalctl - is this a systemd machine?");
+
+    // Same contract as above: `-n 50` first so a later `-n` wins, arguments
+    // untouched, so `flow logs -f` follows.
+    #[cfg(target_os = "macos")]
+    Err(std::process::Command::new("tail")
+        .args(["-n", "50"])
+        .args(args)
+        .arg(flow_paths::log_file())
+        .exec())
+    .context("running tail on the launchd log")
 }
 
 /// Whether OpenRouter answers, as `key<TAB>value` lines either way - porcelain

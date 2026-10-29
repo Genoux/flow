@@ -6,6 +6,10 @@
 # decision and this script prints how rather than making it for you.
 set -euo pipefail
 
+if [ "$(uname -s)" = Darwin ]; then
+  exec bash "$(dirname "${BASH_SOURCE[0]}")/macos/uninstall.sh" "$@"
+fi
+
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"

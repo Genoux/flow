@@ -14,7 +14,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
 use objc2_core_graphics::{
     CGEvent, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGKeyCode,
-    CGPreflightPostEventAccess,
+    CGPreflightPostEventAccess, CGRequestPostEventAccess,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 use std::sync::atomic::Ordering;
@@ -38,6 +38,11 @@ pub struct Injector;
 
 impl Injector {
     pub fn new() -> Result<Self> {
+        // Asked at startup so the Accessibility prompt appears with the app
+        // that owns the grant, not after the first dictation fails to paste.
+        if !CGPreflightPostEventAccess() {
+            CGRequestPostEventAccess();
+        }
         Ok(Self)
     }
 
