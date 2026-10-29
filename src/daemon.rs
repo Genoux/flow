@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 
 const STREAM_POLL: Duration = Duration::from_millis(40);
 
+/// How often the config is checked for a different microphone. The file itself
+/// is only re-read every 400ms, so there is nothing to gain from faster.
+#[cfg(target_os = "macos")]
+const PIN_POLL: Duration = Duration::from_millis(200);
+
 #[derive(Clone, Default)]
 struct StreamProgress {
     generation: u64,
@@ -57,14 +62,22 @@ pub fn run(
     watch_keys: bool,
     reporter: status::Reporter,
 ) -> Result<()> {
-    let device = audio::open_device()?;
-    if let Some(name) = audio::default_source_name() {
+    let input_device = live.lock().expect("config").input_device.clone();
+    // The pinned input from the first open: a Mac that opened the default and
+    // moved off it would have woken a Bluetooth headset into call mode first.
+    let device = audio::open_input(input_device.as_deref())?;
+    let source = if cfg!(target_os = "linux") {
+        audio::default_source_name()
+    } else {
+        audio::device_name(&device)
+    };
+    if let Some(name) = source {
         eprintln!("mic source: {name}");
     }
     let capture = audio::Capture::open(&device)?;
     // Before the warmup, so it listens to the microphone this machine actually
     // dictates with rather than warming the default and then moving off it.
-    capture.set_source(live.lock().expect("config").input_device.as_deref());
+    capture.set_source(input_device.as_deref());
     if capture.warmup(Duration::from_secs(2)) {
         eprintln!("mic is live");
     } else {
@@ -213,6 +226,26 @@ pub fn run(
                 status.ready();
             }
         });
+
+        // Off the keypress path, so a microphone picked in the console is
+        // already open, with pre-roll, by the next press. Only a Mac has
+        // anything to do: PipeWire moves the stream on the press instead.
+        #[cfg(target_os = "macos")]
+        {
+            let pinned = &capture;
+            scope.spawn(move || {
+                let mut seen = live.lock().expect("config").input_device.clone();
+                while listening.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(PIN_POLL);
+                    let wanted = live.lock().expect("config").input_device.clone();
+                    if wanted != seen {
+                        pinned.set_source(wanted.as_deref());
+                        pinned.follow_input();
+                        seen = wanted;
+                    }
+                }
+            });
+        }
 
         let recording = &capture;
         scope.spawn(move || {

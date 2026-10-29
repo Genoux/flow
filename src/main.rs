@@ -21,6 +21,8 @@ COMMANDS
     start | stop     Begin or end a dictation without holding the chord
     install          Fetch the speech model and seed the config templates
     check            Whether the speech model is whole
+    inputs           List the microphones by the names `input_device` takes;
+                     --default prints only the one the system would use
     probe            Check the OpenRouter connection and model routes
     logs [ARGS..]    The daemon's journal. Arguments go straight to journalctl,
                      so `flow logs -f` and `flow logs --since today` both work.
@@ -117,6 +119,20 @@ fn run() -> Result<()> {
                 for asset in &damaged {
                     println!("missing or damaged: {}", asset.dest);
                 }
+            }
+            return Ok(());
+        }
+        // The console lists microphones through this rather than linking cpal,
+        // so the names it writes to `input_device` are the ones `open_input`
+        // matches.
+        Some("inputs") => {
+            if args.iter().any(|a| a == "--default") {
+                let automatic = audio::open_input(None)?;
+                println!("{}", audio::device_name(&automatic).unwrap_or_default());
+            } else {
+                audio::input_names()
+                    .iter()
+                    .for_each(|name| println!("{name}"));
             }
             return Ok(());
         }
