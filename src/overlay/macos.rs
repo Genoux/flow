@@ -5,14 +5,14 @@
 //! and [`host`] is what keeps that thread serving it.
 
 use super::{Canvas, Face, HEIGHT, MARGIN_BOTTOM, SURFACE_WIDTH, render};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent, NSPanel,
-    NSScreen, NSScreenSaverWindowLevel, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSEvent, NSPanel, NSScreen, NSScreenSaverWindowLevel,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFType};
 use objc2_core_graphics::{
@@ -22,47 +22,12 @@ use objc2_core_graphics::{
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CATransaction;
 use std::cell::RefCell;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
-
-/// The stack the daemon had when it was the main thread.
-const WORKER_STACK: usize = 8 * 1024 * 1024;
 
 thread_local! {
     /// Only ever touched from the main thread, which is the only one AppKit
     /// lets own a window.
     static PANEL: RefCell<Option<Retained<NSPanel>>> = const { RefCell::new(None) };
-}
-
-/// Run `work` on a thread of its own and the main thread as an accessory
-/// application, so the overlay has an AppKit to draw with.
-///
-/// The process ends when `work` does, with the exit code and message the
-/// runtime would have given had `work` been `main`. A panic must end it too:
-/// the main thread is inside the app's event loop and would otherwise keep a
-/// dead daemon alive.
-pub fn host(work: fn() -> Result<()>) -> Result<()> {
-    let mtm = MainThreadMarker::new().context("the app must start on the main thread")?;
-
-    std::thread::Builder::new()
-        .stack_size(WORKER_STACK)
-        .spawn(move || {
-            let code = match catch_unwind(AssertUnwindSafe(work)) {
-                Ok(Ok(())) => 0,
-                Ok(Err(err)) => {
-                    eprintln!("Error: {err:?}");
-                    1
-                }
-                Err(_) => 101,
-            };
-            std::process::exit(code);
-        })
-        .context("starting the daemon thread")?;
-
-    let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    app.run();
-    Ok(())
 }
 
 /// One drawn frame, in the pixels `scale` makes of the island's points.

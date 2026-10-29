@@ -72,17 +72,15 @@ impl Console {
                 toggle(enabled, self.travel("autostart"), Message::Autostart),
             ));
         }
-        if cfg!(not(target_os = "macos")) {
-            rows.push(setting(
-                "Show tray icon",
-                "",
-                toggle(
-                    self.settings.show_tray,
-                    self.travel("show_tray"),
-                    Message::ShowTray,
-                ),
-            ));
-        }
+        rows.push(setting(
+            "Show tray icon",
+            "",
+            toggle(
+                self.settings.show_tray,
+                self.travel("show_tray"),
+                Message::ShowTray,
+            ),
+        ));
         rows.push(setting(
             "Sounds",
             "",

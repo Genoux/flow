@@ -1,0 +1,280 @@
+//! The Linux tray: a StatusNotifierItem over D-Bus, and systemd for the actions.
+//!
+//! Wayland has no tray. What exists is StatusNotifierItem over D-Bus, and an
+//! icon only appears if the bar runs a host for it (waybar's `tray` module,
+//! Quickshell's `SystemTray`). On a desktop with no host this registers and is
+//! never drawn, which is why every failure here is logged and swallowed: a
+//! dictation tool that refused to start because a bar was missing would be
+//! trading the whole product for its status light.
+
+use super::{Action, Entry, Verb};
+use ksni::blocking::TrayMethods;
+use ksni::menu::StandardItem;
+use ksni::{Icon as Pixmap, MenuItem, ToolTip, Tray};
+use std::sync::LazyLock;
+
+/// Sent inline over D-Bus to every host that connects and drawn at bar height,
+/// so the large one would be a quarter-megabyte of pixels to produce a 20px
+/// square. Regenerate with:
+///
+/// ```sh
+/// rsvg-convert -o assets/tray.png assets/tray.svg
+/// magick assets/tray.png -strip PNG32:assets/tray.png
+/// ```
+const ICON: &[u8] = include_bytes!("../../assets/tray.png");
+
+/// Decoded once. Hosts re-read the property on reconnect, and the answer never
+/// changes.
+static PIXMAP: LazyLock<Vec<Pixmap>> = LazyLock::new(|| vec![argb(ICON)]);
+
+/// The registered item. Dropping it does not unregister; [`Icon::hide`] does.
+pub struct Icon(ksni::blocking::Handle<Flow>);
+
+impl Icon {
+    pub fn hide(self) {
+        self.0.shutdown().wait();
+    }
+}
+
+/// Register the item once. [`super::run`] owns retrying it after a visibility
+/// setting changes.
+pub fn show() -> Option<Icon> {
+    // The tray service starts with the user manager and can easily beat the bar
+    // to it. A watcher that is not up yet is not the same as a desktop that
+    // will never have one; the host must be allowed to arrive afterwards.
+    match Flow.assume_sni_available(true).spawn() {
+        Ok(handle) => Some(Icon(handle)),
+        Err(err) => {
+            eprintln!("tray icon unavailable ({err}); the daemon is unaffected");
+            None
+        }
+    }
+}
+
+pub struct Flow;
+
+impl Tray for Flow {
+    fn id(&self) -> String {
+        "flow".into()
+    }
+
+    fn title(&self) -> String {
+        "Flow".into()
+    }
+
+    fn icon_pixmap(&self) -> Vec<Pixmap> {
+        PIXMAP.clone()
+    }
+
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            title: "Flow".into(),
+            description: super::tooltip(dictation_running()).into(),
+            ..Default::default()
+        }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        super::perform(Action::Open);
+    }
+
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        super::menu(dictation_running())
+            .into_iter()
+            .map(|entry| match entry {
+                Entry::Item { label, action } => StandardItem {
+                    label: label.into(),
+                    activate: Box::new(move |_: &mut Self| super::perform(action)),
+                    ..Default::default()
+                }
+                .into(),
+                Entry::Separator => MenuItem::Separator,
+            })
+            .collect()
+    }
+}
+
+/// Opens the console window, unless one is already open.
+///
+/// Nothing here can raise an existing window - a Wayland client cannot focus
+/// itself and the compositor's way of doing it differs per compositor - so the
+/// choice is between a second window and no visible response to the click. A
+/// duplicate window is the worse of the two: it is a second copy of a page that
+/// edits config files.
+pub fn open_console() {
+    if running("flow-console") {
+        return;
+    }
+    // Handed to the user manager rather than spawned as a child, because this
+    // service starts from `default.target` and so is running before the
+    // compositor exports WAYLAND_DISPLAY. A direct child inherits this
+    // process's frozen environment and the window dies on startup with
+    // "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set"; a
+    // transient unit gets the manager's current environment, which the
+    // compositor has since imported.
+    let Ok(mut launcher) = std::process::Command::new("systemd-run")
+        .args(["--user", "--quiet", "--collect", "--", &console_program()])
+        .spawn()
+    else {
+        eprintln!("tray: systemd-run is not available, cannot open flow-console");
+        return;
+    };
+    // Waited on its own thread, the way `chime` waits on paplay. A child
+    // nobody reaps stays in the process table under its own name after the
+    // window closes, so `running` above went on answering yes for the life
+    // of the daemon and every click after the first one did nothing.
+    std::thread::spawn(move || {
+        let _ = launcher.wait();
+    });
+}
+
+/// systemd resolves a bare name against a fixed list of system directories,
+/// never `$PATH`, so a `~/.local/bin` install has to be named in full.
+fn console_program() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let local = format!("{home}/.local/bin/flow-console");
+    if std::path::Path::new(&local).is_file() {
+        local
+    } else {
+        "flow-console".into()
+    }
+}
+
+pub fn dictation_running() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "flow.service"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+pub fn dictation(verb: Verb) {
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", verb.as_str(), "flow.service"])
+        .status();
+}
+
+/// End Flow entirely: the dictation daemon and this controller with it.
+///
+/// Stopping our own unit is what makes this Quit rather than a second way to
+/// hide the icon - `show_tray = false` leaves the controller running so the
+/// icon can come back live, and that is deliberately not what a Quit means.
+/// systemd terminates this process as part of the same call, so nothing after
+/// it is reached.
+pub fn quit() {
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "stop", "flow.service", "flow-tray.service"])
+        .status();
+}
+
+/// Whether a window of this program is open, read from `/proc` rather than asked
+/// of `pgrep`, which is not installed everywhere.
+///
+/// Unreaped children are not running. Whoever launched the console decides
+/// whether it is waited on - this module does, a shell does, a launcher may
+/// not - so a name in `/proc` is not on its own an open window.
+fn running(name: &str) -> bool {
+    !pids_of(name).is_empty()
+}
+
+/// Every live process of this program.
+fn pids_of(name: &str) -> Vec<libc::pid_t> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let process = entry.path();
+            let pid = process.file_name()?.to_str()?.parse().ok()?;
+            let named =
+                std::fs::read_to_string(process.join("comm")).is_ok_and(|comm| comm.trim() == name);
+            let waiting =
+                std::fs::read_to_string(process.join("stat")).is_ok_and(|stat| zombie(&stat));
+            (named && !waiting).then_some(pid)
+        })
+        .collect()
+}
+
+/// Whether a `/proc/<pid>/stat` line describes a process waiting to be reaped.
+///
+/// Read from after the last `)` rather than by splitting on spaces: the second
+/// field is the executable name in brackets, and a program free to have a space
+/// in its name is free to move every field after it.
+fn zombie(stat: &str) -> bool {
+    stat.rsplit_once(')')
+        .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+}
+
+/// PNG bytes to the ARGB32 the tray protocol asks for.
+///
+/// Panics rather than degrades, and only ever on the icon compiled into this
+/// binary: there is no input here that a running machine can get wrong, so a
+/// failure is a broken build and is covered by a test.
+fn argb(png: &[u8]) -> Pixmap {
+    // Cursor rather than the slice itself: the decoder seeks, and `&[u8]` reads
+    // forwards only.
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+        .read_info()
+        .expect("tray png header");
+    let mut data = vec![0; reader.output_buffer_size().expect("tray png size")];
+    let info = reader.next_frame(&mut data).expect("tray png pixels");
+    assert_eq!(
+        info.color_type,
+        png::ColorType::Rgba,
+        "the tray icon must be RGBA - regenerate it with PNG32:"
+    );
+    data.truncate(info.buffer_size());
+    // The two formats hold the same four bytes in a different order, so the
+    // conversion is a rotation per pixel rather than a copy.
+    for pixel in data.chunks_exact_mut(4) {
+        pixel.rotate_right(1);
+    }
+    Pixmap {
+        width: info.width as i32,
+        height: info.height as i32,
+        data,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The icon is an asset, so this fails at build time or never - which is
+    /// the point: `argb` panics on a bad one rather than shipping a daemon that
+    /// dies the first time a bar connects.
+    #[test]
+    fn the_tray_icon_decodes_to_argb() {
+        let icon = argb(ICON);
+        assert_eq!(icon.width, 64);
+        assert_eq!(icon.height, 64);
+        assert_eq!(icon.data.len(), 64 * 64 * 4);
+        // Opaque somewhere: an all-zero alpha channel decodes and draws nothing,
+        // which is the one broken icon that would otherwise look like a missing
+        // tray host.
+        assert!(
+            icon.data.chunks_exact(4).any(|pixel| pixel[0] > 0),
+            "every pixel is fully transparent"
+        );
+    }
+
+    /// The reported failure, in the one line that caused it: a closed console
+    /// left a zombie named `flow-console`, `running` counted it as an open
+    /// window, and the tray icon went dead for the rest of the session.
+    #[test]
+    fn an_unreaped_console_does_not_count_as_running() {
+        let dead = "2885662 (flow-console) Z 2874041 2874041 0 0 -1 4194560 0 0";
+        let alive = "2874041 (flow) S 2039268 2874041 0 0 -1 4194304 0 0";
+        assert!(zombie(dead));
+        assert!(!zombie(alive));
+    }
+
+    /// A name with a space in it moves every field after it, which is why the
+    /// state is read from the end of the brackets rather than by counting
+    /// columns.
+    #[test]
+    fn a_process_name_with_a_space_does_not_shift_the_state() {
+        assert!(zombie("42 (some name) Z 1 42 0"));
+        assert!(!zombie("42 (some name) R 1 42 0"));
+    }
+}

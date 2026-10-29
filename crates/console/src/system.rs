@@ -7,12 +7,9 @@
 //! settings window that remembers what it set is a window that disagrees with
 //! the system the moment anything else touches it.
 
-use std::process::Command;
 use std::time::Duration;
 
-/// Nothing here is on the dictation path, but a hung `systemctl` would freeze
-/// the UI thread just as effectively.
-const BUDGET: Duration = Duration::from_secs(3);
+pub(crate) use flow_paths::process::{run_for, BUDGET};
 /// Launch-time reads are advisory. If one owner is wedged, an absent answer is
 /// better than holding the first frame for the full interactive-action budget.
 const STARTUP_BUDGET: Duration = Duration::from_millis(250);
@@ -21,60 +18,7 @@ fn run(program: &str, args: &[&str]) -> Option<std::process::Output> {
     run_for(program, args, BUDGET)
 }
 
-pub(crate) fn run_for(
-    program: &str,
-    args: &[&str],
-    budget: Duration,
-) -> Option<std::process::Output> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
-
-    let stdout = drain(child.stdout.take()?);
-    let stderr = drain(child.stderr.take()?);
-    let deadline = std::time::Instant::now() + budget;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Some(std::process::Output {
-                    status,
-                    stdout: stdout
-                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                        .ok()??,
-                    stderr: stderr
-                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                        .ok()??,
-                });
-            }
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-}
-
-fn drain(
-    mut pipe: impl std::io::Read + Send + 'static,
-) -> std::sync::mpsc::Receiver<Option<Vec<u8>>> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    // PipeWire listings can exceed a pipe buffer; drain while the child runs.
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let output = pipe.read_to_end(&mut bytes).ok().map(|_| bytes);
-        let _ = sender.send(output);
-    });
-    receiver
-}
-
+#[cfg(not(target_os = "macos"))]
 fn failure_reason(output: &std::process::Output, fallback: &str) -> String {
     let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if reason.is_empty() {
@@ -85,6 +29,7 @@ fn failure_reason(output: &std::process::Output, fallback: &str) -> String {
 }
 
 /// Run a service manager command, failing with what it said on stderr.
+#[cfg(not(target_os = "macos"))]
 fn require_success(program: &str, args: &[&str], fallback: &str) -> Result<(), String> {
     let output = run(program, args).ok_or_else(|| format!("{program} did not respond"))?;
     if output.status.success() {
@@ -307,40 +252,9 @@ mod tests {
 
     use super::*;
 
-    /// A process that never answers is the failure behind the three-second
-    /// tray opening. The launch path must kill and reap it on its smaller
-    /// deadline instead of inheriting the budget meant for button presses.
     #[test]
-    fn a_stalled_launch_probe_is_cut_short() {
-        let started = std::time::Instant::now();
-        let answer = run_for(
-            "sh",
-            &["-c", "while :; do :; done"],
-            Duration::from_millis(25),
-        );
-
-        assert!(answer.is_none());
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "a launch probe outlived its deadline by too much"
-        );
+    fn a_launch_probe_gets_less_time_than_a_button_press() {
         assert!(STARTUP_BUDGET < BUDGET);
-    }
-
-    #[test]
-    fn command_output_can_exceed_pipe_capacity() {
-        let output = run_for(
-            "sh",
-            &[
-                "-c",
-                "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2",
-            ],
-            Duration::from_secs(2),
-        )
-        .expect("both output pipes must drain before the deadline");
-        assert!(output.status.success());
-        assert_eq!(output.stdout.len(), 131072);
-        assert_eq!(output.stderr.len(), 131072);
     }
 
     /// Stop signals whatever the pid file names, so the one thing standing

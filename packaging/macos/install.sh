@@ -37,6 +37,7 @@ apps="$HOME/Applications"
 app="$apps/Flow.app"
 agents="$HOME/Library/LaunchAgents"
 label=com.genoux.flow
+tray_label=com.genoux.flow.tray
 # ponytail: launchd appends here forever and nothing rotates it; a few lines per
 # dictation makes that years of headroom. newsyslog.d can rotate it if not.
 log="$HOME/Library/Logs/Flow/flow.log"
@@ -54,12 +55,26 @@ target_dir() {
 # Launch at login switch is stored. Enabled only for the instant of loading, so
 # that choice survives.
 load_agent() {
-  local disabled=false status=0
-  [[ "$(launchctl print-disabled "$domain")" != *"\"$label\" => disabled"* ]] || disabled=true
-  if "$disabled"; then launchctl enable "$domain/$label"; fi
-  launchctl bootstrap "$domain" "$agents/$label.plist" || status=$?
-  if "$disabled"; then launchctl disable "$domain/$label"; fi
+  local agent="$1" disabled=false status=0
+  [[ "$(launchctl print-disabled "$domain")" != *"\"$agent\" => disabled"* ]] || disabled=true
+  if "$disabled"; then launchctl enable "$domain/$agent"; fi
+  launchctl bootstrap "$domain" "$agents/$agent.plist" || status=$?
+  if "$disabled"; then launchctl disable "$domain/$agent"; fi
   return "$status"
+}
+
+# bootout then bootstrap is also what restarts a loaded agent onto the new
+# build.
+reload_agent() {
+  local agent="$1"
+  launchctl bootout "$domain/$agent" 2>/dev/null || true
+  # bootout returns before the job is gone, and bootstrapping the label
+  # while it lingers fails with EIO.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print "$domain/$agent" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  load_agent "$agent"
 }
 
 mkdir -p "$apps" "$bin_dir" "$agents" "$(dirname "$log")"
@@ -99,6 +114,9 @@ ln -sfn "$app/Contents/MacOS/flow" "$bin_dir/flow"
 sed -e "s|@APP@|$app|g" -e "s|@LOG@|$log|g" \
   "$repo/packaging/macos/com.genoux.flow.plist" > "$agents/$label.plist"
 plutil -lint "$agents/$label.plist" >/dev/null
+sed -e "s|@APP@|$app|g" -e "s|@LOG@|$log|g" \
+  "$repo/packaging/macos/$tray_label.plist" > "$agents/$tray_label.plist"
+plutil -lint "$agents/$tray_label.plist" >/dev/null
 
 if "$models"; then
   "$bin_dir/flow" install
@@ -106,23 +124,23 @@ fi
 
 loaded=false
 launchctl print "$domain/$label" >/dev/null 2>&1 && loaded=true
+tray_loaded=false
+launchctl print "$domain/$tray_label" >/dev/null 2>&1 && tray_loaded=true
 if "$activate"; then
-  # bootout then bootstrap is also what restarts a loaded agent onto the new
-  # build, so --no-restart leaves a loaded one alone.
+  # --no-restart leaves a loaded agent alone.
   if ! "$loaded" || "$restart"; then
     say "Starting the daemon"
-    launchctl bootout "$domain/$label" 2>/dev/null || true
-    # bootout returns before the job is gone, and bootstrapping the label
-    # while it lingers fails with EIO.
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      launchctl print "$domain/$label" >/dev/null 2>&1 || break
-      sleep 0.5
-    done
-    load_agent
+    reload_agent "$label"
+  fi
+  # The tray is its own agent, so the menu bar item outlives the daemon.
+  if ! "$tray_loaded" || "$restart"; then
+    say "Starting the menu bar item"
+    reload_agent "$tray_label"
   fi
 elif "$restart" && "$loaded"; then
   say "Restarting the running daemon onto the new build"
   launchctl kickstart -k "$domain/$label"
+  if "$tray_loaded"; then launchctl kickstart -k "$domain/$tray_label"; fi
 fi
 
 say "Done"
