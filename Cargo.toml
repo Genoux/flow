@@ -46,10 +46,12 @@ ksni = { version = "0.3.6", default-features = false, features = ["blocking", "a
 objc2 = "0.6.4"
 dispatch2 = "0.3.0"
 objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSColor", "NSEvent", "NSGraphics", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "objc2-core-foundation", "objc2-quartz-core"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSColor", "NSEvent", "NSGraphics", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSSound", "NSView", "NSWindow", "objc2-core-foundation", "objc2-quartz-core"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFData", "CFMachPort", "CFRunLoop", "CFString"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColorSpace", "CGDataProvider", "CGEvent", "CGEventSource", "CGEventTypes", "CGImage", "CGRemoteOperation"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSGeometry", "NSString"] }
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSEnumerator", "NSError", "NSGeometry", "NSString"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation"] }
 
 # Line tables instead of full DWARF. Backtraces still name file and line,

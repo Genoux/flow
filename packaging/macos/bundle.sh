@@ -63,10 +63,12 @@ iconutil -c icns "$iconset" -o "$app/Contents/Resources/flow.icns"
 if [ -f "$p12" ] && [ -f "$password_file" ]; then
   rcodesign="$(fetch_rcodesign)"
   # Signing the bundle re-signs every executable in it, so the daemon's
-  # identifier is scoped to its path here; signed separately beforehand, it
-  # came out as plain "flow". The console takes CFBundleIdentifier.
+  # identifier is named here; signed separately beforehand, it came out as
+  # plain "flow". It is the bundle's own, not a separate one: the notification
+  # centre refuses a process whose signing identifier differs from its bundle
+  # id, and System Settings lists one Flow rather than a Flow and a daemon.
   if ! output="$("$rcodesign" sign --p12-file "$p12" --p12-password-file "$password_file" \
-    --binary-identifier "Contents/MacOS/flow:$bundle_id.daemon" "$app" 2>&1)"; then
+    --binary-identifier "Contents/MacOS/flow:$bundle_id" "$app" 2>&1)"; then
     echo "$output" >&2
     exit 1
   fi
