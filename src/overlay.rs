@@ -9,32 +9,25 @@
 //! whole drawing here is one rounded rectangle repeated - the island and every
 //! bar are the same primitive.
 //!
-//! Only the Wayland surface exists so far. Elsewhere the handle is inert.
-//!
-//! ponytail: no overlay on macOS, so the drawing code compiles there but is
-//! dead. An NSPanel overlay slice drawing the same geometry removes the allow.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+//! The surface is the only part that differs per platform: a wlr-layer-shell
+//! surface on Linux (`wayland.rs`), an `NSPanel` on macOS (`macos.rs`). Both
+//! expose a `Surface` with the same methods, and `run` drives either.
 
-#[cfg(target_os = "linux")]
-use anyhow::{Context, Result, anyhow};
-#[cfg(target_os = "linux")]
-use std::fs::File;
-#[cfg(target_os = "linux")]
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::FileExt;
-#[cfg(target_os = "linux")]
-use std::sync::mpsc::RecvTimeoutError;
-use std::sync::mpsc::{self, Sender};
+use anyhow::Result;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
+
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "linux")]
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
-};
+mod wayland;
+
+#[cfg(target_os = "macos")]
+use macos::Surface;
+#[cfg(target_os = "macos")]
+pub use macos::host;
 #[cfg(target_os = "linux")]
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
-#[cfg(target_os = "linux")]
-use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+use wayland::Surface;
 
 use crate::audio::Monitor;
 
@@ -759,21 +752,15 @@ fn resume(grown: f32) -> std::time::Instant {
     std::time::Instant::now() - Duration::from_secs_f32(grown.clamp(0.0, 1.0) * BLOOM)
 }
 
-/// Drop the surface and push the destroy out to the compositor.
+/// Show the surface and sound the island.
 ///
-/// The roundtrip is the whole point. Dropping the [`Island`] only queues the
-/// destroy requests, and the next thing this loop does with no island up is
-/// block on `recv()` - so without a flush the surface stays on screen until the
-/// next chord arrives to wake the loop and send them.
-#[cfg(target_os = "linux")]
-fn take_down(
-    island: &mut Option<Island>,
-    queue: &mut EventQueue<Wayland>,
-    state: &mut Wayland,
-) -> Result<()> {
-    *island = None;
-    queue.roundtrip(state)?;
-    Ok(())
+/// Also the moment the island is heard. Both callers reach the surface through
+/// here, so the chime lives with the mapping rather than at each one - and it
+/// goes first, ahead of any round trip to the display server and well ahead of
+/// the ducking that follows the arm.
+fn map(surface: &mut Surface) {
+    crate::chime::show();
+    surface.map();
 }
 
 /// What the island does once it has finished arriving.
@@ -798,7 +785,6 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    #[cfg(target_os = "linux")]
     pub fn spawn(monitor: Monitor) -> Self {
         let (commands, incoming) = mpsc::channel();
         std::thread::spawn(move || {
@@ -806,14 +792,6 @@ impl Overlay {
                 eprintln!("overlay disabled: {err}");
             }
         });
-        Self { commands }
-    }
-
-    /// The receiver is dropped at once, so every send fails, and every method
-    /// here already ignores that.
-    #[cfg(not(target_os = "linux"))]
-    pub fn spawn(_monitor: Monitor) -> Self {
-        let (commands, _) = mpsc::channel();
         Self { commands }
     }
 
@@ -1272,221 +1250,9 @@ fn render_island(
     }
 }
 
-#[derive(Default)]
-#[cfg(target_os = "linux")]
-struct Wayland {
-    compositor: Option<wl_compositor::WlCompositor>,
-    shm: Option<wl_shm::WlShm>,
-    layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
-    scale: i32,
-    configured: bool,
-    closed: bool,
-}
-
-/// The mapped surface. Dropped the moment recording stops, so nothing of flow
-/// is on screen - or composited - between dictations.
-#[cfg(target_os = "linux")]
-struct Island {
-    surface: wl_surface::WlSurface,
-    layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-}
-
-#[cfg(target_os = "linux")]
-impl Island {
-    /// Also the moment the island is heard. Both callers reach the surface
-    /// through here, so the chime lives with the mapping rather than at each
-    /// one - and it goes first, ahead of the Wayland round trips and well
-    /// ahead of the ducking that follows the arm.
-    fn map(
-        compositor: &wl_compositor::WlCompositor,
-        shell: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
-        queue: &QueueHandle<Wayland>,
-    ) -> Self {
-        crate::chime::show();
-
-        let surface = compositor.create_surface(queue, ());
-        let layer = shell.get_layer_surface(
-            &surface,
-            None,
-            zwlr_layer_shell_v1::Layer::Overlay,
-            "flow".into(),
-            queue,
-            (),
-        );
-        layer.set_size(SURFACE_WIDTH, HEIGHT);
-        layer.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
-        layer.set_margin(0, 0, MARGIN_BOTTOM, 0);
-        layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
-
-        // An empty input region makes the island click-through; an indicator
-        // that swallows a click on whatever is underneath is worse than none.
-        let region = compositor.create_region(queue, ());
-        surface.set_input_region(Some(&region));
-        region.destroy();
-
-        surface.commit();
-        Self { surface, layer }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for Island {
-    fn drop(&mut self) {
-        self.layer.destroy();
-        self.surface.destroy();
-    }
-}
-
-/// Two buffers so the compositor is never reading the frame we are painting.
-#[cfg(target_os = "linux")]
-struct Buffers {
-    file: File,
-    pool: wl_shm_pool::WlShmPool,
-    buffers: [wl_buffer::WlBuffer; 2],
-    canvas: Canvas,
-    next: usize,
-    scale: i32,
-}
-
-#[cfg(target_os = "linux")]
-impl Buffers {
-    fn create(shm: &wl_shm::WlShm, queue: &QueueHandle<Wayland>, scale: i32) -> Result<Self> {
-        let width = SURFACE_WIDTH as i32 * scale;
-        let height = HEIGHT as i32 * scale;
-        let stride = width * 4;
-        let frame = stride * height;
-
-        let file = File::from(shared_memory(frame as usize * 2)?);
-        let pool = shm.create_pool(file.as_fd(), frame * 2, queue, ());
-        let buffers = [0, 1].map(|slot| {
-            pool.create_buffer(
-                slot * frame,
-                width,
-                height,
-                stride,
-                wl_shm::Format::Argb8888,
-                queue,
-                (),
-            )
-        });
-
-        Ok(Self {
-            file,
-            pool,
-            buffers,
-            canvas: Canvas::new(width as usize, height as usize),
-            next: 0,
-            scale,
-        })
-    }
-
-    fn present(&mut self, surface: &wl_surface::WlSurface, face: Face) -> Result<()> {
-        render(&mut self.canvas, face, self.scale as f32);
-
-        let slot = self.next;
-        self.next = 1 - self.next;
-        self.file
-            .write_all_at(
-                &self.canvas.pixels,
-                (slot * self.canvas.pixels.len()) as u64,
-            )
-            .context("writing the overlay frame")?;
-
-        surface.attach(Some(&self.buffers[slot]), 0, 0);
-        surface.damage_buffer(0, 0, self.canvas.width as i32, self.canvas.height as i32);
-        surface.commit();
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for Buffers {
-    fn drop(&mut self) {
-        for buffer in &self.buffers {
-            buffer.destroy();
-        }
-        self.pool.destroy();
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn shared_memory(size: usize) -> Result<OwnedFd> {
-    // SAFETY: a NUL-terminated literal name, and the raw fd is taken into an
-    // OwnedFd immediately so it is closed exactly once.
-    let raw = unsafe { libc::memfd_create(c"flow-overlay".as_ptr(), libc::MFD_CLOEXEC) };
-    if raw < 0 {
-        return Err(std::io::Error::last_os_error()).context("memfd_create");
-    }
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-
-    // SAFETY: sizing a fresh memfd owned by `fd`.
-    if unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("sizing the overlay buffer");
-    }
-    Ok(fd)
-}
-
-/// A connected display with everything the island needs off the registry.
-#[cfg(target_os = "linux")]
-struct Display {
-    connection: Connection,
-    queue: EventQueue<Wayland>,
-    state: Wayland,
-    compositor: wl_compositor::WlCompositor,
-    shm: wl_shm::WlShm,
-    shell: zwlr_layer_shell_v1::ZwlrLayerShellV1,
-}
-
-#[cfg(target_os = "linux")]
-fn connect() -> Result<Display> {
-    let connection = Connection::connect_to_env().context("no wayland display")?;
-    let mut queue = connection.new_event_queue();
-    let handle = queue.handle();
-    connection.display().get_registry(&handle, ());
-
-    let mut state = Wayland {
-        scale: 1,
-        ..Wayland::default()
-    };
-    queue.roundtrip(&mut state)?;
-
-    let compositor = state
-        .compositor
-        .clone()
-        .ok_or_else(|| anyhow!("compositor does not advertise wl_compositor"))?;
-    let shm = state
-        .shm
-        .clone()
-        .ok_or_else(|| anyhow!("compositor does not advertise wl_shm"))?;
-    let shell = state
-        .layer_shell
-        .clone()
-        .ok_or_else(|| anyhow!("compositor does not support wlr-layer-shell"))?;
-
-    Ok(Display {
-        connection,
-        queue,
-        state,
-        compositor,
-        shm,
-        shell,
-    })
-}
-
-#[cfg(target_os = "linux")]
 fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
-    let Display {
-        connection,
-        mut queue,
-        mut state,
-        compositor,
-        shm,
-        shell,
-    } = connect()?;
-    let handle = queue.handle();
+    let mut surface = Surface::connect()?;
 
-    let mut island: Option<Island> = None;
-    let mut buffers: Option<Buffers> = None;
     let mut analyzer = Analyzer::new();
     let mut window: Vec<f32> = Vec::with_capacity(WINDOW);
     let mut heights = [0.0f32; BAR_COUNT];
@@ -1528,7 +1294,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let mut lifecycle = Lifecycle::default();
 
     loop {
-        let waiting = if island.is_some() {
+        let waiting = if surface.is_mapped() {
             commands.recv_timeout(FRAME)
         } else {
             commands.recv().map_err(|_| RecvTimeoutError::Disconnected)
@@ -1550,12 +1316,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 ending = None;
                 toast = None;
                 lifecycle.record();
-                if island.is_none() {
+                if !surface.is_mapped() {
                     grown = 0.0;
                     started = std::time::Instant::now();
-                    state.configured = false;
-                    state.closed = false;
-                    island = Some(Island::map(&compositor, &shell, &handle));
+                    map(&mut surface);
                 }
                 // The bloom starts on the keypress rather than waiting for the
                 // mic to actually open - press, open, and extend are meant to
@@ -1595,13 +1359,11 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 if !was_armed {
                     lifecycle.record();
                 }
-                if island.is_none() {
+                if !surface.is_mapped() {
                     started = std::time::Instant::now();
                     // Mapped at once. The duck happens on the same keypress, so
                     // any delay here reads as the island lagging the response.
-                    state.configured = false;
-                    state.closed = false;
-                    island = Some(Island::map(&compositor, &shell, &handle));
+                    map(&mut surface);
                 }
             }
             // The island stays mapped through the handover, so the bars turn
@@ -1651,36 +1413,22 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
 
-        queue.roundtrip(&mut state)?;
+        surface.dispatch()?;
 
         // The compositor can take the surface away at any point - a monitor
         // unplugged mid-sentence. Recording carries on regardless.
-        if state.closed {
-            island = None;
+        if surface.is_closed() {
+            surface.release();
             toast = None;
             ending = None;
             leaving = None;
             grown = 0.0;
             continue;
         }
-        let Some(mapped) = island.as_ref() else {
-            continue;
-        };
-        if !state.configured {
+        if !surface.is_ready() {
             continue;
         }
 
-        if buffers
-            .as_ref()
-            .is_none_or(|held| held.scale != state.scale)
-        {
-            buffers = Some(Buffers::create(&shm, &handle, state.scale)?);
-        }
-        let Some(buffers) = buffers.as_mut() else {
-            continue;
-        };
-
-        mapped.surface.set_buffer_scale(state.scale);
         if settling {
             // Down to rest underneath the sweep, which is already running.
             for bar in heights.iter_mut() {
@@ -1750,8 +1498,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 wake: grown,
             },
         };
-        buffers.present(&mapped.surface, face)?;
-        connection.flush()?;
+        surface.present(face)?;
 
         // Only now, with the finished shape already on its way to the
         // compositor, may the island act on how this dictation ends. Nothing
@@ -1796,93 +1543,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
         // Pulled all the way back into its dot, so there is nothing left to show.
         if leaving.is_some() && grown <= 0.0 {
             leaving = None;
-            take_down(&mut island, &mut queue, &mut state)?;
+            surface.take_down()?;
         }
     }
 }
-
-#[cfg(target_os = "linux")]
-impl Dispatch<wl_registry::WlRegistry, ()> for Wayland {
-    fn event(
-        state: &mut Self,
-        registry: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        _: &(),
-        _: &Connection,
-        queue: &QueueHandle<Self>,
-    ) {
-        let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        else {
-            return;
-        };
-        match &interface[..] {
-            // Version 6 carries preferred_buffer_scale, which is what keeps the
-            // island sharp on a scaled output instead of upscaled and soft.
-            "wl_compositor" => {
-                state.compositor = Some(registry.bind(name, version.min(6), queue, ()));
-            }
-            "wl_shm" => state.shm = Some(registry.bind(name, 1, queue, ())),
-            "zwlr_layer_shell_v1" => {
-                state.layer_shell = Some(registry.bind(name, version.min(4), queue, ()));
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Dispatch<wl_surface::WlSurface, ()> for Wayland {
-    fn event(
-        state: &mut Self,
-        _: &wl_surface::WlSurface,
-        event: wl_surface::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_surface::Event::PreferredBufferScale { factor } = event {
-            state.scale = factor.max(1);
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Wayland {
-    fn event(
-        state: &mut Self,
-        layer: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-        event: zwlr_layer_surface_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
-                layer.ack_configure(serial);
-                state.configured = true;
-            }
-            zwlr_layer_surface_v1::Event::Closed => state.closed = true,
-            _ => {}
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-delegate_noop!(Wayland: ignore wl_compositor::WlCompositor);
-#[cfg(target_os = "linux")]
-delegate_noop!(Wayland: ignore wl_shm::WlShm);
-#[cfg(target_os = "linux")]
-delegate_noop!(Wayland: ignore wl_shm_pool::WlShmPool);
-#[cfg(target_os = "linux")]
-delegate_noop!(Wayland: ignore wl_buffer::WlBuffer);
-#[cfg(target_os = "linux")]
-delegate_noop!(Wayland: ignore wl_region::WlRegion);
-#[cfg(target_os = "linux")]
-delegate_noop!(Wayland: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 
 #[cfg(test)]
 mod tests {

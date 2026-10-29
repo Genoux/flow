@@ -45,7 +45,24 @@ Word fixes       ~/.config/flow/vocabulary.txt
 Verbose output   FLOW_DEBUG=1
 ";
 
+#[cfg(target_os = "linux")]
 fn main() -> Result<()> {
+    run()
+}
+
+/// The overlay is AppKit, which only works from the main thread - so the
+/// daemon, and only the daemon, runs beside it. Everything else is a short
+/// command that opens no window and has no use for a window server.
+#[cfg(target_os = "macos")]
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if command(&args) == Some("daemon") {
+        return flow::overlay::host(run);
+    }
+    run()
+}
+
+fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Before the config, and before the 640 MB speech model: asking what the
