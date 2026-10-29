@@ -3,9 +3,9 @@
 //! it.
 //!
 //! Everything here shells out to the tools that own this state - `systemctl`
-//! and `pactl` - rather than keeping a copy of it. A settings window that
-//! remembers what it set is a window that disagrees with the system the moment
-//! anything else touches it.
+//! and `pactl`, or `launchctl` on a Mac - rather than keeping a copy of it. A
+//! settings window that remembers what it set is a window that disagrees with
+//! the system the moment anything else touches it.
 
 use std::process::Command;
 use std::time::Duration;
@@ -75,6 +75,55 @@ fn drain(
     receiver
 }
 
+fn failure_reason(output: &std::process::Output, fallback: &str) -> String {
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if reason.is_empty() {
+        fallback.to_owned()
+    } else {
+        reason
+    }
+}
+
+/// Run a service manager command, failing with what it said on stderr.
+fn require_success(program: &str, args: &[&str], fallback: &str) -> Result<(), String> {
+    let output = run(program, args).ok_or_else(|| format!("{program} did not respond"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(failure_reason(&output, fallback))
+    }
+}
+
+/// The last step of `restart_app`, once the daemon is back up.
+fn reopen_flow(program: &str, args: &[&str]) -> Result<(), String> {
+    let output = run(program, args)
+        .ok_or("The replacement window could not be started. Reopen Flow to retry.")?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not reopen Flow: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+// launchd is also built on Linux under test, so its parsers and its state
+// machine run in CI rather than only on a Mac.
+#[cfg(any(target_os = "macos", test))]
+mod launchd;
+#[cfg(not(target_os = "macos"))]
+mod systemd;
+#[cfg(target_os = "macos")]
+use launchd as platform;
+#[cfg(not(target_os = "macos"))]
+use systemd as platform;
+
+use platform::{autostart_enabled_for, control, ensure_running, is_flow_process, OPENER};
+pub(crate) use platform::{
+    channel, flow_program, installed_binaries, restart_app, session, set_autostart, set_channel,
+    start_tray,
+};
+
 /// Whether the user unit is enabled, or `None` when systemd cannot answer -
 /// the unit is not installed, or this is not a systemd session. `None` means
 /// "do not offer this control", not "off".
@@ -86,22 +135,6 @@ pub fn autostart_enabled() -> Option<bool> {
 /// the window invisible; the full budget remains available after interaction.
 pub fn startup_autostart_enabled() -> Option<bool> {
     autostart_enabled_for(STARTUP_BUDGET)
-}
-
-fn autostart_enabled_for(budget: Duration) -> Option<bool> {
-    let output = run_for(
-        "systemctl",
-        &["--user", "is-enabled", "flow.service"],
-        budget,
-    )?;
-    let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    match state.as_str() {
-        // `linked` and `static` are enabled-ish; anything else we do not
-        // understand well enough to claim a state for.
-        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "static" => Some(true),
-        "disabled" => Some(false),
-        _ => None,
-    }
 }
 
 /// How many of the installed speech-model files are missing or the wrong
@@ -127,7 +160,7 @@ pub fn startup_damage() -> Option<usize> {
 }
 
 fn damage_for(budget: Duration) -> Option<usize> {
-    let output = run_for("flow", &["check", "--porcelain"], budget)?;
+    let output = run_for(&flow_program(), &["check", "--porcelain"], budget)?;
     let text = String::from_utf8_lossy(&output.stdout);
 
     // The verdict line is the handshake: without it this is an older `flow`
@@ -157,47 +190,8 @@ const PROBE_BUDGET: Duration = Duration::from_secs(15);
 /// `None` means no verdict, the same as [`damage`]: no `flow` on PATH, or it
 /// did not answer inside the budget.
 pub fn probe_router() -> Option<crate::openrouter::Outcome> {
-    let output = run_for("flow", &["probe", "--porcelain"], PROBE_BUDGET)?;
+    let output = run_for(&flow_program(), &["probe", "--porcelain"], PROBE_BUDGET)?;
     crate::openrouter::parse_probe(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Enable or disable the user unit. Returns the error text on failure so the
-/// window can show why rather than silently springing the switch back.
-pub fn set_autostart(enable: bool) -> Result<(), String> {
-    let verb = if enable { "enable" } else { "disable" };
-    let output = run("systemctl", &["--user", verb, "flow.service"])
-        .ok_or_else(|| "systemctl did not respond".to_string())?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() {
-        format!("systemctl {verb} failed")
-    } else {
-        reason
-    })
-}
-
-/// Which build the `flow` symlink currently points at.
-///
-/// The link is the setting. There is deliberately no `channel = ` line in the
-/// config: two sources for one fact drift, and a config that claimed
-/// experimental while the link pointed at stable would be lying about which
-/// binary is about to run. Reading the link cannot be wrong, and someone who
-/// repoints it by hand gets a window that agrees with them.
-pub fn channel() -> Channel {
-    channel_in(&bin_dir())
-}
-
-fn channel_in(dir: &std::path::Path) -> Channel {
-    let link = dir.join("flow");
-    match std::fs::read_link(&link) {
-        Ok(target) if target.to_string_lossy().ends_with("-experimental") => Channel::Experimental,
-        Ok(_) => Channel::Stable,
-        // No link at all is an install that predates channels, which is a
-        // stable one.
-        Err(_) => Channel::Stable,
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,93 +209,6 @@ impl Channel {
     }
 }
 
-pub(crate) fn bin_dir() -> std::path::PathBuf {
-    std::env::var_os("XDG_BIN_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/bin")
-        })
-}
-
-/// Point `flow` and `flow-console` at the other build.
-///
-/// Takes effect on restart, not now: the running daemon is the old binary and
-/// this window is the old console. Switching is repointing two links, so going
-/// back is the same operation - which is the whole reason both builds stay on
-/// disk rather than one replacing the other.
-pub fn set_channel(channel: Channel) -> Result<(), String> {
-    set_channel_in(&bin_dir(), channel)
-}
-
-fn set_channel_in(dir: &std::path::Path, channel: Channel) -> Result<(), String> {
-    for name in ["flow", "flow-console"] {
-        let target = dir.join(format!("{name}-{}", channel.suffix()));
-        use std::os::unix::fs::PermissionsExt;
-        if !target
-            .metadata()
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        {
-            return Err(format!(
-                "{} is not installed or executable",
-                target.display()
-            ));
-        }
-    }
-    let stage = dir.join(".flow-channel-switch");
-    std::fs::create_dir(&stage).map_err(|e| format!("Preparing channel switch: {e}"))?;
-    let result = (|| -> std::io::Result<()> {
-        for name in ["flow", "flow-console"] {
-            let link = dir.join(name);
-            if link.symlink_metadata().is_ok() {
-                std::fs::hard_link(&link, stage.join(format!("{name}.old")))?;
-            }
-            std::os::unix::fs::symlink(format!("{name}-{}", channel.suffix()), stage.join(name))?;
-        }
-        std::fs::rename(stage.join("flow"), dir.join("flow"))?;
-        if let Err(error) = std::fs::rename(stage.join("flow-console"), dir.join("flow-console")) {
-            let backup = stage.join("flow.old");
-            if backup.symlink_metadata().is_ok() {
-                std::fs::rename(backup, dir.join("flow"))?;
-            } else {
-                std::fs::remove_file(dir.join("flow"))?;
-            }
-            return Err(error);
-        }
-        Ok(())
-    })();
-    let _ = std::fs::remove_dir_all(stage);
-    result.map_err(|e| format!("Switching release: {e}"))
-}
-
-pub fn restart_app() -> Result<(), String> {
-    let console = bin_dir().join("flow-console");
-    if !console.is_file() {
-        return Err("The selected console is missing. Install the release again.".into());
-    }
-    service("stop")?;
-    let _ = run("systemctl", &["--user", "try-restart", "flow-tray.service"]);
-    // A child in the old console's transient unit dies when that window exits.
-    let output = run(
-        "systemd-run",
-        &[
-            "--user",
-            "--quiet",
-            "--collect",
-            "--property=Type=exec",
-            "--",
-            console.to_str().ok_or("Invalid console path")?,
-        ],
-    )
-    .ok_or("The replacement window could not be started. Reopen Flow to retry.")?;
-    if !output.status.success() {
-        return Err(format!(
-            "Could not reopen Flow: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
-}
-
 /// Start, stop or restart the daemon.
 ///
 /// The window is not how you dictate, but it is a reasonable place to turn the
@@ -311,16 +218,7 @@ pub fn service(verb: &str) -> Result<(), String> {
     if verb == "start" && daemon_listening(&flow_paths::socket()) {
         return Ok(());
     }
-    let output = run("systemctl", &["--user", verb, "flow.service"])
-        .ok_or_else(|| "systemctl did not respond".to_string())?;
-    if !output.status.success() {
-        let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if reason.is_empty() {
-            format!("systemctl {verb} failed")
-        } else {
-            reason
-        });
-    }
+    control(verb)?;
 
     if matches!(verb, "start" | "restart") {
         ensure_running()
@@ -332,22 +230,6 @@ pub fn service(verb: &str) -> Result<(), String> {
 
 fn daemon_listening(path: &std::path::Path) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_ok()
-}
-
-/// Ensure the independent tray controller exists. Starting an already active
-/// unit is a no-op, so the window can ask every time it opens.
-pub fn start_tray() -> Result<(), String> {
-    let output = run("systemctl", &["--user", "start", "flow-tray.service"])
-        .ok_or_else(|| "systemctl did not respond".to_string())?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(if reason.is_empty() {
-        "systemctl could not start the Flow tray".into()
-    } else {
-        reason
-    })
 }
 
 /// Stop the daemon itself, and not only the unit systemd knows about.
@@ -378,33 +260,6 @@ fn terminate_daemon() {
     // SIGTERM leaves the daemon no chance to tidy up after itself, so the file
     // it wrote is ours to clear. A stale one is only ever a wrong answer.
     let _ = std::fs::remove_file(&path);
-}
-
-fn is_flow_process(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|comm| comm.trim() == "flow")
-}
-
-/// `systemctl start` can succeed before a short-lived daemon exits. Confirm the
-/// unit survives startup so the UI never reports Flow as running when it has
-/// already failed.
-fn ensure_running() -> Result<(), String> {
-    for _ in 0..5 {
-        std::thread::sleep(Duration::from_millis(100));
-        let output = run("systemctl", &["--user", "is-active", "flow.service"])
-            .ok_or_else(|| "systemctl did not respond".to_string())?;
-        let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        match state.as_str() {
-            "active" => return Ok(()),
-            "activating" => continue,
-            _ => {
-                return Err(format!(
-                    "Flow stopped during startup (systemd reports {state}). Run `flow logs` for details."
-                ));
-            }
-        }
-    }
-
-    Err("Flow did not finish starting. Run `flow logs` for details.".into())
 }
 
 /// The description of the default PipeWire source, which is what Flow records
@@ -488,27 +343,6 @@ fn description_of(listing: &str, name: &str) -> Option<String> {
     None
 }
 
-/// What is actually running the session, e.g. "Hyprland · Wayland". Read from
-/// the environment rather than assumed: the About screen used to say Hyprland
-/// on every machine, including the ones where it was wrong.
-pub fn session() -> String {
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
-        .or_else(|_| std::env::var("XDG_SESSION_DESKTOP"))
-        .unwrap_or_default();
-    let kind = match std::env::var("XDG_SESSION_TYPE").as_deref() {
-        Ok("wayland") => "Wayland",
-        Ok("x11") => "X11",
-        _ if std::env::var_os("WAYLAND_DISPLAY").is_some() => "Wayland",
-        _ if std::env::var_os("DISPLAY").is_some() => "X11",
-        _ => "unknown",
-    };
-    if desktop.is_empty() {
-        kind.to_string()
-    } else {
-        format!("{desktop} · {kind}")
-    }
-}
-
 /// Hand a path to the desktop's own handler. Used by the buttons that used to
 /// do nothing at all.
 pub fn open(path: &std::path::Path) -> Result<(), String> {
@@ -523,35 +357,12 @@ pub fn open(path: &std::path::Path) -> Result<(), String> {
 }
 
 /// Show a path in the file manager rather than opening the file itself.
-/// `xdg-open` on a `.toml` would launch an editor; About wants the folder.
 pub fn reveal(path: &std::path::Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("{} does not exist yet", path.display()));
     }
-    if cfg!(target_os = "macos") {
-        match run("open", &["-R", &path.display().to_string()]) {
-            Some(output) if output.status.success() => Ok(()),
-            Some(_) => Err("open could not reveal it".into()),
-            None => Err("open is not available".into()),
-        }
-    } else {
-        let folder = if path.is_dir() {
-            path
-        } else {
-            path.parent().unwrap_or(path)
-        };
-        open(folder)
-    }
+    platform::reveal(path)
 }
-
-/// The desktop's handler goes by a different name on macOS, where the console
-/// is built for design work. Named in the error text too, so a failure says
-/// which tool was actually missing.
-const OPENER: &str = if cfg!(target_os = "macos") {
-    "open"
-} else {
-    "xdg-open"
-};
 
 #[cfg(test)]
 mod tests {
@@ -573,61 +384,6 @@ mod tests {
         });
         assert!(stale);
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// The link is the setting, so reading it back is the only check that
-    /// matters: a switch that reported success while the link stayed put would
-    /// be a window lying about which binary is about to run.
-    #[test]
-    fn switching_channels_repoints_both_links_and_is_reversible() {
-        let root = std::env::temp_dir().join(format!("flow-channel-{}", std::process::id()));
-        let bin = root.join(".local/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        for name in [
-            "flow-stable",
-            "flow-console-stable",
-            "flow-experimental",
-            "flow-console-experimental",
-        ] {
-            std::fs::write(bin.join(name), "").unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
-        // A pre-channels install: a real file where the link belongs.
-        std::fs::write(bin.join("flow"), "").unwrap();
-
-        assert_eq!(channel_in(&bin), Channel::Stable, "no link reads as stable");
-
-        set_channel_in(&bin, Channel::Experimental).unwrap();
-        assert_eq!(channel_in(&bin), Channel::Experimental);
-        assert!(
-            bin.join("flow").is_symlink(),
-            "the regular file was replaced"
-        );
-        assert_eq!(
-            std::fs::read_link(bin.join("flow-console"))
-                .unwrap()
-                .to_string_lossy(),
-            "flow-console-experimental",
-            "the console link must move with the daemon link"
-        );
-
-        set_channel_in(&bin, Channel::Stable).unwrap();
-        assert_eq!(
-            channel_in(&bin),
-            Channel::Stable,
-            "switching back is the same click"
-        );
-
-        std::fs::remove_file(bin.join("flow-console-experimental")).unwrap();
-        assert!(set_channel_in(&bin, Channel::Experimental).is_err());
-        assert_eq!(channel_in(&bin), Channel::Stable);
-        assert_eq!(
-            std::fs::read_link(bin.join("flow-console")).unwrap(),
-            std::path::Path::new("flow-console-stable")
-        );
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     use super::*;

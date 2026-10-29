@@ -40,10 +40,16 @@ impl Console {
         let body = column![
             group("General", self.general_rows()),
             group("Shortcut", self.shortcut_rows()),
-            group("Microphone", self.microphone_rows()),
-            group("OpenRouter", self.openrouter_rows()),
-            group("Build", self.channel_rows()),
         ];
+        // A Mac has none of the rest: picking a mic and ducking both go through
+        // PipeWire, and there is one app slot, so no second build to switch to.
+        let body = if cfg!(target_os = "macos") {
+            body.push(group("OpenRouter", self.openrouter_rows()))
+        } else {
+            body.push(group("Microphone", self.microphone_rows()))
+                .push(group("OpenRouter", self.openrouter_rows()))
+                .push(group("Build", self.channel_rows()))
+        };
 
         // No subtitle. It was a table of contents for three group headings
         // already on screen a line below it.
@@ -64,15 +70,17 @@ impl Console {
                 toggle(enabled, self.travel("autostart"), Message::Autostart),
             ));
         }
-        rows.push(setting(
-            "Show tray icon",
-            "",
-            toggle(
-                self.settings.show_tray,
-                self.travel("show_tray"),
-                Message::ShowTray,
-            ),
-        ));
+        if cfg!(not(target_os = "macos")) {
+            rows.push(setting(
+                "Show tray icon",
+                "",
+                toggle(
+                    self.settings.show_tray,
+                    self.travel("show_tray"),
+                    Message::ShowTray,
+                ),
+            ));
+        }
         rows.push(setting(
             "Sounds",
             "",
