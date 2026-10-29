@@ -11,6 +11,7 @@
 //! where the answer to "why did nothing happen" is actionable, and every call
 //! site is one the user has to do something about.
 
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 
 /// Always `critical`: without exception these are states where dictation is
@@ -49,25 +50,15 @@ fn notifier(summary: &str, body: &str) -> Command {
     command
 }
 
-/// The text travels as argv, not spliced into the script, so a transcript
-/// containing quotes cannot become AppleScript.
 #[cfg(target_os = "macos")]
-fn notifier(summary: &str, body: &str) -> Command {
-    let mut command = Command::new("osascript");
-    command.args([
-        "-e",
-        "on run argv",
-        "-e",
-        "display notification (item 2 of argv) with title (item 1 of argv)",
-        "-e",
-        "end run",
-        "--",
-        summary,
-        body,
-    ]);
-    command
+mod macos;
+
+#[cfg(target_os = "macos")]
+fn send(summary: &str, body: &str) {
+    macos::post(summary, body);
 }
 
+#[cfg(target_os = "linux")]
 fn send(summary: &str, body: &str) {
     let summary = summary.to_string();
     let body = body.to_string();

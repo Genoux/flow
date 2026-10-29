@@ -1,13 +1,19 @@
 //! The two-note answer to the island: one when it arrives, one when it goes.
 //!
-//! The sound is handed to `paplay` on stdin rather than decoded here. `pactl`
-//! is already a hard dependency of ducking and `paplay` ships beside it, so a
-//! daemon that has no audio *output* stack gains one for the price of a pipe -
-//! no decoder crate, no second device to open against the one being recorded.
+//! On Linux the sound is handed to `paplay` on stdin rather than decoded here.
+//! `pactl` is already a hard dependency of ducking and `paplay` ships beside
+//! it, so a daemon that has no audio *output* stack gains one for the price of
+//! a pipe - no decoder crate, no second device to open against the one being
+//! recorded. A Mac has `NSSound` for the same bytes.
 
+#[cfg(target_os = "linux")]
 use std::io::Write;
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(target_os = "macos")]
+mod macos;
 
 /// The name the chime's playback stream carries, and what ducking looks for
 /// when it skips Flow's own audio - see [`crate::duck`]. Without it the sound
@@ -46,10 +52,18 @@ pub fn hide() {
 }
 
 fn play(wav: &'static [u8]) {
-    if !ENABLED.load(Ordering::Relaxed) || !cfg!(target_os = "linux") {
+    if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
 
+    #[cfg(target_os = "macos")]
+    macos::play(wav);
+    #[cfg(target_os = "linux")]
+    paplay(wav);
+}
+
+#[cfg(target_os = "linux")]
+fn paplay(wav: &'static [u8]) {
     // On its own thread because the caller is the one drawing the island, and a
     // frame owed to the compositor must never wait on an audio server.
     std::thread::spawn(move || {
