@@ -58,6 +58,9 @@ pub fn wake_default_source() {
 /// leaving the one actually being recorded suspended, which is the burst of
 /// zeros above.
 pub fn wake_source(name: &str) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     let _ = Command::new("pactl")
         .args(["suspend-source", name, "0"])
         .stdout(std::process::Stdio::null())
@@ -66,6 +69,9 @@ pub fn wake_source(name: &str) {
 }
 
 pub fn default_source_name() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
     let output = Command::new("pactl")
         .args(["get-default-source"])
         .output()
@@ -506,6 +512,9 @@ impl Capture {
     /// feeding us the default in the meantime - degrading to the wrong mic is
     /// recoverable, and degrading to silence is not.
     fn apply_source(&self) {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
         let wanted = self.wanted_source.lock().unwrap().clone();
         let mut routed = self.routed_to.lock().unwrap();
 

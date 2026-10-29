@@ -1,16 +1,39 @@
 use crate::hotkey;
+#[cfg(target_os = "linux")]
 use crate::wayland_vk::VirtualKeyboard;
+#[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
+use evdev::KeyCode;
+#[cfg(target_os = "linux")]
 use evdev::uinput::VirtualDevice;
-use evdev::{AttributeSet, KeyCode, KeyEvent};
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(target_os = "linux")]
+use evdev::{AttributeSet, KeyEvent};
+use std::sync::atomic::AtomicUsize;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
+#[cfg(target_os = "linux")]
 use wl_clipboard_rs::copy::{self, MimeSource, MimeType as CopyMime, Options, Source};
+#[cfg(target_os = "linux")]
 use wl_clipboard_rs::paste::{self, ClipboardType, MimeType as PasteMime, Seat};
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::Injector;
+
+/// What a clipboard looks like once it has been read out to be put back.
+#[cfg(target_os = "linux")]
+type Saved = Vec<MimeSource>;
+#[cfg(target_os = "macos")]
+type Saved = macos::Saved;
 
 /// uinput devices need a moment for udev to create the node and for compositors
 /// to pick them up; emitting immediately after build silently drops events.
+#[cfg(target_os = "linux")]
 const DEVICE_SETTLE: Duration = Duration::from_millis(300);
 
 /// Give the compositor time to observe each key transition. Below ~8ms some
@@ -47,6 +70,7 @@ const CLIPBOARD_BUDGET: Duration = Duration::from_millis(500);
 /// How long the compositor has to say which window has focus. Only decides
 /// which paste chord to send, so falling back to the configured default costs
 /// far less than waiting.
+#[cfg(target_os = "linux")]
 const FOCUS_BUDGET: Duration = Duration::from_millis(200);
 
 /// How long to leave the transcript on the clipboard before putting back
@@ -85,24 +109,24 @@ static CLIPBOARD_GENERATION: AtomicUsize = AtomicUsize::new(0);
 /// as if it were the user's restored the transcript and lost their clipboard.
 /// Taking it also cancels the earlier restore, which would otherwise wake up
 /// and clobber the newer transcript before its paste was read.
-static PUT_ASIDE: Mutex<Option<(usize, Vec<MimeSource>)>> = Mutex::new(None);
+static PUT_ASIDE: Mutex<Option<(usize, Saved)>> = Mutex::new(None);
 
-fn put_aside_slot() -> MutexGuard<'static, Option<(usize, Vec<MimeSource>)>> {
+fn put_aside_slot() -> MutexGuard<'static, Option<(usize, Saved)>> {
     PUT_ASIDE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn put_aside(generation: usize, saved: Vec<MimeSource>) {
+fn put_aside(generation: usize, saved: Saved) {
     *put_aside_slot() = Some((generation, saved));
 }
 
-fn take_put_aside() -> Option<Vec<MimeSource>> {
+fn take_put_aside() -> Option<Saved> {
     put_aside_slot().take().map(|(_, saved)| saved)
 }
 
 /// Restore what `generation` put aside, unless a newer injection took it over.
 /// Holds the slot while restoring, so an injection starting at that moment
 /// waits and then reads the restored clipboard, not the transcript.
-fn give_back(generation: usize, restore: impl FnOnce(Vec<MimeSource>)) {
+fn give_back(generation: usize, restore: impl FnOnce(Saved)) {
     let mut slot = put_aside_slot();
     if let Some((_, saved)) = slot.take_if(|(owner, _)| *owner == generation) {
         restore(saved);
@@ -116,15 +140,18 @@ fn give_back(generation: usize, restore: impl FnOnce(Vec<MimeSource>)) {
 /// Wayland compositors that don't implement the protocol. Both are portable
 /// keyboard backends, so both need the physical modifiers to be clear before
 /// sending a paste chord.
+#[cfg(target_os = "linux")]
 enum Backend {
     Wayland(VirtualKeyboard),
     Uinput(VirtualDevice),
 }
 
+#[cfg(target_os = "linux")]
 pub struct Injector {
     backend: Backend,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, PartialEq, Eq)]
 enum InitialPasteRoute {
     Portable,
@@ -134,6 +161,7 @@ enum InitialPasteRoute {
 /// Pick a route before emitting anything. A keyboard backend cannot tell us
 /// whether its events reached the focused client, so delivery is not something
 /// that can be tried portably and retried through a compositor afterward.
+#[cfg(target_os = "linux")]
 fn initial_paste_route(modifiers_clear: bool) -> InitialPasteRoute {
     if modifiers_clear {
         InitialPasteRoute::Portable
@@ -142,6 +170,7 @@ fn initial_paste_route(modifiers_clear: bool) -> InitialPasteRoute {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Injector {
     /// Built once and kept alive - rebuilding per injection would pay the
     /// settle delay every time.
@@ -220,29 +249,7 @@ impl Injector {
                 modifiers_clear = true;
             }
             InitialPasteRoute::CompositorRescue => {
-                modifiers_clear = hotkey::wait_for_modifiers_released(MODIFIER_WAIT);
-                if !modifiers_clear {
-                    let stuck: Vec<String> = hotkey::currently_held_modifiers()
-                        .iter()
-                        .map(|key| format!("{key:?}"))
-                        .collect();
-                    // Nothing has failed and nothing will return an error: the chord
-                    // fires, the compositor eats it, and the user watches an empty text
-                    // field. The text is already staged, so say where it went.
-                    crate::notify::failure(
-                        "Flow couldn't paste",
-                        "Your text is on the clipboard - press Ctrl+V.",
-                    );
-                    eprintln!(
-                        "paste: firing after {MODIFIER_WAIT:?} with {} still held - the chord will \
-                         probably be eaten, so the text is staying on the clipboard for a manual Ctrl+V",
-                        if stuck.is_empty() {
-                            "no observed modifier".into()
-                        } else {
-                            stuck.join(", ")
-                        },
-                    );
-                }
+                modifiers_clear = wait_out_held_modifiers();
                 self.paste(&chord)?;
             }
         }
@@ -300,6 +307,7 @@ impl Injector {
 /// which changes many times a minute, so a value fixed in a config file was
 /// always wrong for something. Detection is the answer; this is only what to do
 /// when every detector is silent.
+#[cfg(target_os = "linux")]
 const UNKNOWN_IS_NOT_A_TERMINAL: bool = false;
 
 /// Ask the compositor what has focus and decide whether it needs the terminal
@@ -308,6 +316,7 @@ const UNKNOWN_IS_NOT_A_TERMINAL: bool = false;
 ///
 /// Returns `None` when no compositor tool is installed or the window has no
 /// readable class (e.g. a Wayland client that never set `app_id`).
+#[cfg(target_os = "linux")]
 pub fn detect_terminal_focus() -> Option<bool> {
     // Bounded: `.output()` waits for the child forever, and a compositor busy
     // enough not to answer would otherwise take the dictation down with it.
@@ -323,6 +332,7 @@ pub fn detect_terminal_focus() -> Option<bool> {
 /// in turn and the first that responds wins. Wanting the paste chord right on
 /// Sway and niri is not optional: those are the same audience as Hyprland, and
 /// hyprctl alone silently gave every one of them the wrong chord.
+#[cfg(target_os = "linux")]
 fn focused_window_class() -> Option<String> {
     let candidates: [(&str, &[&str]); 4] = [
         ("hyprctl", &["activewindow", "-j"]),
@@ -421,6 +431,7 @@ pub fn is_terminal_class(class: &str) -> bool {
 /// Try compositor capabilities that can deliver a shortcut with an explicit
 /// modifier mask. Absent or unsupported, the caller waits for physical
 /// modifiers and returns to the portable keyboard backend.
+#[cfg(target_os = "linux")]
 fn compositor_paste(chord: &[KeyCode]) -> bool {
     hyprland_paste(chord)
 }
@@ -446,6 +457,7 @@ fn compositor_paste(chord: &[KeyCode]) -> bool {
 /// socket rather than by running `hyprctl`, which keeps a paste to one socket
 /// write and does not require the binary to be installed. Absent or unhappy,
 /// the caller waits and uses the portable keyboard backend.
+#[cfg(target_os = "linux")]
 fn hyprland_paste(chord: &[KeyCode]) -> bool {
     let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") else {
         return false;
@@ -512,6 +524,7 @@ fn hyprland_paste(chord: &[KeyCode]) -> bool {
 
 /// The name `send_shortcut` knows a key by. Only the keys Flow can paste with,
 /// for the same reason the keymap it uploads has three keys in it.
+#[cfg(target_os = "linux")]
 fn key_name(key: KeyCode) -> Option<&'static str> {
     match key {
         KeyCode::KEY_V => Some("V"),
@@ -519,7 +532,15 @@ fn key_name(key: KeyCode) -> Option<&'static str> {
     }
 }
 
+/// What the user presses to paste by hand when Flow could not.
+pub const PASTE_SHORTCUT: &str = if cfg!(target_os = "macos") {
+    "Cmd+V"
+} else {
+    "Ctrl+V"
+};
+
 /// Modifiers a paste chord can contain, as opposed to the key it presses.
+#[cfg(target_os = "linux")]
 const MODIFIER_KEYS: [KeyCode; 4] = [
     KeyCode::KEY_LEFTCTRL,
     KeyCode::KEY_RIGHTCTRL,
@@ -529,7 +550,37 @@ const MODIFIER_KEYS: [KeyCode; 4] = [
 
 /// Hyprland answers a dispatch immediately or not at all; this only stops a
 /// wedged compositor from holding the dictation up.
+#[cfg(target_os = "linux")]
 const HYPRLAND_REPLY: Duration = Duration::from_millis(200);
+
+/// Wait for the user's hands to leave the modifiers, and say so when they do
+/// not. Whether the board came clear.
+fn wait_out_held_modifiers() -> bool {
+    let clear = hotkey::wait_for_modifiers_released(MODIFIER_WAIT);
+    if !clear {
+        let stuck: Vec<String> = hotkey::currently_held_modifiers()
+            .iter()
+            .map(|key| format!("{key:?}"))
+            .collect();
+        // Nothing has failed and nothing will return an error: the chord
+        // fires, the compositor eats it, and the user watches an empty text
+        // field. The text is already staged, so say where it went.
+        crate::notify::failure(
+            "Flow couldn't paste",
+            &format!("Your text is on the clipboard - press {PASTE_SHORTCUT}."),
+        );
+        eprintln!(
+            "paste: firing after {MODIFIER_WAIT:?} with {} still held - the chord will \
+             probably be eaten, so the text is staying on the clipboard for a manual {PASTE_SHORTCUT}",
+            if stuck.is_empty() {
+                "no observed modifier".into()
+            } else {
+                stuck.join(", ")
+            },
+        );
+    }
+    clear
+}
 
 pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
     let mut chord = vec![KeyCode::KEY_LEFTCTRL];
@@ -565,6 +616,7 @@ pub fn paste_keys(terminal: bool) -> Vec<KeyCode> {
 ///
 /// Losing a format is a small cost. Losing every dictation until a restart is
 /// not, so the budget wins and whatever has not answered is abandoned.
+#[cfg(target_os = "linux")]
 fn snapshot_clipboard() -> Vec<MimeSource> {
     let deadline = Instant::now() + CLIPBOARD_BUDGET;
     let Some(Ok(offered)) = with_deadline(CLIPBOARD_BUDGET, || {
@@ -581,6 +633,7 @@ fn snapshot_clipboard() -> Vec<MimeSource> {
 ///
 /// A worker that never returns is left running, for the reason given on
 /// [`with_deadline`].
+#[cfg(target_os = "linux")]
 fn read_formats(
     offered: impl IntoIterator<Item = String>,
     deadline: Instant,
@@ -643,6 +696,7 @@ fn with_deadline<T: Send + 'static>(
 ///
 /// Can block forever: only ever call it from a thread [`read_formats`] is
 /// willing to abandon.
+#[cfg(target_os = "linux")]
 fn read_format(mime: &str) -> Option<Vec<u8>> {
     let (mut reader, _) = paste::get_contents(
         ClipboardType::Regular,
@@ -655,7 +709,7 @@ fn read_format(mime: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{
         CopyMime, InitialPasteRoute, MimeSource, Source, give_back, initial_paste_route, put_aside,

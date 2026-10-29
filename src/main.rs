@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
-use flow::{audio, config, daemon, inject, install, ipc, refine, router, status, stt, tray, wav};
+#[cfg(target_os = "linux")]
+use flow::tray;
+use flow::{audio, config, daemon, inject, install, ipc, refine, router, status, stt, wav};
 use std::time::{Duration, Instant};
 
 /// Audio that must be spoken before any of it is transcribed early. Long enough
@@ -112,7 +114,10 @@ fn main() -> Result<()> {
     // returns before either model check so a damaged or stopped dictation
     // service can still be opened and repaired from its icon.
     if command(&args) == Some("tray") {
+        #[cfg(target_os = "linux")]
         return tray::run(settings);
+        #[cfg(not(target_os = "linux"))]
+        bail!("the tray is not supported on macOS yet");
     }
 
     // Isolates injection from the mic and the model, so a silent uinput failure
@@ -284,6 +289,10 @@ fn recorded_takes() -> Result<Vec<std::path::PathBuf>> {
 /// it rather than being caught halfway up a process tree.
 fn logs(args: &[String]) -> Result<()> {
     use std::os::unix::process::CommandExt;
+
+    if cfg!(not(target_os = "linux")) {
+        bail!("flow logs is not supported on macOS yet");
+    }
 
     // exec only returns when it failed to happen at all.
     Err(std::process::Command::new("journalctl")

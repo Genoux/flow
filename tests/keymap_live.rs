@@ -10,6 +10,7 @@
 //! daemon is up. Needs a Wayland session whose compositor implements
 //! zwp_virtual_keyboard_manager_v1:
 //!   cargo test --release --test keymap_live -- --ignored --nocapture
+#![cfg(target_os = "linux")]
 
 use flow::wayland_vk::VirtualKeyboard;
 use std::time::Duration;

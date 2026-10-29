@@ -17,19 +17,23 @@ use std::path::PathBuf;
 
 /// `$XDG_RUNTIME_DIR`, falling back to a private per-user temporary directory.
 pub fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            unsafe extern "C" {
-                fn geteuid() -> u32;
-            }
-            // POSIX geteuid has no preconditions and cannot fail.
-            let uid = unsafe { geteuid() };
-            let path = std::env::temp_dir().join(format!("flow-{uid}"));
-            private_runtime(&path, uid)
-                .expect("flow runtime directory must be private and owned by this user");
-            path
-        })
+    usable_runtime(std::env::var_os("XDG_RUNTIME_DIR")).unwrap_or_else(|| {
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        // POSIX geteuid has no preconditions and cannot fail.
+        let uid = unsafe { geteuid() };
+        let path = std::env::temp_dir().join(format!("flow-{uid}"));
+        private_runtime(&path, uid)
+            .expect("flow runtime directory must be private and owned by this user");
+        path
+    })
+}
+
+/// The XDG spec has applications fall back when the variable is set but names
+/// no directory, rather than create it: it is the session manager's to make.
+fn usable_runtime(variable: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    variable.map(PathBuf::from).filter(|path| path.is_dir())
 }
 
 fn private_runtime(path: &std::path::Path, uid: u32) -> std::io::Result<()> {
@@ -165,6 +169,20 @@ mod tests {
             PathBuf::from("/custom/config/flow/config.toml")
         );
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    }
+
+    /// Dotfiles shared with Linux export `/run/user/<uid>` on macOS, where it
+    /// never exists, and the daemon then failed to write its pid file.
+    #[test]
+    fn a_runtime_variable_naming_no_directory_is_ignored() {
+        let existing = std::env::temp_dir();
+        assert_eq!(
+            usable_runtime(Some(existing.clone().into_os_string())),
+            Some(existing)
+        );
+        assert_eq!(usable_runtime(Some("/run/user/nonexistent".into())), None);
+        assert_eq!(usable_runtime(Some("".into())), None);
+        assert_eq!(usable_runtime(None), None);
     }
 
     #[test]

@@ -8,17 +8,32 @@
 //! A toolkit would mean GTK or Qt in a daemon that otherwise has no UI, and the
 //! whole drawing here is one rounded rectangle repeated - the island and every
 //! bar are the same primitive.
+//!
+//! Only the Wayland surface exists so far. Elsewhere the handle is inert.
+//!
+//! ponytail: no overlay on macOS, so the drawing code compiles there but is
+//! dead. An NSPanel overlay slice drawing the same geometry removes the allow.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+#[cfg(target_os = "linux")]
 use anyhow::{Context, Result, anyhow};
+#[cfg(target_os = "linux")]
 use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::FileExt;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+#[cfg(target_os = "linux")]
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
+#[cfg(target_os = "linux")]
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+#[cfg(target_os = "linux")]
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::audio::Monitor;
@@ -750,6 +765,7 @@ fn resume(grown: f32) -> std::time::Instant {
 /// destroy requests, and the next thing this loop does with no island up is
 /// block on `recv()` - so without a flush the surface stays on screen until the
 /// next chord arrives to wake the loop and send them.
+#[cfg(target_os = "linux")]
 fn take_down(
     island: &mut Option<Island>,
     queue: &mut EventQueue<Wayland>,
@@ -782,6 +798,7 @@ pub struct Overlay {
 }
 
 impl Overlay {
+    #[cfg(target_os = "linux")]
     pub fn spawn(monitor: Monitor) -> Self {
         let (commands, incoming) = mpsc::channel();
         std::thread::spawn(move || {
@@ -789,6 +806,14 @@ impl Overlay {
                 eprintln!("overlay disabled: {err}");
             }
         });
+        Self { commands }
+    }
+
+    /// The receiver is dropped at once, so every send fails, and every method
+    /// here already ignores that.
+    #[cfg(not(target_os = "linux"))]
+    pub fn spawn(_monitor: Monitor) -> Self {
+        let (commands, _) = mpsc::channel();
         Self { commands }
     }
 
@@ -1248,6 +1273,7 @@ fn render_island(
 }
 
 #[derive(Default)]
+#[cfg(target_os = "linux")]
 struct Wayland {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
@@ -1259,11 +1285,13 @@ struct Wayland {
 
 /// The mapped surface. Dropped the moment recording stops, so nothing of flow
 /// is on screen - or composited - between dictations.
+#[cfg(target_os = "linux")]
 struct Island {
     surface: wl_surface::WlSurface,
     layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
 }
 
+#[cfg(target_os = "linux")]
 impl Island {
     /// Also the moment the island is heard. Both callers reach the surface
     /// through here, so the chime lives with the mapping rather than at each
@@ -1301,6 +1329,7 @@ impl Island {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Island {
     fn drop(&mut self) {
         self.layer.destroy();
@@ -1309,6 +1338,7 @@ impl Drop for Island {
 }
 
 /// Two buffers so the compositor is never reading the frame we are painting.
+#[cfg(target_os = "linux")]
 struct Buffers {
     file: File,
     pool: wl_shm_pool::WlShmPool,
@@ -1318,6 +1348,7 @@ struct Buffers {
     scale: i32,
 }
 
+#[cfg(target_os = "linux")]
 impl Buffers {
     fn create(shm: &wl_shm::WlShm, queue: &QueueHandle<Wayland>, scale: i32) -> Result<Self> {
         let width = SURFACE_WIDTH as i32 * scale;
@@ -1368,6 +1399,7 @@ impl Buffers {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Buffers {
     fn drop(&mut self) {
         for buffer in &self.buffers {
@@ -1377,6 +1409,7 @@ impl Drop for Buffers {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn shared_memory(size: usize) -> Result<OwnedFd> {
     // SAFETY: a NUL-terminated literal name, and the raw fd is taken into an
     // OwnedFd immediately so it is closed exactly once.
@@ -1394,6 +1427,7 @@ fn shared_memory(size: usize) -> Result<OwnedFd> {
 }
 
 /// A connected display with everything the island needs off the registry.
+#[cfg(target_os = "linux")]
 struct Display {
     connection: Connection,
     queue: EventQueue<Wayland>,
@@ -1403,6 +1437,7 @@ struct Display {
     shell: zwlr_layer_shell_v1::ZwlrLayerShellV1,
 }
 
+#[cfg(target_os = "linux")]
 fn connect() -> Result<Display> {
     let connection = Connection::connect_to_env().context("no wayland display")?;
     let mut queue = connection.new_event_queue();
@@ -1438,6 +1473,7 @@ fn connect() -> Result<Display> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     let Display {
         connection,
@@ -1765,6 +1801,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<wl_registry::WlRegistry, ()> for Wayland {
     fn event(
         state: &mut Self,
@@ -1797,6 +1834,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Wayland {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<wl_surface::WlSurface, ()> for Wayland {
     fn event(
         state: &mut Self,
@@ -1812,6 +1850,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for Wayland {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Wayland {
     fn event(
         state: &mut Self,
@@ -1832,11 +1871,17 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Wayland {
     }
 }
 
+#[cfg(target_os = "linux")]
 delegate_noop!(Wayland: ignore wl_compositor::WlCompositor);
+#[cfg(target_os = "linux")]
 delegate_noop!(Wayland: ignore wl_shm::WlShm);
+#[cfg(target_os = "linux")]
 delegate_noop!(Wayland: ignore wl_shm_pool::WlShmPool);
+#[cfg(target_os = "linux")]
 delegate_noop!(Wayland: ignore wl_buffer::WlBuffer);
+#[cfg(target_os = "linux")]
 delegate_noop!(Wayland: ignore wl_region::WlRegion);
+#[cfg(target_os = "linux")]
 delegate_noop!(Wayland: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 
 #[cfg(test)]

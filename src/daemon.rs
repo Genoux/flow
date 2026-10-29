@@ -193,7 +193,10 @@ pub fn run(
                     island.say(format!("Dictation failed: {err}"));
                     notify::failure(
                         "Dictation failed",
-                        "Any text recognised is on your clipboard - press Ctrl+V.",
+                        &format!(
+                            "Any text recognised is on your clipboard - press {}.",
+                            inject::PASTE_SHORTCUT
+                        ),
                     );
                     eprintln!("{err}");
                 }
@@ -541,7 +544,7 @@ fn begin(
     let (duck, hold_to_talk, sound, input_device) = {
         let config = live.lock().expect("config");
         (
-            config.ducking(),
+            config.ducking().filter(|_| duck::SUPPORTED),
             config.push_to_talk,
             config.sound,
             config.input_device.clone(),

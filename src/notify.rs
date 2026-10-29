@@ -21,6 +21,7 @@ use std::process::{Command, Stdio};
 /// `persistence` capability, and quickshell (the one on this machine) does
 /// not. So urgency is a hint here, not a guarantee, and the body text has to
 /// carry the whole message on its own.
+#[cfg(target_os = "linux")]
 const URGENCY: &str = "critical";
 
 /// Tell the user something went wrong, and always say the same thing to the
@@ -35,6 +36,38 @@ pub fn failure(summary: &str, body: &str) {
     send(summary, body);
 }
 
+#[cfg(target_os = "linux")]
+fn notifier(summary: &str, body: &str) -> Command {
+    let mut command = Command::new("notify-send");
+    command.args([
+        "--app-name=flow",
+        &format!("--urgency={URGENCY}"),
+        "--icon=audio-input-microphone",
+        summary,
+        body,
+    ]);
+    command
+}
+
+/// The text travels as argv, not spliced into the script, so a transcript
+/// containing quotes cannot become AppleScript.
+#[cfg(target_os = "macos")]
+fn notifier(summary: &str, body: &str) -> Command {
+    let mut command = Command::new("osascript");
+    command.args([
+        "-e",
+        "on run argv",
+        "-e",
+        "display notification (item 2 of argv) with title (item 1 of argv)",
+        "-e",
+        "end run",
+        "--",
+        summary,
+        body,
+    ]);
+    command
+}
+
 fn send(summary: &str, body: &str) {
     let summary = summary.to_string();
     let body = body.to_string();
@@ -46,20 +79,12 @@ fn send(summary: &str, body: &str) {
     // the dictation - and spawning without ever waiting would leave a zombie
     // per failure in a process that runs for weeks.
     std::thread::spawn(move || {
-        let finished = Command::new("notify-send")
-            .args([
-                "--app-name=flow",
-                &format!("--urgency={URGENCY}"),
-                "--icon=audio-input-microphone",
-                &summary,
-                &body,
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let mut command = notifier(&summary, &body);
+        let finished = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
 
         if let Err(err) = finished {
-            eprintln!("notification not shown ({err}) - is notify-send installed?");
+            let program = command.get_program().to_string_lossy();
+            eprintln!("notification not shown ({err}) - is {program} installed?");
         }
     });
 }
