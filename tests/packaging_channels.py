@@ -80,8 +80,10 @@ class Channels(unittest.TestCase):
 
     def test_update_replaces_an_executing_binary(self):
         self.assertEqual(self.install("stable").returncode, 0)
-        shutil.copyfile("/bin/sleep", self.bin / "flow-stable")
-        process = subprocess.Popen([str(self.bin / "flow"), "30"])
+        # Perl rather than /bin/sleep: uutils coreutils, which newer Ubuntu
+        # runners ship, refuses to run under a name that is not its own.
+        shutil.copyfile(shutil.which("perl"), self.bin / "flow-stable")
+        process = subprocess.Popen([str(self.bin / "flow"), "-e", "sleep 30"])
         try:
             result = self.install("stable")
             self.assertEqual(result.returncode, 0, result.stderr)
