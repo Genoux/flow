@@ -107,3 +107,37 @@ jobs:
           bash -n packaging/macos/install.sh
           bash -n packaging/macos/uninstall.sh
           bash -n packaging/macos/bundle.sh
+
+  # The macOS half of the daemon and console only compiles on a Mac, so the
+  # Linux job cannot see a change that breaks it. Not a required check: it
+  # guards the port without making every Linux change wait on a second runner.
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/console
+          shared-key: build-macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test (daemon)
+        run: cargo test --workspace
+
+      - name: Clippy (daemon)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test (console)
+        working-directory: crates/console
+        run: cargo test
+
+      - name: Clippy (console)
+        working-directory: crates/console
+        run: cargo clippy --all-targets -- -D warnings
