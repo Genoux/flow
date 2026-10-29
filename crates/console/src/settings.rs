@@ -148,8 +148,14 @@ pub struct Settings {
 /// Must stay in step with `hotkey::Chord::default` in the daemon: the console
 /// writes this string and the daemon is what parses it. `super` is the same
 /// physical key as cmd, meta and win - the daemon accepts all four spellings,
-/// and this is the one it writes back.
-pub const DEFAULT_HOTKEY: &str = "super+shift+d";
+/// and this is the one it writes back. On macOS the daemon defaults to Fn
+/// alone, and a console still writing the Linux chord rebinds every Mac the
+/// first time any setting is saved.
+pub const DEFAULT_HOTKEY: &str = if cfg!(target_os = "macos") {
+    "fn"
+} else {
+    "super+shift+d"
+};
 
 impl Default for Settings {
     /// Matches the daemon's own defaults in src/config.rs. They have to agree:

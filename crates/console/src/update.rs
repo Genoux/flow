@@ -169,7 +169,7 @@ fn pick_channel(json: &str, channel: crate::system::Channel) -> Result<Option<St
 fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), String> {
     semver::Version::parse(tag.strip_prefix('v').ok_or("Invalid release tag")?)
         .map_err(|_| "Invalid release tag")?;
-    let name = format!("flow-{tag}-x86_64-linux");
+    let name = format!("flow-{tag}-{TARGET}");
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -200,10 +200,15 @@ fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), Str
         if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("Invalid release checksum".into());
         }
-        let actual = Command::new("sha256sum")
-            .arg(&tarball)
-            .output()
-            .map_err(|e| e.to_string())?;
+        // macOS has no sha256sum; shasum takes the same `hash  file` format.
+        let mut hasher = if cfg!(target_os = "macos") {
+            let mut shasum = Command::new("shasum");
+            shasum.args(["-a", "256"]);
+            shasum
+        } else {
+            Command::new("sha256sum")
+        };
+        let actual = hasher.arg(&tarball).output().map_err(|e| e.to_string())?;
         if !actual.status.success()
             || String::from_utf8_lossy(&actual.stdout)
                 .split_whitespace()
@@ -217,26 +222,31 @@ fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), Str
             .arg(&tarball)
             .arg("-C")
             .arg(&dir))?;
-        verify_binaries(&dir.join(&name).join("bin"), "", tag)?;
+        verify_binaries(&dir.join(&name).join(BINARIES), "", tag)?;
         let mut installer = Command::new("bash");
         installer
             .arg(dir.join(&name).join("packaging/install.sh"))
             .args(["--channel", channel.suffix()]);
         installer.args(["--no-activate", "--no-restart"]);
         run(&mut installer)?;
-        verify_install(&crate::system::bin_dir(), channel, tag)
+        let (dir, suffix) = crate::system::installed_binaries(channel)?;
+        verify_binaries(&dir, &suffix, tag)
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result
 }
 
-fn verify_install(
-    dir: &std::path::Path,
-    channel: crate::system::Channel,
-    tag: &str,
-) -> Result<(), String> {
-    verify_binaries(dir, &format!("-{}", channel.suffix()), tag)
-}
+const TARGET: &str = if cfg!(target_os = "macos") {
+    "aarch64-macos"
+} else {
+    "x86_64-linux"
+};
+
+const BINARIES: &str = if cfg!(target_os = "macos") {
+    "Flow.app/Contents/MacOS"
+} else {
+    "bin"
+};
 
 fn verify_binaries(dir: &std::path::Path, suffix: &str, tag: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -348,23 +358,23 @@ mod tests {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         };
         write("flow", "echo flow 0.3.1");
-        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_err());
+        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_err());
         write("flow-console", "echo flow-console 0.3.0");
-        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_err());
+        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_err());
         write("flow-console", "echo flow-console 0.3.1; exit 1");
-        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_err());
+        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_err());
         write("flow-console", "echo flow-console 0.3.1");
-        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1").is_ok());
+        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_ok());
         write("flow", "echo flow 0.3.1-experimental.1");
-        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1-experimental.1").is_err());
+        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1-experimental.1").is_err());
         write("flow-console", "echo flow-console 0.3.1-experimental.1");
-        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.1-experimental.1").is_ok());
+        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1-experimental.1").is_ok());
         write("flow", "echo flow 0.3.0");
         write(
             "flow-console",
             &format!("touch '{}'", dir.join("launched").display()),
         );
-        assert!(super::verify_install(&dir, Channel::Stable, "v0.3.0").is_ok());
+        assert!(super::verify_binaries(&dir, "-stable", "v0.3.0").is_ok());
         assert!(!dir.join("launched").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -71,7 +71,7 @@ pub fn install() -> impl iced::futures::Stream<Item = Event> {
     let (tx, rx) = iced::futures::channel::mpsc::unbounded();
 
     std::thread::spawn(move || {
-        let mut child = match Command::new("flow")
+        let mut child = match Command::new(crate::system::flow_program())
             .args(["install", "--porcelain"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -83,8 +83,13 @@ pub fn install() -> impl iced::futures::Stream<Item = Event> {
         {
             Ok(child) => child,
             Err(err) => {
+                let hint = if cfg!(target_os = "macos") {
+                    ""
+                } else {
+                    " Is it on your PATH?"
+                };
                 let _ = tx.unbounded_send(Event::Failed(format!(
-                    "Couldn't run flow install ({err}). Is it on your PATH?"
+                    "Couldn't run flow install ({err}).{hint}"
                 )));
                 return;
             }
