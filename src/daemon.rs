@@ -574,10 +574,10 @@ fn begin(
     held: &Held,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
 ) -> Option<Duration> {
-    let (duck, hold_to_talk, sound, input_device) = {
+    let (ducking, hold_to_talk, sound, input_device) = {
         let config = live.lock().expect("config");
         (
-            config.ducking().filter(|_| duck::SUPPORTED),
+            config.ducking(),
             config.push_to_talk,
             config.sound,
             config.input_device.clone(),
@@ -599,6 +599,11 @@ fn begin(
     reporter.listening();
     eprintln!("recording...");
     *slot = Some(Session);
+
+    // After the island is up, and outside the config lock: asking whether the
+    // output can be lowered is a call into the audio system, and the key press
+    // must not wait on one.
+    let duck = ducking.filter(|_| duck::available());
 
     let started = Instant::now();
     // A chord pressed while the last island is still up inherits its duck
