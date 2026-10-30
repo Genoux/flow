@@ -139,7 +139,7 @@ jobs:
   # the draft this only adds to.
   macos:
     needs: release
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
@@ -152,7 +152,7 @@ jobs:
           workspaces: |
             .
             crates/console
-          shared-key: build-macos
+          shared-key: build-macos-15
           save-if: false
 
       - name: Test
