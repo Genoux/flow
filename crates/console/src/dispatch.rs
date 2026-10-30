@@ -211,7 +211,12 @@ impl Console {
                         self.channel = system::channel();
                         self.update = update::Status::Installed(self.channel.suffix().into());
                     }
-                    Err(error) => self.save_error = Some(error),
+                    Err(error) => {
+                        // What is installed, not what the switch asked for: a
+                        // failed switch can leave the other build in the slot.
+                        self.channel = system::channel();
+                        self.save_error = Some(error);
+                    }
                 }
             }
             // The banner's one action. A missing key just needs Settings; a

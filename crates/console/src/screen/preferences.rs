@@ -41,16 +41,13 @@ impl Console {
             group("General", self.general_rows()),
             group("Shortcut", self.shortcut_rows()),
         ];
-        // A Mac has no second build to switch to - there is one app slot - so it
-        // has everything but the Build group.
+        // Every group is on every platform. What differs is underneath: Linux
+        // switches between two builds on disk, and a Mac installs the other
+        // release over its one app.
         let body = body
             .push(group("Microphone", self.microphone_rows()))
-            .push(group("OpenRouter", self.openrouter_rows()));
-        let body = if cfg!(target_os = "macos") {
-            body
-        } else {
-            body.push(group("Build", self.channel_rows()))
-        };
+            .push(group("OpenRouter", self.openrouter_rows()))
+            .push(group("Build", self.channel_rows()));
 
         // No subtitle. It was a table of contents for three group headings
         // already on screen a line below it.
