@@ -41,9 +41,8 @@ impl Console {
             group("General", self.general_rows()),
             group("Shortcut", self.shortcut_rows()),
         ];
-        // A Mac has no second build to switch to - there is one app slot. It
-        // does pick a microphone, but ducking goes through PipeWire, so the
-        // Microphone group is there without its Lower other apps row.
+        // A Mac has no second build to switch to - there is one app slot - so it
+        // has everything but the Build group.
         let body = body
             .push(group("Microphone", self.microphone_rows()))
             .push(group("OpenRouter", self.openrouter_rows()));
@@ -266,13 +265,13 @@ impl Console {
     }
 
     fn microphone_rows(&self) -> Vec<Element<'_, Message>> {
-        let mut rows = vec![setting(
-            "Input",
-            self.input_hint(),
-            action_msg("Change", false, Message::PickInput),
-        )];
-        if !cfg!(target_os = "macos") {
-            rows.push(setting(
+        vec![
+            setting(
+                "Input",
+                self.input_hint(),
+                action_msg("Change", false, Message::PickInput),
+            ),
+            setting(
                 "Lower other apps",
                 "",
                 value_slider(
@@ -281,9 +280,8 @@ impl Console {
                     Message::Duck,
                     &format!("{}%", self.settings.duck),
                 ),
-            ));
-        }
-        rows
+            ),
+        ]
     }
 
     /// The line under Input, which is the microphone itself.

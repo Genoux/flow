@@ -1,14 +1,33 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Volumes are moved through `pactl`, so only PipeWire can be ducked. A duck
-/// that cannot lower anything must not be asked for: the daemon drops the
-/// pre-roll whenever it ducks, which would cost the first word for nothing.
-pub const SUPPORTED: bool = cfg!(target_os = "linux");
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(target_os = "linux")]
+use linux as platform;
+#[cfg(target_os = "macos")]
+use macos as platform;
+
+#[cfg(target_os = "linux")]
+pub use linux::{duckable, ducked, escaped, original_volume};
+
+/// Volumes are moved through `pactl` on Linux and the default output device's
+/// own volume on a Mac. A duck that cannot lower anything must not be asked
+/// for: the daemon drops the pre-roll whenever it ducks, which would cost the
+/// first word for nothing.
+///
+/// What can be lowered also depends on the machine - an HDMI output may have
+/// no volume to set - so this is the question to ask before ducking, and not
+/// just whether the platform has a way to.
+pub fn available() -> bool {
+    platform::available()
+}
 
 /// Playback streams are lowered while recording, then put back. This matters
 /// beyond comfort: with a phone-over-network microphone the speakers bleed into
@@ -50,6 +69,13 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(50);
 /// able to pick up wherever an interrupted one left off.
 static LEVEL: AtomicU32 = AtomicU32::new(100);
 
+/// How far the duck currently is, as a percentage of the original level. For
+/// what has to know how much quieter everything else is: the chime on a Mac
+/// plays through the output being ducked.
+pub fn level() -> u32 {
+    LEVEL.load(Ordering::SeqCst)
+}
+
 /// Bumped by every new fade so an in-flight one knows it has been superseded.
 static GENERATION: AtomicUsize = AtomicUsize::new(0);
 
@@ -57,92 +83,53 @@ fn state_file() -> PathBuf {
     flow_paths::duck_state_file()
 }
 
-/// Every playback stream whose channels share one volume, as (index, percent).
-///
-/// ponytail: streams with per-channel differences are skipped rather than
-/// flattened. Restoring them would need the channel order, which pactl's JSON
-/// object does not reliably preserve, and silently destroying someone's
-/// left/right balance is worse than leaving one stream loud.
-fn streams() -> Result<Vec<(u32, u32)>> {
-    let output = Command::new("pactl")
-        .args(["--format=json", "list", "sink-inputs"])
-        .output()
-        .context("running pactl - is PipeWire or PulseAudio available?")?;
+/// The originals of a restore that is still ramping back. A dictation that
+/// starts inside that ramp would otherwise read the half-restored volumes as
+/// the originals and restore to those - music coming back at half.
+static RESTORING: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 
-    Ok(duckable(&serde_json::from_slice(&output.stdout)?))
-}
-
-/// The streams in a `pactl list sink-inputs` payload that Flow may touch, as
-/// `(index, volume percent)`. Split from the call above so the two ways a
-/// stream is passed over - Flow's own chime, and an unbalanced player - can be
-/// tested without an audio server.
-pub fn duckable(parsed: &serde_json::Value) -> Vec<(u32, u32)> {
-    let mut found = Vec::new();
-
-    for stream in parsed.as_array().into_iter().flatten() {
-        // Flow's own island chime. Ducking it would fade out the very sound
-        // saying the microphone is open - see [`crate::chime::CLIENT`].
-        if stream
-            .get("properties")
-            .and_then(|properties| properties.get("application.name"))
-            .and_then(serde_json::Value::as_str)
-            == Some(crate::chime::CLIENT)
-        {
-            continue;
-        }
-
-        let Some(index) = stream.get("index").and_then(serde_json::Value::as_u64) else {
-            continue;
-        };
-        let Some(channels) = stream.get("volume").and_then(serde_json::Value::as_object) else {
-            continue;
-        };
-
-        let percents: Vec<u32> = channels
-            .values()
-            .filter_map(|c| c.get("value_percent")?.as_str())
-            .filter_map(|p| p.trim_end_matches('%').parse().ok())
-            .collect();
-
-        if let Some(first) = percents.first()
-            && percents.iter().all(|p| p == first)
-        {
-            found.push((index as u32, *first));
-        }
-    }
+/// `found` as read just now, with any stream a restore is still returning
+/// swapped for the original that restore is returning it to.
+fn reconcile(found: Vec<(u32, u32)>, restoring: &[(u32, u32)]) -> Vec<(u32, u32)> {
     found
+        .into_iter()
+        .map(|(index, volume)| {
+            restoring
+                .iter()
+                .find(|(saved, _)| *saved == index)
+                .copied()
+                .unwrap_or((index, volume))
+        })
+        .collect()
 }
 
-/// The pactl percentage that leaves `original` playing at `level` percent of
-/// its signal.
-///
-/// PulseAudio percentages are cubic in amplitude, so asking for a literal 50%
-/// hands the stream -18 dB - an eighth of the signal, which is why music at
-/// "half volume" was barely audible. The setting means half the sound, so the
-/// linear fraction is cube-rooted back into the scale pactl actually speaks.
-pub fn ducked(original: u32, level: u32) -> u32 {
-    (original as f32 * (level as f32 / 100.0).cbrt()).round() as u32
+/// What is persisted while ducked: the level asked for, so a later start can
+/// tell a volume that is still ours from one the user has since moved, and the
+/// originals to put back. The older bare list is still read.
+fn record(level: u32, streams: &[(u32, u32)]) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "level": level, "streams": streams }))
+        .unwrap_or_default()
 }
 
-fn set_volume(index: u32, percent: u32) {
-    // A stream that ended is expected, not an error - a track can finish
-    // mid-dictation, and stale ids are normal at startup recovery. pactl still
-    // complains on stderr, so its output is discarded rather than logged.
-    let _ = Command::new("pactl")
-        .args([
-            "set-sink-input-volume",
-            &index.to_string(),
-            &format!("{percent}%"),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+/// `(index, volume)` per stream.
+type Streams = Vec<(u32, u32)>;
+
+fn parse_record(raw: &[u8]) -> Option<(Option<u32>, Streams)> {
+    let value: serde_json::Value = serde_json::from_slice(raw).ok()?;
+    if value.is_array() {
+        return Some((None, serde_json::from_value(value).ok()?));
+    }
+    let level = u32::try_from(value.get("level")?.as_u64()?).ok()?;
+    Some((
+        Some(level),
+        serde_json::from_value(value.get("streams")?.clone()).ok()?,
+    ))
 }
 
 fn apply(streams: &[(u32, u32)], level: u32) {
     LEVEL.store(level, Ordering::SeqCst);
     for (index, original) in streams {
-        set_volume(*index, ducked(*original, level));
+        platform::set_volume(*index, platform::ducked(*original, level));
     }
 }
 
@@ -187,72 +174,7 @@ fn fade(
 
         if clear_state {
             let _ = std::fs::remove_file(state_file());
-        }
-    });
-}
-
-/// The volume a new stream should be restored to.
-///
-/// A track change often inherits the already-ducked level of the stream it
-/// replaced. Treating that as the original is how music came back at 50% after
-/// a dictation. If the new stream is sitting where a known original would be
-/// after the duck, remember that original; if it appeared exactly at the duck
-/// target, it was a 100% stream that PipeWire cloned already quiet.
-pub fn original_volume(current: u32, level: u32, known: &[(u32, u32)]) -> u32 {
-    if !(1..100).contains(&level) {
-        return current;
-    }
-    if let Some((_, original)) = known
-        .iter()
-        .find(|(_, original)| current.abs_diff(ducked(*original, level)) <= 2)
-    {
-        return *original;
-    }
-    if current.abs_diff(ducked(100, level)) <= 2 {
-        return 100;
-    }
-    current
-}
-
-/// True when a stream we already ducked has gone louder than the duck allows.
-/// Players do this on a track change without changing the stream id.
-pub fn escaped(current: u32, original: u32, level: u32) -> bool {
-    current > ducked(original, level) + 2
-}
-
-/// Catch streams that appear after ducking began, and streams that jump back
-/// up. A track change may reuse an id or mint a new one; either way the music
-/// must stay down for the rest of the hold and come back at the volume it had
-/// before we touched it.
-fn watch(known: Arc<Mutex<Vec<(u32, u32)>>>, active: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        while active.load(Ordering::SeqCst) {
-            std::thread::sleep(WATCH_INTERVAL);
-            if !active.load(Ordering::SeqCst) {
-                return;
-            }
-
-            let Ok(current) = streams() else { continue };
-            let mut known = known.lock().unwrap();
-            let level = LEVEL.load(Ordering::SeqCst);
-            let mut dirty = false;
-
-            for (index, volume) in current {
-                if let Some((_, original)) = known.iter().find(|(seen, _)| *seen == index) {
-                    if escaped(volume, *original, level) {
-                        set_volume(index, ducked(*original, level));
-                    }
-                    continue;
-                }
-                let original = original_volume(volume, level, &known);
-                set_volume(index, ducked(original, level));
-                known.push((index, original));
-                dirty = true;
-            }
-
-            if dirty && let Ok(encoded) = serde_json::to_vec(&*known) {
-                let _ = std::fs::write(state_file(), encoded);
-            }
+            RESTORING.lock().unwrap().clear();
         }
     });
 }
@@ -262,11 +184,12 @@ impl Ducker {
     /// Relative, because an absolute target would make an already-quiet
     /// stream louder.
     pub fn duck(percent: u32) -> Result<Self> {
-        let found = streams()?;
+        let restoring = std::mem::take(&mut *RESTORING.lock().unwrap());
+        let found = reconcile(platform::streams()?, &restoring);
 
         // Persisted first: a kill -9 skips Drop, and the next start reads this
         // rather than leaving the user's music mysteriously quiet.
-        let _ = std::fs::write(state_file(), serde_json::to_vec(&found)?);
+        let _ = std::fs::write(state_file(), record(percent.min(100), &found));
 
         let settled = Arc::new(AtomicBool::new(false));
         fade(
@@ -279,7 +202,7 @@ impl Ducker {
 
         let known = Arc::new(Mutex::new(found));
         let active = Arc::new(AtomicBool::new(true));
-        watch(known.clone(), active.clone());
+        platform::watch(known.clone(), active.clone());
 
         Ok(Self {
             restored: false,
@@ -306,6 +229,7 @@ impl Ducker {
         self.active.store(false, Ordering::SeqCst);
 
         let known = self.known.lock().unwrap().clone();
+        *RESTORING.lock().unwrap() = known.clone();
         fade(known, 100, FADE, true, None);
     }
 }
@@ -324,15 +248,52 @@ pub fn restore_stale() {
         return;
     };
 
-    if let Ok(saved) = serde_json::from_slice::<Vec<(u32, u32)>>(&raw) {
+    if let Some((level, saved)) = parse_record(&raw) {
         eprintln!(
             "restoring {} stream volume(s) from an interrupted run",
             saved.len()
         );
         // Immediate, not ramped: this is repair at startup, not a transition.
+        // Only what is still where the duck left it: a volume the user has
+        // moved since the crash is theirs now.
         for (index, volume) in saved {
-            set_volume(index, volume);
+            if platform::still_ours(index, volume, level) {
+                platform::set_volume(index, volume);
+            }
         }
     }
     let _ = std::fs::remove_file(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dictation that begins while the last restore is mid-ramp finds the
+    /// volumes half way back. The originals are what it has to keep.
+    #[test]
+    fn a_restore_in_flight_hands_back_its_originals() {
+        let mid_ramp = vec![(7, 31), (8, 90)];
+        let restoring = [(7, 100)];
+        assert_eq!(reconcile(mid_ramp, &restoring), vec![(7, 100), (8, 90)]);
+    }
+
+    #[test]
+    fn with_no_restore_in_flight_what_is_read_is_the_original() {
+        assert_eq!(reconcile(vec![(7, 64)], &[]), vec![(7, 64)]);
+    }
+
+    #[test]
+    fn the_record_carries_the_level_and_the_old_list_still_reads() {
+        let streams = [(3, 80), (4, 55)];
+        assert_eq!(
+            parse_record(&record(40, &streams)),
+            Some((Some(40), streams.to_vec()))
+        );
+        assert_eq!(
+            parse_record(b"[[3,80],[4,55]]"),
+            Some((None, streams.to_vec()))
+        );
+        assert_eq!(parse_record(b"nonsense"), None);
+    }
 }

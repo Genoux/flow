@@ -1,3 +1,6 @@
+//! The pactl scale and stream rules, which only Linux has.
+#![cfg(target_os = "linux")]
+
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
