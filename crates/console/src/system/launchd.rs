@@ -150,12 +150,35 @@ pub(super) fn reveal(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-// ponytail: one app slot, so the build in it is stable by definition; an
-// experimental channel here needs a second bundle.
+/// The build this app is, as recorded in the bundle when it was made.
+///
+/// A Mac has one Flow.app, so there is no second build to point a link at: the
+/// channel is whichever release is installed in the slot, and switching is
+/// installing the other one over it. Read from the bundle each time rather than
+/// remembered, so after an install it names the new build without a restart.
+/// A bundle with no record - a dev build, or one from before channels - is
+/// stable.
 pub(crate) fn channel() -> Channel {
-    Channel::Stable
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.ancestors()
+                .nth(2)
+                .map(|contents| contents.join("Resources/channel"))
+        })
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .map_or(Channel::Stable, |text| channel_from(&text))
 }
 
+fn channel_from(text: &str) -> Channel {
+    match text.trim() {
+        "experimental" => Channel::Experimental,
+        _ => Channel::Stable,
+    }
+}
+
+/// Nothing to do: the install that brought the other build is what changed the
+/// channel, and it did so by replacing the bundle that records it.
 pub(crate) fn set_channel(_channel: Channel) -> Result<(), String> {
     Ok(())
 }
@@ -170,6 +193,21 @@ pub(crate) fn installed_binaries(_channel: Channel) -> Result<(PathBuf, String),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bundle_says_which_channel_it_is() {
+        assert_eq!(channel_from("experimental\n"), Channel::Experimental);
+        assert_eq!(channel_from("stable\n"), Channel::Stable);
+    }
+
+    /// A damaged or unrecognised record must not read as an opt-in to builds
+    /// that may be less reliable.
+    #[test]
+    fn anything_else_is_stable() {
+        assert_eq!(channel_from(""), Channel::Stable);
+        assert_eq!(channel_from("beta"), Channel::Stable);
+        assert_eq!(channel_from("Experimental"), Channel::Stable);
+    }
 
     #[test]
     fn each_line_of_the_listing_is_one_input() {

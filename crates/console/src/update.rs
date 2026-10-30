@@ -17,7 +17,11 @@ use std::process::{Command, Stdio};
 /// since v0.1.2 cut as a prerelease it kept answering v0.1.2 and the window
 /// reported "up to date" on top of every alpha. The list is the only endpoint
 /// that admits a prerelease exists.
-const RELEASES: &str = "https://api.github.com/repos/Genoux/flow/releases?per_page=20";
+///
+/// A hundred, which is as many as a page holds: experimental tags outnumber
+/// stable ones, and at twenty a run of them pushed the newest stable off the
+/// page.
+const RELEASES: &str = "https://api.github.com/repos/Genoux/flow/releases?per_page=100";
 
 /// Where the release workflow's tarball lands, named after the tag it was cut
 /// from. Kept in step with the `Package` step in `.github/workflows/release.yml`.
@@ -155,6 +159,7 @@ fn pick_channel(json: &str, channel: crate::system::Channel) -> Result<Option<St
             crate::system::Channel::Stable => r["prerelease"].as_bool() == Some(false),
             crate::system::Channel::Experimental => r["prerelease"].as_bool() == Some(true),
         })
+        .filter(|r| r["tag_name"].as_str().is_some_and(|tag| has_assets(r, tag)))
         .filter_map(|r| r["tag_name"].as_str())
         .filter(|t| semver::Version::parse(t.trim_start_matches('v')).is_ok())
         .filter(|t| channel != crate::system::Channel::Experimental || t.contains("-experimental."))
@@ -164,6 +169,25 @@ fn pick_channel(json: &str, channel: crate::system::Channel) -> Result<Option<St
                 .cmp(&semver::Version::parse(b.trim_start_matches('v')).unwrap())
         })
         .map(str::to_owned))
+}
+
+/// Whether the release carries this platform's tarball and its checksum.
+///
+/// Each platform's job uploads its own asset to the draft after the Linux one
+/// creates it, so a release can exist without the Mac's yet - or ever, if that
+/// job failed - and every release before the Mac build existed has none. Picking
+/// one of those would offer an install that can only fail on a 404.
+fn has_assets(release: &serde_json::Value, tag: &str) -> bool {
+    let tarball = format!("flow-{tag}-{TARGET}.tar.gz");
+    let checksum = format!("{tarball}.sha256");
+    let has = |wanted: &str| {
+        release["assets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|asset| asset["name"].as_str() == Some(wanted))
+    };
+    has(&tarball) && has(&checksum)
 }
 
 fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), String> {
@@ -379,27 +403,112 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn assets_of(tag: &str) -> String {
+        let tarball = format!("flow-{tag}-{}.tar.gz", super::TARGET);
+        format!(r#"[{{"name":"{tarball}"}},{{"name":"{tarball}.sha256"}}]"#)
+    }
+
+    /// One release as GitHub lists it, with or without this platform's tarball
+    /// and checksum uploaded.
+    fn release(tag: &str, prerelease: bool, assets: bool) -> String {
+        let names = if assets {
+            assets_of(tag)
+        } else {
+            r#"[{"name":"README.md"}]"#.to_string()
+        };
+        format!(
+            r#"{{"tag_name":"{tag}","draft":false,"prerelease":{prerelease},"assets":{names}}}"#
+        )
+    }
+
+    fn listing(releases: &[String]) -> String {
+        format!("[{}]", releases.join(","))
+    }
+
     #[test]
     fn channel_selection_survives_mixed_releases_and_numeric_prereleases() {
-        let releases = r#"[
-            {"tag_name":"v0.3.0","draft":false,"prerelease":false},
-            {"tag_name":"v0.3.0-experimental.9","draft":false,"prerelease":true},
-            {"tag_name":"v0.3.0-experimental.10","draft":false,"prerelease":true},
-            {"tag_name":"v9.0.0-alpha.1","draft":false,"prerelease":true},
-            {"tag_name":"v9.0.0-experimental.1","draft":true,"prerelease":true}
-        ]"#;
+        let releases = listing(&[
+            release("v0.3.0", false, true),
+            release("v0.3.0-experimental.9", true, true),
+            release("v0.3.0-experimental.10", true, true),
+            release("v9.0.0-alpha.1", true, true),
+            r#"{"tag_name":"v9.0.0-experimental.1","draft":true,"prerelease":true,"assets":[]}"#
+                .to_string(),
+        ]);
         assert_eq!(
-            pick_channel(releases, Channel::Stable).unwrap().as_deref(),
+            pick_channel(&releases, Channel::Stable).unwrap().as_deref(),
             Some("v0.3.0")
         );
         assert_eq!(
-            pick_channel(releases, Channel::Experimental)
+            pick_channel(&releases, Channel::Experimental)
                 .unwrap()
                 .as_deref(),
             Some("v0.3.0-experimental.10")
         );
         assert!(newer("v0.3.0-experimental.10", "0.3.0-experimental.9"));
         assert!(!newer("v0.3.0-experimental.1", "0.3.0"));
+    }
+
+    /// Leaving experimental is a downgrade, and it has to be offered: the stable
+    /// pick is the newest stable release even when the running build is ahead of
+    /// it, and nothing on the way compares it against what is running.
+    #[test]
+    fn leaving_experimental_picks_an_older_stable_release() {
+        let releases = listing(&[
+            release("v0.5.0-experimental.2", true, true),
+            release("v0.4.1", false, true),
+            release("v0.4.0", false, true),
+        ]);
+        let stable = pick_channel(&releases, Channel::Stable).unwrap().unwrap();
+        assert_eq!(stable, "v0.4.1");
+        assert!(!newer(&stable, "0.5.0-experimental.2"));
+    }
+
+    #[test]
+    fn a_channel_with_no_release_yet_picks_nothing() {
+        let releases = listing(&[release("v0.4.1", false, true)]);
+        assert_eq!(pick_channel(&releases, Channel::Experimental), Ok(None));
+    }
+
+    /// Each platform's job uploads its own asset after the release exists, so
+    /// the newest stable may have nothing for this machine - a job that failed,
+    /// or one that has not finished. Offering it is a download that 404s.
+    #[test]
+    fn a_release_without_this_platforms_tarball_is_never_picked() {
+        let releases = listing(&[
+            release("v0.5.0", false, false),
+            release("v0.4.1", false, true),
+        ]);
+        assert_eq!(
+            pick_channel(&releases, Channel::Stable).unwrap().as_deref(),
+            Some("v0.4.1")
+        );
+    }
+
+    #[test]
+    fn a_tarball_without_its_checksum_is_not_enough() {
+        let tarball = format!("flow-v0.5.0-{}.tar.gz", super::TARGET);
+        let releases = format!(
+            r#"[{{"tag_name":"v0.5.0","draft":false,"prerelease":false,"assets":[{{"name":"{tarball}"}}]}}]"#
+        );
+        assert_eq!(pick_channel(&releases, Channel::Stable), Ok(None));
+    }
+
+    /// Experimental tags outnumber stable ones. The newest stable has to be
+    /// found among a long run of them, not just the first page's worth.
+    #[test]
+    fn stable_is_found_past_twenty_experimental_releases() {
+        let mut all: Vec<String> = (1..=30)
+            .rev()
+            .map(|n| release(&format!("v0.5.0-experimental.{n}"), true, true))
+            .collect();
+        all.push(release("v0.4.1", false, true));
+        let releases = listing(&all);
+        assert_eq!(
+            pick_channel(&releases, Channel::Stable).unwrap().as_deref(),
+            Some("v0.4.1")
+        );
+        assert!(super::RELEASES.ends_with("per_page=100"));
     }
 
     #[test]
@@ -432,12 +541,18 @@ mod tests {
 
     /// The shape GitHub actually returns, in the order it returns it: newest
     /// first, drafts included for whoever can see them.
-    const LIST: &str = r#"[
-        {"tag_name":"v0.3.0","draft":true,"prerelease":false},
-        {"tag_name":"v0.3.0-experimental.1","draft":false,"prerelease":true},
-        {"tag_name":"v0.1.3-alpha.2","draft":false,"prerelease":true},
-        {"tag_name":"v0.1.2","draft":false,"prerelease":false}
-    ]"#;
+    fn list() -> String {
+        let draft = format!(
+            r#"{{"tag_name":"v0.3.0","draft":true,"prerelease":false,"assets":{}}}"#,
+            assets_of("v0.3.0")
+        );
+        listing(&[
+            draft,
+            release("v0.3.0-experimental.1", true, true),
+            release("v0.1.3-alpha.2", true, true),
+            release("v0.1.2", false, true),
+        ])
+    }
 
     /// The regression that shipped: every release after v0.1.2 was a
     /// prerelease, `releases/latest` skips those by definition, and so the
@@ -445,7 +560,7 @@ mod tests {
     #[test]
     fn a_prerelease_build_is_offered_the_newest_prerelease() {
         assert_eq!(
-            pick_channel(LIST, Channel::Experimental),
+            pick_channel(&list(), Channel::Experimental),
             Ok(Some("v0.3.0-experimental.1".into()))
         );
     }
@@ -453,7 +568,7 @@ mod tests {
     #[test]
     fn a_stable_build_is_never_walked_onto_a_prerelease() {
         assert_eq!(
-            pick_channel(LIST, Channel::Stable),
+            pick_channel(&list(), Channel::Stable),
             Ok(Some("v0.1.2".into()))
         );
         // And that is not an update, so nothing gets offered.
@@ -464,7 +579,7 @@ mod tests {
     fn a_draft_is_invisible_even_to_a_prerelease_build() {
         // v0.3.0 is the highest tag in the list and must still lose.
         assert_eq!(
-            pick_channel(LIST, Channel::Experimental),
+            pick_channel(&list(), Channel::Experimental),
             Ok(Some("v0.3.0-experimental.1".into()))
         );
     }
@@ -473,12 +588,12 @@ mod tests {
     // by version: a patch backported after a minor is returned above it.
     #[test]
     fn the_highest_version_wins_not_the_first_listed() {
-        let out_of_order = r#"[
-            {"tag_name":"v0.1.4","draft":false,"prerelease":false},
-            {"tag_name":"v0.9.0","draft":false,"prerelease":false}
-        ]"#;
+        let out_of_order = listing(&[
+            release("v0.1.4", false, true),
+            release("v0.9.0", false, true),
+        ]);
         assert_eq!(
-            pick_channel(out_of_order, Channel::Stable),
+            pick_channel(&out_of_order, Channel::Stable),
             Ok(Some("v0.9.0".into()))
         );
     }

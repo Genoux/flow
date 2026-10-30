@@ -98,6 +98,15 @@ class Channels(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.bin.joinpath("flow-stable").exists())
 
+    def test_macos_bundle_records_its_channel(self):
+        # bundle.sh needs sips and iconutil, so it cannot run here. What the
+        # console reads on a Mac is Contents/Resources/channel, and it has to be
+        # the same file the release workflow checked against the tag.
+        script = Path(__file__).resolve().parents[1] / "packaging/macos/bundle.sh"
+        text = script.read_text()
+        self.assertIn('"$here/../channel" "$app/Contents/Resources/channel"', text)
+        self.assertLess(text.index("Contents/Resources/channel"), text.index("rcodesign\" sign"))
+
 
 if __name__ == "__main__":
     unittest.main()

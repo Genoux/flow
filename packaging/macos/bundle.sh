@@ -49,6 +49,10 @@ sed -e "s|@VERSION@|$version|g" -e "s|@BUILD@|${version%%-*}|g" \
   "$here/Info.plist" > "$app/Contents/Info.plist"
 install -m755 "$daemon" "$app/Contents/MacOS/flow"
 install -m755 "$console" "$app/Contents/MacOS/flow-console"
+# Which build this app is. There is one Flow.app, so the channel is a property
+# of the bundle and not of a link beside it as on Linux; the console reads it
+# from here, and the signature seals it so it cannot drift from the binaries.
+install -m644 "$here/../channel" "$app/Contents/Resources/channel"
 
 iconset="$(mktemp -d)/flow.iconset"
 trap 'rm -rf "$(dirname "$iconset")"' EXIT
