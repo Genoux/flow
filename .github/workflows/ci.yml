@@ -112,7 +112,7 @@ jobs:
   # Linux job cannot see a change that breaks it. Not a required check: it
   # guards the port without making every Linux change wait on a second runner.
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -125,7 +125,9 @@ jobs:
           workspaces: |
             .
             crates/console
-          shared-key: build-macos
+          # Named for the image: build scripts record absolute Xcode paths, so
+          # a cache saved on another image links against an Xcode not there.
+          shared-key: build-macos-15
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Test (daemon)
