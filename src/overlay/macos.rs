@@ -4,14 +4,15 @@
 //! there. Every surface call therefore hands its AppKit work to the main queue,
 //! and [`host`] is what keeps that thread serving it.
 
-use super::{Canvas, Face, HEIGHT, MARGIN_BOTTOM, SURFACE_WIDTH, render};
+use super::{Canvas, Face, HEIGHT, MARGIN_BOTTOM, SURFACE_WIDTH, click_event, render};
+use crate::hotkey;
 use anyhow::Result;
 use dispatch2::DispatchQueue;
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Bool};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSEvent, NSPanel, NSScreen, NSScreenSaverWindowLevel,
+    NSBackingStoreType, NSColor, NSEvent, NSPanel, NSScreen, NSScreenSaverWindowLevel, NSView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFType};
@@ -19,9 +20,10 @@ use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CATransaction;
 use std::cell::RefCell;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, PoisonError};
 
 thread_local! {
@@ -40,10 +42,51 @@ struct Frame {
 
 type Latest = Arc<Mutex<Option<Frame>>>;
 
+define_class!(
+    /// The panel's content view. The panel only receives mouse events while a
+    /// recording is latched, and then a press on a button is the daemon's own
+    /// event. Anything else on the pill does nothing.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "FlowIslandView"]
+    #[ivars = Sender<hotkey::Event>]
+    struct IslandView;
+
+    unsafe impl NSObjectProtocol for IslandView {}
+
+    impl IslandView {
+        // The panel is never key, so the press that lands on a button is the
+        // first mouse event it sees and would otherwise be spent on focusing.
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> Bool {
+            Bool::YES
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let at = self.convertPoint_fromView(event.locationInWindow(), None);
+            // AppKit counts y up from the bottom; the shared hit test counts down.
+            let from_top = self.bounds().size.height - at.y;
+            if let Some(event) = click_event(at.x as f32, from_top as f32) {
+                let _ = self.ivars().send(event);
+            }
+        }
+    }
+);
+
+impl IslandView {
+    fn new(mtm: MainThreadMarker, clicks: Sender<hotkey::Event>, frame: NSRect) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(clicks);
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
 pub struct Surface {
     canvas: Canvas,
     scale: f64,
     mapped: bool,
+    clickable: bool,
+    clicks: Sender<hotkey::Event>,
     /// The newest frame the main thread has not drawn yet. The overlay paints
     /// far faster than the main queue is asked to draw, and a frame that has
     /// already been overtaken is not worth showing.
@@ -51,11 +94,13 @@ pub struct Surface {
 }
 
 impl Surface {
-    pub fn connect() -> Result<Self> {
+    pub fn connect(clicks: Sender<hotkey::Event>) -> Result<Self> {
         Ok(Self {
             canvas: Canvas::new(0, 0),
             scale: 1.0,
             mapped: false,
+            clickable: false,
+            clicks,
             latest: Latest::default(),
         })
     }
@@ -68,9 +113,19 @@ impl Surface {
     /// before the first frame is painted at it.
     pub fn map(&mut self) {
         let mut scale = 1.0;
-        DispatchQueue::main().exec_sync(|| scale = show());
+        DispatchQueue::main().exec_sync(|| scale = show(&self.clicks));
         self.scale = scale;
         self.mapped = true;
+        self.clickable = false;
+    }
+
+    /// Let the panel take the mouse, or give it back. The panel is created
+    /// click-through and every other state keeps it that way.
+    pub fn set_clickable(&mut self, on: bool) {
+        if self.clickable != on {
+            self.clickable = on;
+            DispatchQueue::main().exec_async(move || set_clickable(on));
+        }
     }
 
     pub fn dispatch(&mut self) -> Result<()> {
@@ -132,7 +187,7 @@ impl Surface {
 /// never has one, so it is only the fallback. The island sits centred along the bottom of what the Dock and menu
 /// bar leave, the same place a layer-shell surface anchored to the bottom edge
 /// is given.
-fn show() -> f64 {
+fn show(clicks: &Sender<hotkey::Event>) -> f64 {
     let Some(mtm) = MainThreadMarker::new() else {
         return 1.0;
     };
@@ -143,7 +198,8 @@ fn show() -> f64 {
         .map_or(1.0, |screen| screen.backingScaleFactor().round().max(1.0));
 
     PANEL.with_borrow_mut(|slot| {
-        let panel = slot.get_or_insert_with(|| make_panel(mtm));
+        let panel = slot.get_or_insert_with(|| make_panel(mtm, clicks.clone()));
+        panel.setIgnoresMouseEvents(true);
         if let Some(usable) = usable {
             let origin = NSPoint::new(
                 usable.origin.x + (usable.size.width - SURFACE_WIDTH as f64) / 2.0,
@@ -179,14 +235,23 @@ fn contains(frame: NSRect, point: NSPoint) -> bool {
 fn hide() {
     PANEL.with_borrow(|slot| {
         if let Some(panel) = slot {
+            panel.setIgnoresMouseEvents(true);
             panel.orderOut(None);
+        }
+    });
+}
+
+fn set_clickable(on: bool) {
+    PANEL.with_borrow(|slot| {
+        if let Some(panel) = slot {
+            panel.setIgnoresMouseEvents(!on);
         }
     });
 }
 
 /// Never key, never main and never activating: the paste lands in whatever
 /// app the user was typing in, and the island must not take that from it.
-fn make_panel(mtm: MainThreadMarker) -> Retained<NSPanel> {
+fn make_panel(mtm: MainThreadMarker, clicks: Sender<hotkey::Event>) -> Retained<NSPanel> {
     let size = NSSize::new(SURFACE_WIDTH as f64, HEIGHT as f64);
     let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
         mtm.alloc(),
@@ -208,9 +273,9 @@ fn make_panel(mtm: MainThreadMarker) -> Retained<NSPanel> {
             | NSWindowCollectionBehavior::Stationary
             | NSWindowCollectionBehavior::IgnoresCycle,
     );
-    if let Some(view) = panel.contentView() {
-        view.setWantsLayer(true);
-    }
+    let view = IslandView::new(mtm, clicks, NSRect::new(NSPoint::new(0.0, 0.0), size));
+    view.setWantsLayer(true);
+    panel.setContentView(Some(&view));
     // The panel is released by the thread-local, not on close.
     // SAFETY: setReleasedWhenClosed is a plain flag on a window we own.
     unsafe { panel.setReleasedWhenClosed(false) };

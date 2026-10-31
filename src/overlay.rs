@@ -28,6 +28,7 @@ use macos::Surface;
 use wayland::Surface;
 
 use crate::audio::Monitor;
+use crate::hotkey;
 
 /// Inter Medium, subset to the characters the messages use. Vendored rather
 /// than found on the system: this daemon has no UI toolkit and no fontconfig,
@@ -714,12 +715,105 @@ pub fn rounded_rect_distance(
     outside + dx.max(dy).min(0.0) - radius
 }
 
+/// Distance from a point to the segment between two others.
+fn segment_distance(point: (f32, f32), from: (f32, f32), to: (f32, f32)) -> f32 {
+    let along = (to.0 - from.0, to.1 - from.1);
+    let length_squared = along.0 * along.0 + along.1 * along.1;
+    let reach = if length_squared == 0.0 {
+        0.0
+    } else {
+        (((point.0 - from.0) * along.0 + (point.1 - from.1) * along.1) / length_squared)
+            .clamp(0.0, 1.0)
+    };
+    (point.0 - from.0 - along.0 * reach).hypot(point.1 - from.1 - along.1 * reach)
+}
+
+/// The pill while a latched recording is running: the 92px pill widened to make
+/// room for a button at each end.
+pub const HANDS_FREE_WIDTH: u32 = 122;
+const BUTTON_RADIUS: f32 = 10.0;
+const BUTTON_INSET: f32 = 5.0;
+const BUTTON_CENTRE_Y: f32 = PILL_HEIGHT as f32 / 2.0;
+/// Pill-local centres in the latched pill. The bars sit 10px clear of both.
+const CANCEL_CENTRE: (f32, f32) = (BUTTON_INSET + BUTTON_RADIUS, BUTTON_CENTRE_Y);
+const STOP_CENTRE: (f32, f32) = (
+    HANDS_FREE_WIDTH as f32 - BUTTON_INSET - BUTTON_RADIUS,
+    BUTTON_CENTRE_Y,
+);
+/// Where the latched pill starts on the bottom-centred surface, in logical px.
+const HANDS_FREE_LEFT: f32 = (SURFACE_WIDTH - HANDS_FREE_WIDTH) as f32 / 2.0;
+
+const CANCEL_FILL_ALPHA: f32 = 0.14;
+const CANCEL_GLYPH_ALPHA: f32 = 0.88;
+const STOP_FILL_ALPHA: f32 = 0.92;
+const STOP_GLYPH: (f32, f32, f32) = (10.0 / 255.0, 11.0 / 255.0, 14.0 / 255.0);
+const CANCEL_GLYPH_WIDTH: f32 = 1.3;
+const STOP_GLYPH_WIDTH: f32 = 1.5;
+type Segment = ((f32, f32), (f32, f32));
+/// Glyph strokes relative to the button centre, in logical px.
+const CROSS: [Segment; 2] = [((-2.4, -2.4), (2.4, 2.4)), ((2.4, -2.4), (-2.4, 2.4))];
+const CHECK: [Segment; 2] = [((-2.9, 0.25), (-0.8, 2.15)), ((-0.8, 2.15), (2.9, -2.0))];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IslandButton {
+    Stop,
+    Cancel,
+}
+
+impl IslandButton {
+    /// A click is the event the key or `flow stop` would have sent, so the
+    /// daemon has one way to end a hands-free session.
+    pub fn event(self) -> hotkey::Event {
+        match self {
+            Self::Stop => hotkey::Event::Stop,
+            Self::Cancel => hotkey::Event::Cancelled,
+        }
+    }
+}
+
+/// Which button a point lands on. `x` and `y` are pill-local logical px in the
+/// latched pill, so both platforms convert to them and nothing else.
+pub fn button_at(x: f32, y: f32) -> Option<IslandButton> {
+    let on = |(centre_x, centre_y): (f32, f32)| (x - centre_x).hypot(y - centre_y) <= BUTTON_RADIUS;
+    if on(CANCEL_CENTRE) {
+        Some(IslandButton::Cancel)
+    } else if on(STOP_CENTRE) {
+        Some(IslandButton::Stop)
+    } else {
+        None
+    }
+}
+
+/// The event a click at this surface-local point stands for, if it landed on a
+/// button.
+fn click_event(x: f32, y: f32) -> Option<hotkey::Event> {
+    button_at(x - HANDS_FREE_LEFT, y).map(IslandButton::event)
+}
+
+/// Linear progress of the widening towards `latched`, advanced by `elapsed`
+/// seconds. One [`BLOOM`] each way, the same as the island's own growth.
+pub fn hands_free_step(current: f32, latched: bool, elapsed: f32) -> f32 {
+    let step = elapsed / BLOOM;
+    if latched {
+        (current + step).min(1.0)
+    } else {
+        (current - step).max(0.0)
+    }
+}
+
+pub fn ease_out(progress: f32) -> f32 {
+    1.0 - (1.0 - progress).powi(3)
+}
+
 /// What the island is showing. Also the message the daemon sends to change it.
 #[derive(Clone)]
 enum Command {
     /// Shown, but the microphone is not open yet - other apps are still being
     /// turned down. See [`Overlay::arm`].
     Arm,
+    /// The recording latched: it goes on without the key, so the island grows
+    /// the buttons that end it.
+    Latch,
     Record {
         /// Hold to talk. The island's life is the key's, so a line that has gone
         /// dead ends it; in tap mode the toggle is what ends it and nothing else
@@ -783,10 +877,12 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    pub fn spawn(monitor: Monitor) -> Self {
+    /// `clicks` is where a press on a hands-free button is sent: the daemon's own
+    /// event channel, so a click is indistinguishable from the key.
+    pub fn spawn(monitor: Monitor, clicks: Sender<hotkey::Event>) -> Self {
         let (commands, incoming) = mpsc::channel();
         std::thread::spawn(move || {
-            if let Err(err) = run(monitor, incoming) {
+            if let Err(err) = run(monitor, incoming, clicks) {
                 eprintln!("overlay disabled: {err}");
             }
         });
@@ -803,6 +899,12 @@ impl Overlay {
     /// there is something to answer.
     pub fn arm(&self) {
         let _ = self.commands.send(Command::Arm);
+    }
+
+    /// The recording no longer needs the key. Cleared by the next arm, by
+    /// [`Overlay::queued`] and by [`Overlay::cancel`], which end it.
+    pub fn latched(&self) {
+        let _ = self.commands.send(Command::Latch);
     }
 
     pub fn record(&self, holding: bool) {
@@ -917,6 +1019,38 @@ impl Canvas {
         alpha: f32,
     ) {
         self.fill(centre, half, radius, None, None, colour, alpha);
+    }
+
+    /// Line segments as one shape, round-capped. The coverage is taken from the
+    /// nearest segment, so strokes that cross or join do not blend twice.
+    fn strokes(&mut self, segments: &[Segment], width: f32, colour: (f32, f32, f32), alpha: f32) {
+        let reach = width / 2.0 + 1.0;
+        let points = segments.iter().flat_map(|(from, to)| [from, to]);
+        let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (x, y) in points {
+            left = left.min(*x);
+            right = right.max(*x);
+            top = top.min(*y);
+            bottom = bottom.max(*y);
+        }
+        let columns = (left - reach).floor().max(0.0) as usize
+            ..((right + reach).ceil() as usize).min(self.width);
+        let rows = (top - reach).floor().max(0.0) as usize
+            ..((bottom + reach).ceil() as usize).min(self.height);
+
+        for y in rows {
+            for x in columns.clone() {
+                let point = (x as f32 + 0.5, y as f32 + 0.5);
+                let nearest = segments
+                    .iter()
+                    .map(|(from, to)| segment_distance(point, *from, *to))
+                    .fold(f32::MAX, f32::min);
+                let coverage = (0.5 - (nearest - width / 2.0)).clamp(0.0, 1.0);
+                if coverage > 0.0 {
+                    self.blend(x, y, colour, coverage * alpha);
+                }
+            }
+        }
     }
 
     /// A hairline ring: the shape minus a smaller copy of itself.
@@ -1097,6 +1231,8 @@ enum Face<'a> {
         transcribing: bool,
         /// 0 at the instant the microphone opened, 1 once the bars have risen.
         wake: f32,
+        /// 0 the ordinary pill, 1 widened with a button at each end.
+        hands_free: f32,
     },
     Toast {
         text: &'a str,
@@ -1113,7 +1249,16 @@ fn render(canvas: &mut Canvas, face: Face, scale: f32) {
             seconds,
             transcribing,
             wake,
-        } => render_island(canvas, heights, seconds, transcribing, wake, scale),
+            hands_free,
+        } => render_island(
+            canvas,
+            heights,
+            seconds,
+            transcribing,
+            wake,
+            hands_free,
+            scale,
+        ),
         Face::Toast { text, grown } => render_toast(canvas, text, grown, scale),
     }
 }
@@ -1125,6 +1270,7 @@ fn render_island(
     seconds: f32,
     transcribing: bool,
     wake: f32,
+    hands_free: f32,
     scale: f32,
 ) {
     let centre = (canvas.width as f32 / 2.0, canvas.height as f32 / 2.0);
@@ -1147,7 +1293,8 @@ fn render_island(
     // that narrow: the island is a pill widening and narrowing, and it is never
     // caught being a circle with a dot in it at either end.
     let stub = corner * NARROWEST;
-    let half_width = stub + (WIDTH as f32 * scale / 2.0 - stub) * grown;
+    let widened = (HANDS_FREE_WIDTH - WIDTH) as f32 * scale / 2.0 * hands_free;
+    let half_width = stub + (WIDTH as f32 * scale / 2.0 - stub) * grown + widened;
     let pill = (half_width, height / 2.0);
     // Opacity is the growth, not a slice of it. Fading over a fraction meant the
     // whole fade was spent inside the first few frames of an already short
@@ -1246,10 +1393,49 @@ fn render_island(
         );
         canvas.rounded_rect(at, half, half.0, BAR, alpha);
     }
+
+    // ponytail: no hover state; add one when pointer motion is tracked for it.
+    let faded = hands_free * visible;
+    if faded > 0.0 {
+        let edge = BUTTON_INSET + BUTTON_RADIUS;
+        let cancel = (centre.0 - pill.0 + edge * scale, centre.1);
+        let stop = (centre.0 + pill.0 - edge * scale, centre.1);
+        let button = (BUTTON_RADIUS * scale, BUTTON_RADIUS * scale);
+        let glyph = |at: (f32, f32), strokes: &[Segment]| {
+            strokes
+                .iter()
+                .map(|(from, to)| {
+                    (
+                        (at.0 + from.0 * scale, at.1 + from.1 * scale),
+                        (at.0 + to.0 * scale, at.1 + to.1 * scale),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        canvas.rounded_rect(cancel, button, button.0, BAR, CANCEL_FILL_ALPHA * faded);
+        canvas.strokes(
+            &glyph(cancel, &CROSS),
+            CANCEL_GLYPH_WIDTH * scale,
+            BAR,
+            CANCEL_GLYPH_ALPHA * faded,
+        );
+        canvas.rounded_rect(stop, button, button.0, BAR, STOP_FILL_ALPHA * faded);
+        canvas.strokes(
+            &glyph(stop, &CHECK),
+            STOP_GLYPH_WIDTH * scale,
+            STOP_GLYPH,
+            faded,
+        );
+    }
 }
 
-fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
-    let mut surface = Surface::connect()?;
+fn run(
+    monitor: Monitor,
+    commands: mpsc::Receiver<Command>,
+    clicks: Sender<hotkey::Event>,
+) -> Result<()> {
+    let mut surface = Surface::connect(clicks)?;
 
     let mut analyzer = Analyzer::new();
     let mut window: Vec<f32> = Vec::with_capacity(WINDOW);
@@ -1290,6 +1476,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
     // The bars are still falling to rest; the sweep waits for them.
     let mut settling = false;
     let mut lifecycle = Lifecycle::default();
+    // The recording is latched: wanted, and how far the widening has got.
+    let mut latched = false;
+    let mut hands_free = 0.0f32;
+    let mut last_frame = std::time::Instant::now();
 
     loop {
         let waiting = if surface.is_mapped() {
@@ -1303,6 +1493,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // rather than folded into Record so a caller that never arms - the
             // unducked path, where capture starts at once - is unchanged.
             Ok(Command::Arm) => {
+                latched = false;
                 heights = [0.0; BAR_COUNT];
                 window.clear();
                 opened = monitor.heard();
@@ -1329,6 +1520,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 woke = resume(grown);
                 leaving = None;
             }
+            Ok(Command::Latch) => latched = true,
             Ok(Command::Record { holding: held }) => {
                 heights = [0.0; BAR_COUNT];
                 window.clear();
@@ -1369,6 +1561,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // Counted at once so a finish cannot outrun it. Nothing is drawn:
             // recognition has not run, so there may be nothing here at all.
             Ok(Command::Queued) => {
+                latched = false;
                 listening = false;
                 transcribing = true;
                 // The crest starts at its own beginning, not partway through
@@ -1396,6 +1589,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // going is the whole answer to it - the chord did something, the
             // user saw that it did, and nothing is owed beyond that.
             Ok(Command::Cancel) => {
+                latched = false;
                 listening = false;
                 lifecycle.cancel();
                 ending.get_or_insert(Ending::Close);
@@ -1403,6 +1597,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             // The one ending that is not a leaving: the island stays out and
             // widens into the message instead - see [`toast_grown`].
             Ok(Command::Say(message)) => {
+                latched = false;
                 listening = false;
                 lifecycle.cancel();
                 ending = Some(Ending::Say(message));
@@ -1413,6 +1608,10 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
 
         surface.dispatch()?;
 
+        let now = std::time::Instant::now();
+        hands_free = hands_free_step(hands_free, latched, (now - last_frame).as_secs_f32());
+        last_frame = now;
+
         // The compositor can take the surface away at any point - a monitor
         // unplugged mid-sentence. Recording carries on regardless.
         if surface.is_closed() {
@@ -1421,11 +1620,16 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
             ending = None;
             leaving = None;
             grown = 0.0;
+            hands_free = 0.0;
             continue;
         }
         if !surface.is_ready() {
             continue;
         }
+        // Clickable only once the widening has landed, so there is no hit area
+        // where no button is drawn yet; clearing is immediate. Any other time
+        // the island must never be the thing that eats a click.
+        surface.set_clickable(latched && hands_free >= 1.0);
 
         if settling {
             // Down to rest underneath the sweep, which is already running.
@@ -1494,6 +1698,7 @@ fn run(monitor: Monitor, commands: mpsc::Receiver<Command>) -> Result<()> {
                 seconds: started.elapsed().as_secs_f32(),
                 transcribing,
                 wake: grown,
+                hands_free: ease_out(hands_free),
             },
         };
         surface.present(face)?;
@@ -1627,6 +1832,7 @@ mod tests {
                     seconds: 0.0,
                     transcribing: false,
                     wake,
+                    hands_free: 0.0,
                 },
                 1.0,
             );
@@ -1662,7 +1868,7 @@ mod tests {
         for step in 0..=40 {
             let wake = step as f32 / 40.0;
             let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
-            render_island(&mut canvas, &[1.0; BAR_COUNT], 0.0, false, wake, scale);
+            render_island(&mut canvas, &[1.0; BAR_COUNT], 0.0, false, wake, 0.0, scale);
 
             // The same pill render_island draws, so a disagreement here is the
             // two of them having drifted apart.
@@ -1710,6 +1916,7 @@ mod tests {
                     seconds: 0.0,
                     transcribing: false,
                     wake,
+                    hands_free: 0.0,
                 },
                 1.0,
             );
@@ -1759,6 +1966,7 @@ mod tests {
                 seconds: 0.0,
                 transcribing: false,
                 wake: 1.0,
+                hands_free: 0.0,
             },
             1.0,
         );
@@ -1773,6 +1981,119 @@ mod tests {
             width(&ended),
             width(&island),
             "the message did not end at the island's own width"
+        );
+    }
+
+    fn pixel(canvas: &Canvas, x: f32, y: f32) -> [u8; 4] {
+        let at = (y as usize * canvas.width + x as usize) * 4;
+        canvas.pixels[at..at + 4].try_into().expect("four channels")
+    }
+
+    fn latched_island(scale: f32) -> Canvas {
+        let mut canvas = Canvas::new(
+            (SURFACE_WIDTH as f32 * scale) as usize,
+            (HEIGHT as f32 * scale) as usize,
+        );
+        render(
+            &mut canvas,
+            Face::Island {
+                heights: &[0.0; BAR_COUNT],
+                seconds: 0.0,
+                transcribing: false,
+                wake: 1.0,
+                hands_free: 1.0,
+            },
+            scale,
+        );
+        canvas
+    }
+
+    /// The buttons are drawn where `button_at` says they are, and read as what
+    /// they are: a near-white stop and a translucent cancel.
+    #[test]
+    fn the_buttons_are_drawn_where_they_are_hit() {
+        for scale in [1.0, 2.0] {
+            let canvas = latched_island(scale);
+            let pill_left = HANDS_FREE_LEFT * scale;
+            // Off the glyph, on the fill: the glyph is within 3px of centre.
+            let on_fill = |centre: (f32, f32)| {
+                pixel(
+                    &canvas,
+                    pill_left + (centre.0 + 6.0) * scale,
+                    centre.1 * scale,
+                )
+            };
+
+            let stop = on_fill(STOP_CENTRE);
+            assert!(
+                stop[1] > 220 && stop[3] > 220,
+                "stop is not near-white: {stop:?}"
+            );
+            let cancel = on_fill(CANCEL_CENTRE);
+            let pill = pixel(&canvas, pill_left + 60.0 * scale, 2.0 * scale);
+            assert!(
+                cancel[1] > pill[1] && cancel[1] < 100,
+                "cancel is not a translucent fill over the pill: {cancel:?} over {pill:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_glyphs_are_ink_on_their_buttons() {
+        let canvas = latched_island(1.0);
+        let centre = |button: (f32, f32)| pixel(&canvas, HANDS_FREE_LEFT + button.0, button.1);
+
+        let check = centre(STOP_CENTRE);
+        let fill = pixel(
+            &canvas,
+            HANDS_FREE_LEFT + STOP_CENTRE.0 + 6.0,
+            STOP_CENTRE.1,
+        );
+        assert!(check[1] < fill[1] / 2, "no check on stop: {check:?}");
+
+        let cross = centre(CANCEL_CENTRE);
+        let bare = pixel(
+            &canvas,
+            HANDS_FREE_LEFT + CANCEL_CENTRE.0 + 6.0,
+            CANCEL_CENTRE.1,
+        );
+        assert!(cross[1] > bare[1] * 2, "no cross on cancel: {cross:?}");
+    }
+
+    #[test]
+    fn a_click_maps_to_the_event_of_the_button_under_it() {
+        let y = BUTTON_CENTRE_Y;
+        assert_eq!(
+            click_event(HANDS_FREE_LEFT + STOP_CENTRE.0, y),
+            Some(hotkey::Event::Stop)
+        );
+        assert_eq!(
+            click_event(HANDS_FREE_LEFT + CANCEL_CENTRE.0, y),
+            Some(hotkey::Event::Cancelled)
+        );
+        assert_eq!(click_event(SURFACE_WIDTH as f32 / 2.0, y), None);
+    }
+
+    #[test]
+    fn the_latched_pill_is_the_widened_pill() {
+        let canvas = latched_island(1.0);
+        let lit = |x: usize| {
+            (0..canvas.height).any(|y| canvas.pixels[(y * canvas.width + x) * 4 + 3] > 0)
+        };
+        let drawn = (0..canvas.width).filter(|x| lit(*x)).count();
+        assert_eq!(drawn, HANDS_FREE_WIDTH as usize);
+    }
+
+    #[test]
+    fn nothing_is_drawn_outside_the_ordinary_pill_unless_latched() {
+        let mut canvas = Canvas::new(SURFACE_WIDTH as usize, HEIGHT as usize);
+        render_island(&mut canvas, &[0.0; BAR_COUNT], 0.0, false, 1.0, 0.0, 1.0);
+        let lit = |x: usize| {
+            (0..canvas.height).any(|y| canvas.pixels[(y * canvas.width + x) * 4 + 3] > 0)
+        };
+        assert_eq!(
+            (0..canvas.width).filter(|x| lit(*x)).count(),
+            WIDTH as usize
         );
     }
 }

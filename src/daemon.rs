@@ -85,11 +85,13 @@ pub fn run(
     }
 
     let mut injector = inject::Injector::new()?;
-    let overlay = overlay::Overlay::spawn(capture.monitor());
+    // Made before the overlay: a click on its hands-free buttons is sent into
+    // this same channel, so it is the key's own event to the loop.
+    let (events, incoming) = std::sync::mpsc::channel();
+    let overlay = overlay::Overlay::spawn(capture.monitor(), events.clone());
 
     duck::restore_stale();
 
-    let (events, incoming) = std::sync::mpsc::channel();
     // Degrades rather than bails, the way a missing refining model does: the signal
     // path is independent, so a machine without /dev/input access should still
     // dictate from a compositor bind instead of refusing to start.
@@ -468,6 +470,7 @@ pub fn run(
                         continue;
                     }
                     if matches!(settled, Settled::Latched) {
+                        overlay.latched();
                         None
                     } else {
                         if let Settled::Ended(next) = settled {
@@ -758,6 +761,11 @@ fn begin(
     // heard - and it lands here rather than on the keypress precisely because
     // that is when it became true.
     overlay.record(hold_to_talk);
+    // Not at the latch itself: a stop click during the duck wait would hit the
+    // abort arm above and discard, where a latched stop must finish.
+    if *latch == hotkey::Latch::On {
+        overlay.latched();
+    }
     None
 }
 

@@ -1,9 +1,11 @@
 use std::time::Duration;
 
+use flow::hotkey::Event;
 use flow::overlay::{
-    BLOOM, DWELL, MUTED, NO_INPUT, SURFACE_WIDTH, Silence, TOAST_HOLD, TOAST_LIFE, TOAST_RISE,
-    WINDOW, arrived, band_fraction, bar_height, bloom, dead_line, fit, fresh_window, mountain,
-    resting, rounded_rect_distance, silence, smooth, smooth_bar, sweep, toast_grown, toast_width,
+    BLOOM, DWELL, IslandButton, MUTED, NO_INPUT, SURFACE_WIDTH, Silence, TOAST_HOLD, TOAST_LIFE,
+    TOAST_RISE, WINDOW, arrived, band_fraction, bar_height, bloom, button_at, dead_line, ease_out,
+    fit, fresh_window, hands_free_step, mountain, resting, rounded_rect_distance, silence, smooth,
+    smooth_bar, sweep, toast_grown, toast_width,
 };
 
 /// Regression, and the whole reason the scale is in decibels.
@@ -704,4 +706,76 @@ fn the_resting_swell_is_never_as_tall_as_a_voice() {
         tallest > 0.12,
         "the resting swell is too faint to be seen at {tallest}"
     );
+}
+
+/// Pill-local, in the latched 122x30 pill: cancel centred at (15, 15), stop at
+/// (107, 15), both 20px circles.
+#[test]
+fn the_button_centres_hit_their_own_button() {
+    assert_eq!(button_at(15.0, 15.0), Some(IslandButton::Cancel));
+    assert_eq!(button_at(107.0, 15.0), Some(IslandButton::Stop));
+}
+
+#[test]
+fn a_button_ends_at_its_ten_pixel_radius() {
+    assert_eq!(button_at(15.0 + 9.9, 15.0), Some(IslandButton::Cancel));
+    assert_eq!(button_at(15.0 - 9.9, 15.0), Some(IslandButton::Cancel));
+    assert_eq!(button_at(15.0, 15.0 + 9.9), Some(IslandButton::Cancel));
+    assert_eq!(button_at(107.0 + 9.9, 15.0), Some(IslandButton::Stop));
+    assert_eq!(button_at(15.0 + 10.1, 15.0), None);
+    assert_eq!(button_at(107.0 - 10.1, 15.0), None);
+    assert_eq!(button_at(107.0, 15.0 - 10.1), None);
+}
+
+#[test]
+fn the_radius_itself_is_inside_and_just_past_it_is_not() {
+    assert_eq!(button_at(15.0 + 10.0, 15.0), Some(IslandButton::Cancel));
+    assert_eq!(button_at(107.0, 15.0 - 10.0), Some(IslandButton::Stop));
+    assert_eq!(button_at(15.0 + 10.001, 15.0), None);
+    assert_eq!(button_at(107.0, 15.0 - 10.001), None);
+}
+
+/// The square around a circle is not the circle: a corner click would be a
+/// click on the pill.
+#[test]
+fn the_corner_of_a_buttons_box_is_not_the_button() {
+    assert_eq!(button_at(15.0 + 8.0, 15.0 + 8.0), None);
+    assert_eq!(button_at(107.0 - 8.0, 15.0 - 8.0), None);
+}
+
+#[test]
+fn the_bars_and_the_pill_ends_are_not_buttons() {
+    assert_eq!(button_at(61.0, 15.0), None);
+    assert_eq!(button_at(40.0, 15.0), None);
+    assert_eq!(button_at(82.0, 15.0), None);
+    assert_eq!(button_at(1.0, 15.0), None);
+    assert_eq!(button_at(121.0, 15.0), None);
+    assert_eq!(button_at(-5.0, -5.0), None);
+}
+
+/// A click is the same event as the key and `flow stop`, so the daemon has one
+/// path for ending a hands-free session.
+#[test]
+fn a_click_is_the_event_the_key_would_have_sent() {
+    assert_eq!(IslandButton::Stop.event(), Event::Stop);
+    assert_eq!(IslandButton::Cancel.event(), Event::Cancelled);
+}
+
+#[test]
+fn hands_free_takes_one_bloom_each_way() {
+    let widened = hands_free_step(0.0, true, BLOOM);
+    assert_eq!(widened, 1.0);
+    assert_eq!(hands_free_step(widened, false, BLOOM), 0.0);
+
+    let halfway = hands_free_step(0.0, true, BLOOM / 2.0);
+    assert!((halfway - 0.5).abs() < 1e-6, "half a bloom is {halfway}");
+    assert_eq!(hands_free_step(1.0, true, BLOOM), 1.0, "it overshot");
+    assert_eq!(hands_free_step(0.0, false, BLOOM), 0.0, "it undershot");
+}
+
+#[test]
+fn easing_out_starts_fast_and_lands_exactly() {
+    assert_eq!(ease_out(0.0), 0.0);
+    assert_eq!(ease_out(1.0), 1.0);
+    assert!(ease_out(0.5) > 0.5, "ease-out is behind a straight line");
 }
