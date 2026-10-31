@@ -276,6 +276,7 @@ pub fn run(
         let mut session: Option<Session> = None;
         let mut chord_watch: Option<hotkey::ChordWatch> = None;
         let mut hold_started: Option<Instant> = None;
+        let mut latch = hotkey::Latch::Off;
         // When the loop last finished acting on a tap-to-talk tap. Native press
         // and compositor `flow start` of the same tap arrive ~25ms apart, but
         // finishing a session waits on the stream lock for up to a chunk, so
@@ -312,6 +313,7 @@ pub fn run(
                 // Release - including Hyprland's USR2 bind on the same chord -
                 // must not end the session, or the setting does nothing.
                 event @ (hotkey::Event::Pressed | hotkey::Event::Start) if !hold_to_talk => {
+                    latch = hotkey::Latch::Off;
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
                     }
@@ -333,6 +335,7 @@ pub fn run(
                                 stream_progress,
                                 held,
                                 &incoming,
+                                &mut latch,
                             )
                             .is_none();
                             if !tapped {
@@ -347,32 +350,45 @@ pub fn run(
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
                     }
-                    // A press while a session is already live is the physical
-                    // chord catching up with a `flow start`, or key repeat -
-                    // not a new dictation. `Event::Start` has always guarded
-                    // this way; this arm did not, so the second begin replaced
-                    // the live session and threw away everything said up to
-                    // that point. Resetting hold_started was the other half of
-                    // the bug: it restarted the clock, so a real hold could
-                    // then measure under MIN_HOLD and be discarded as a tap.
-                    if session.is_none() {
-                        hold_started = Some(Instant::now());
-                        if begin(
-                            &capture,
-                            &mut session,
-                            live,
-                            &overlay,
-                            &reporter,
-                            stream_progress,
-                            held,
-                            &incoming,
-                        )
-                        .is_some()
-                        {
-                            hold_started = None;
+                    if last_tap.is_some_and(|at| at.elapsed() < RELEASE_DEBOUNCE) {
+                        None
+                    } else if latch == hotkey::Latch::On {
+                        // The stopping tap has no chatter guard of its own, so
+                        // `last_tap` is what keeps a bounce of this key from
+                        // starting a phantom session that outlives MIN_HOLD.
+                        tapped = true;
+                        latch = hotkey::Latch::Off;
+                        hold_started = None;
+                        session.take().map(|s| s.finish(&capture))
+                    } else {
+                        // A press while a session is already live is the physical
+                        // chord catching up with a `flow start`, or key repeat -
+                        // not a new dictation. `Event::Start` has always guarded
+                        // this way; this arm did not, so the second begin replaced
+                        // the live session and threw away everything said up to
+                        // that point. Resetting hold_started was the other half of
+                        // the bug: it restarted the clock, so a real hold could
+                        // then measure under MIN_HOLD and be discarded as a tap.
+                        if session.is_none() {
+                            hold_started = Some(Instant::now());
+                            if begin(
+                                &capture,
+                                &mut session,
+                                live,
+                                &overlay,
+                                &reporter,
+                                stream_progress,
+                                held,
+                                &incoming,
+                                &mut latch,
+                            )
+                            .is_some()
+                            {
+                                hold_started = None;
+                            }
                         }
+                        None
                     }
-                    None
                 }
                 hotkey::Event::Start => {
                     // A second start during an active hold is key-repeat - keep
@@ -391,6 +407,7 @@ pub fn run(
                             stream_progress,
                             held,
                             &incoming,
+                            &mut latch,
                         )
                         .is_none()
                         {
@@ -408,6 +425,7 @@ pub fn run(
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
                     }
+                    latch = hotkey::Latch::Off;
                     hold_started.take();
                     session.take().map(|s| s.finish(&capture))
                 }
@@ -418,6 +436,7 @@ pub fn run(
                         watch.disarm();
                     }
                     hold_started = None;
+                    latch = hotkey::Latch::Off;
                     if let Some(session) = session.take() {
                         session.discard(&capture);
                         stream_progress.lock().expect("stream progress").clear();
@@ -439,27 +458,38 @@ pub fn run(
                     // ahead and swallowing the pair keeps the same session -
                     // and the audio already in it - running straight through
                     // the blip instead.
-                    if session.is_some()
-                        && let Ok(next) = incoming.recv_timeout(RELEASE_DEBOUNCE)
-                    {
-                        if matches!(next, hotkey::Event::Pressed | hotkey::Event::Start) {
-                            continue;
-                        }
-                        pending = Some(next);
+                    let pressed_for = hold_started.map_or(held, |at| at.elapsed());
+                    let settled = if session.is_some() {
+                        settle_release(&mut latch, pressed_for, held, &incoming)
+                    } else {
+                        Settled::Ended(None)
+                    };
+                    if matches!(settled, Settled::Continue) {
+                        continue;
                     }
-                    // The true length of the hold, timed from the original
-                    // press - not `held`, which only covers time since the
-                    // last spurious re-press if any chatter was absorbed
-                    // above, and would otherwise read as a tap every time.
-                    let total = hold_started.take().map_or(held, |at| at.elapsed());
-                    match session.take().map(|s| s.finish(&capture)) {
-                        Some(samples) if hotkey::was_long_enough(total) => Some(samples),
-                        Some(_) => {
-                            stream_progress.lock().expect("stream progress").clear();
-                            eprintln!("discarded: {total:?} is too short to be a deliberate hold");
-                            None
+                    if matches!(settled, Settled::Latched) {
+                        None
+                    } else {
+                        if let Settled::Ended(next) = settled {
+                            pending = next;
                         }
-                        None => None,
+                        latch = hotkey::Latch::Off;
+                        // The true length of the hold, timed from the original
+                        // press - not `held`, which only covers time since the
+                        // last spurious re-press if any chatter was absorbed
+                        // above, and would otherwise read as a tap every time.
+                        let total = hold_started.take().map_or(held, |at| at.elapsed());
+                        match session.take().map(|s| s.finish(&capture)) {
+                            Some(samples) if hotkey::was_long_enough(total) => Some(samples),
+                            Some(_) => {
+                                stream_progress.lock().expect("stream progress").clear();
+                                eprintln!(
+                                    "discarded: {total:?} is too short to be a deliberate hold"
+                                );
+                                None
+                            }
+                            None => None,
+                        }
                     }
                 }
             };
@@ -549,6 +579,43 @@ const ARM_POLL: Duration = Duration::from_millis(5);
 /// the pause someone would actually leave between two separate holds.
 const RELEASE_DEBOUNCE: Duration = Duration::from_millis(250);
 
+enum Settled {
+    /// Chatter: the release was followed by a re-press, the session goes on.
+    Continue,
+    Latched,
+    /// A real let-go. Carries the event that cut the debounce short, if any.
+    Ended(Option<hotkey::Event>),
+}
+
+/// Decides what a release means, shared by the main loop and the duck-settle
+/// wait in `begin` so a double-tap is read the same wherever it lands. Handing
+/// the `Released` back to the main loop instead was rejected: it would measure
+/// the hold at processing time, after the duck wait and the peek, so a stray
+/// tap would read as 200ms or more and be transcribed.
+fn settle_release(
+    latch: &mut hotkey::Latch,
+    pressed_for: Duration,
+    held: Duration,
+    incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
+) -> Settled {
+    match incoming.recv_timeout(RELEASE_DEBOUNCE) {
+        Ok(hotkey::Event::Pressed | hotkey::Event::Start) => {
+            *latch = latch.repressed(pressed_for);
+            Settled::Continue
+        }
+        Ok(other) => Settled::Ended(Some(other)),
+        Err(_) => {
+            *latch = latch.released(held);
+            if *latch == hotkey::Latch::On {
+                eprintln!("latched: recording until the next tap");
+                Settled::Latched
+            } else {
+                Settled::Ended(None)
+            }
+        }
+    }
+}
+
 /// Arms a recording, or - if the hold ends before the duck has actually
 /// settled - aborts before the microphone ever opens. Returns the elapsed
 /// hold when it aborted, so the caller logs a normal (if very short) release
@@ -573,6 +640,7 @@ fn begin(
     stream_progress: &std::sync::Mutex<StreamProgress>,
     held: &Held,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
+    latch: &mut hotkey::Latch,
 ) -> Option<Duration> {
     let (ducking, hold_to_talk, sound, input_device) = {
         let config = live.lock().expect("config");
@@ -632,13 +700,20 @@ fn begin(
             // that as an abort would cancel every dictation before the mic
             // ever opened.
             Ok(hotkey::Event::Released { held }) if hold_to_talk => {
-                *slot = None;
-                overlay.cancel();
-                reporter.ready();
-                eprintln!("released before the mic opened ({held:?}) - nothing recorded");
-                return Some(held);
+                match settle_release(latch, started.elapsed(), held, incoming) {
+                    Settled::Continue | Settled::Latched => {}
+                    Settled::Ended(_) => {
+                        *latch = hotkey::Latch::Off;
+                        *slot = None;
+                        overlay.cancel();
+                        reporter.ready();
+                        eprintln!("released before the mic opened ({held:?}) - nothing recorded");
+                        return Some(held);
+                    }
+                }
             }
             Ok(hotkey::Event::Stop) if hold_to_talk => {
+                *latch = hotkey::Latch::Off;
                 *slot = None;
                 overlay.cancel();
                 reporter.ready();
@@ -646,6 +721,7 @@ fn begin(
                 return Some(started.elapsed());
             }
             Ok(hotkey::Event::Cancelled) => {
+                *latch = hotkey::Latch::Off;
                 *slot = None;
                 overlay.cancel();
                 reporter.ready();
