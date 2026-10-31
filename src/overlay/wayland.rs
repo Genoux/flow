@@ -1,12 +1,18 @@
-use super::{Canvas, Face, HEIGHT, MARGIN_BOTTOM, SURFACE_WIDTH, render};
+use super::{
+    BUTTON_RADIUS, CANCEL_CENTRE, Canvas, Face, HANDS_FREE_LEFT, HEIGHT, MARGIN_BOTTOM,
+    STOP_CENTRE, SURFACE_WIDTH, click_event, render,
+};
+use crate::hotkey;
 use anyhow::{Context, Result, anyhow};
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
+use std::sync::mpsc::Sender;
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 #[derive(Default)]
@@ -14,10 +20,19 @@ struct Wayland {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
+    seat: Option<wl_seat::WlSeat>,
+    pointer: Option<wl_pointer::WlPointer>,
+    /// Surface-local logical px, as the compositor last reported it.
+    pointer_at: (f64, f64),
+    clickable: bool,
+    clicks: Option<Sender<hotkey::Event>>,
     scale: i32,
     configured: bool,
     closed: bool,
 }
+
+/// BTN_LEFT from linux/input-event-codes.h.
+const BUTTON_LEFT: u32 = 0x110;
 
 /// The mapped surface. Dropped the moment recording stops, so nothing of flow
 /// is on screen - or composited - between dictations.
@@ -46,14 +61,36 @@ impl Island {
         layer.set_margin(0, 0, MARGIN_BOTTOM, 0);
         layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
 
-        // An empty input region makes the island click-through; an indicator
-        // that swallows a click on whatever is underneath is worse than none.
-        let region = compositor.create_region(queue, ());
-        surface.set_input_region(Some(&region));
-        region.destroy();
+        let island = Self { surface, layer };
+        island.accept_clicks(compositor, queue, false);
+        island.surface.commit();
+        island
+    }
 
-        surface.commit();
-        Self { surface, layer }
+    /// An empty input region makes the island click-through; an indicator that
+    /// swallows a click on whatever is underneath is worse than none. Only the
+    /// two buttons of a latched recording are ever given to the pointer, so
+    /// the rest of the pill still passes clicks to what is behind it.
+    fn accept_clicks(
+        &self,
+        compositor: &wl_compositor::WlCompositor,
+        queue: &QueueHandle<Wayland>,
+        on: bool,
+    ) {
+        let region = compositor.create_region(queue, ());
+        if on {
+            for (x, y) in [CANCEL_CENTRE, STOP_CENTRE] {
+                let side = (BUTTON_RADIUS * 2.0) as i32;
+                region.add(
+                    (HANDS_FREE_LEFT + x - BUTTON_RADIUS) as i32,
+                    (y - BUTTON_RADIUS) as i32,
+                    side,
+                    side,
+                );
+            }
+        }
+        self.surface.set_input_region(Some(&region));
+        region.destroy();
     }
 }
 
@@ -163,7 +200,7 @@ pub struct Surface {
 }
 
 impl Surface {
-    pub fn connect() -> Result<Self> {
+    pub fn connect(clicks: Sender<hotkey::Event>) -> Result<Self> {
         let connection = Connection::connect_to_env().context("no wayland display")?;
         let mut queue = connection.new_event_queue();
         let handle = queue.handle();
@@ -171,6 +208,7 @@ impl Surface {
 
         let mut state = Wayland {
             scale: 1,
+            clicks: Some(clicks),
             ..Wayland::default()
         };
         queue.roundtrip(&mut state)?;
@@ -207,11 +245,24 @@ impl Surface {
     pub fn map(&mut self) {
         self.state.configured = false;
         self.state.closed = false;
+        self.state.clickable = false;
         self.island = Some(Island::map(
             &self.compositor,
             &self.shell,
             &self.queue.handle(),
         ));
+    }
+
+    /// Hand the buttons to the pointer, or take them back. The region is
+    /// double-buffered and lands with the next frame's commit.
+    pub fn set_clickable(&mut self, on: bool) {
+        if self.state.clickable == on {
+            return;
+        }
+        self.state.clickable = on;
+        if let Some(island) = &self.island {
+            island.accept_clicks(&self.compositor, &self.queue.handle(), on);
+        }
     }
 
     /// Process whatever the compositor has said since the last call.
@@ -299,6 +350,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Wayland {
                 state.compositor = Some(registry.bind(name, version.min(6), queue, ()));
             }
             "wl_shm" => state.shm = Some(registry.bind(name, 1, queue, ())),
+            "wl_seat" => state.seat = Some(registry.bind(name, 1, queue, ())),
             "zwlr_layer_shell_v1" => {
                 state.layer_shell = Some(registry.bind(name, version.min(4), queue, ()));
             }
@@ -337,6 +389,66 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Wayland {
                 state.configured = true;
             }
             zwlr_layer_surface_v1::Event::Closed => state.closed = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for Wayland {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        queue: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(capabilities),
+        } = event
+        {
+            let has_pointer = capabilities.contains(wl_seat::Capability::Pointer);
+            match (has_pointer, state.pointer.is_some()) {
+                (true, false) => state.pointer = Some(seat.get_pointer(queue, ())),
+                (false, true) => state.pointer = None,
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for Wayland {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            }
+            | wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => state.pointer_at = (surface_x, surface_y),
+            wl_pointer::Event::Button {
+                button: BUTTON_LEFT,
+                state: WEnum::Value(wl_pointer::ButtonState::Pressed),
+                ..
+            } if state.clickable => {
+                let (x, y) = state.pointer_at;
+                if let (Some(event), Some(clicks)) =
+                    (click_event(x as f32, y as f32), &state.clicks)
+                {
+                    let _ = clicks.send(event);
+                }
+            }
             _ => {}
         }
     }
