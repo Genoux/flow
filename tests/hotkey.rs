@@ -1,5 +1,7 @@
 use evdev::KeyCode;
-use flow::hotkey::{Chord, Event, Modifier, PttState, TapAction, chord_released, tap_action};
+use flow::hotkey::{
+    Chord, Event, Latch, Modifier, PttState, TapAction, chord_released, tap_action,
+};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -640,4 +642,52 @@ fn an_unrelated_fn_press_does_not_start_a_modifier_chord() {
 fn fn_does_not_hold_up_a_paste_on_linux() {
     let held: HashSet<KeyCode> = [FN].into();
     assert!(!flow::hotkey::any_modifier_in(&held));
+}
+
+// -- hands-free latch -------------------------------------------------------
+
+#[test]
+fn a_quick_double_tap_latches() {
+    let armed = Latch::Off.repressed(Duration::from_millis(100));
+    assert_eq!(armed, Latch::Armed);
+    assert_eq!(armed.released(Duration::from_millis(90)), Latch::On);
+}
+
+#[test]
+fn chatter_in_a_long_hold_never_arms() {
+    assert_eq!(Latch::Off.repressed(Duration::from_secs(3)), Latch::Off);
+}
+
+#[test]
+fn a_tap_then_a_hold_is_an_ordinary_hold() {
+    let armed = Latch::Off.repressed(Duration::from_millis(100));
+    assert_eq!(armed.released(Duration::from_secs(2)), Latch::Off);
+}
+
+#[test]
+fn a_single_tap_never_latches() {
+    assert_eq!(Latch::Off.released(Duration::from_millis(100)), Latch::Off);
+}
+
+#[test]
+fn a_release_while_latched_is_never_expected_but_unlatches() {
+    assert_eq!(Latch::On.released(Duration::from_millis(100)), Latch::Off);
+}
+
+#[test]
+fn chatter_while_latched_stays_latched() {
+    assert_eq!(Latch::On.repressed(Duration::from_millis(100)), Latch::On);
+}
+
+#[test]
+fn a_press_of_exactly_min_hold_is_long_enough_to_not_arm() {
+    assert_eq!(Latch::Off.repressed(Duration::from_millis(200)), Latch::Off);
+}
+
+#[test]
+fn chatter_while_armed_keeps_it_armed() {
+    assert_eq!(
+        Latch::Armed.repressed(Duration::from_millis(180)),
+        Latch::Armed
+    );
 }

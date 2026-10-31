@@ -409,6 +409,32 @@ pub fn tap_action(event: Event, recording: bool, echo: bool) -> TapAction {
     }
 }
 
+/// Hands-free latch. Arming keys on the first press's length because chatter
+/// happens inside long holds, while a double-tap is two short presses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Latch {
+    #[default]
+    Off,
+    Armed,
+    On,
+}
+
+impl Latch {
+    pub fn repressed(self, total: Duration) -> Latch {
+        match self {
+            Latch::Off if !was_long_enough(total) => Latch::Armed,
+            other => other,
+        }
+    }
+
+    pub fn released(self, segment: Duration) -> Latch {
+        match self {
+            Latch::Armed if !was_long_enough(segment) => Latch::On,
+            _ => Latch::Off,
+        }
+    }
+}
+
 /// Every keyboard-capable device. A device grabbed by a remapper (keyd) delivers
 /// nothing, and its virtual device delivers the post-remap events instead, so
 /// reading all of them needs no special-casing for the user's input stack.
