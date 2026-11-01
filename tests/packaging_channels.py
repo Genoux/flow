@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -106,6 +107,19 @@ class Channels(unittest.TestCase):
         text = script.read_text()
         self.assertIn('"$here/../channel" "$app/Contents/Resources/channel"', text)
         self.assertLess(text.index("Contents/Resources/channel"), text.index("rcodesign\" sign"))
+
+    def test_macos_helper_path_agrees_everywhere(self):
+        root = Path(__file__).resolve().parents[1]
+        lib = (root / "crates/flow-paths/src/lib.rs").read_text()
+        relative = re.search(r'AGENT_PROGRAM: &str = "([^"]+)"', lib).group(1)
+        macos = root / "packaging/macos"
+        for name in ("com.genoux.flow.plist", "com.genoux.flow.tray.plist"):
+            self.assertIn(f"<string>@APP@/{relative}</string>", (macos / name).read_text())
+        self.assertIn(f'"$app/{relative}"', (macos / "install.sh").read_text())
+
+    def test_macos_bundle_signs_the_helper_before_the_app(self):
+        text = (Path(__file__).resolve().parents[1] / "packaging/macos/bundle.sh").read_text()
+        self.assertLess(text.index('for bundle in "$agent" "$app"'), text.index("signed_as "))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@
   <string>com.genoux.flow</string>
   <key>ProgramArguments</key>
   <array>
-    <string>@APP@/Contents/MacOS/flow</string>
+    <string>@APP@/Contents/Helpers/Flow Agent.app/Contents/MacOS/flow</string>
     <string>daemon</string>
   </array>
   <key>RunAtLoad</key>

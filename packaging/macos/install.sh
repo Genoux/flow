@@ -108,7 +108,7 @@ rm -rf "$app.old"
 mv "$stage/Flow.app" "$app" || { [ ! -e "$app.old" ] || mv "$app.old" "$app"; exit 1; }
 rm -rf "$app.old"
 
-ln -sfn "$app/Contents/MacOS/flow" "$bin_dir/flow"
+ln -sfn "$app/Contents/Helpers/Flow Agent.app/Contents/MacOS/flow" "$bin_dir/flow"
 
 # launchd expands neither ~ nor $HOME, so the template gets absolute paths.
 sed -e "s|@APP@|$app|g" -e "s|@LOG@|$log|g" \

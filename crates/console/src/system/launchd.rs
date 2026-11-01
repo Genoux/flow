@@ -12,12 +12,14 @@ const LABEL: &str = "com.genoux.flow";
 
 pub(crate) const OPENER: &str = "open";
 
-/// The daemon sits beside the console inside the bundle. The app is opened from
-/// Finder, whose PATH is `/usr/bin:/bin:...`, so a bare `flow` finds nothing.
+/// The app is opened from Finder, whose PATH is `/usr/bin:/bin:...`, so a bare
+/// `flow` finds nothing.
 pub(crate) fn flow_program() -> String {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("flow")))
+        .and_then(|exe| {
+            flow_paths::agent_program(&exe).or_else(|| exe.parent().map(|dir| dir.join("flow")))
+        })
         .map_or_else(
             || "flow".to_owned(),
             |path| path.to_string_lossy().into_owned(),
@@ -131,10 +133,14 @@ pub(super) fn is_flow_process(pid: u32) -> bool {
 pub(crate) fn restart_app() -> Result<(), String> {
     let bundle = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.ancestors().nth(3).map(std::path::Path::to_path_buf))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .and_then(|exe| flow_paths::app_bundle(&exe))
         .ok_or("Flow is not running from an app bundle. Reopen it from Applications.")?;
     super::service("restart")?;
+    // launchd keeps a loaded job's ProgramArguments in memory, so a tray from
+    // before an update would go on running from the old layout.
+    if TRAY.plist_installed()? {
+        TRAY.control(Verb::Restart, &launchctl_for(BUDGET))?;
+    }
     reopen_flow("open", &["-n", &bundle.to_string_lossy()])
 }
 
@@ -184,10 +190,7 @@ pub(crate) fn set_channel(_channel: Channel) -> Result<(), String> {
 }
 
 pub(crate) fn installed_binaries(_channel: Channel) -> Result<(PathBuf, String), String> {
-    Ok((
-        home()?.join("Applications/Flow.app/Contents/MacOS"),
-        String::new(),
-    ))
+    Ok((home()?.join("Applications/Flow.app"), String::new()))
 }
 
 #[cfg(test)]
@@ -239,7 +242,7 @@ mod tests {
     fn ps_may_name_the_process_by_path_or_bare() {
         assert!(comm_is_flow("flow\n"));
         assert!(comm_is_flow(
-            "/Users/me/Applications/Flow.app/Contents/MacOS/flow\n"
+            "/Users/me/Applications/Flow.app/Contents/Helpers/Flow Agent.app/Contents/MacOS/flow\n"
         ));
         assert!(!comm_is_flow(
             "/Users/me/Applications/Flow.app/Contents/MacOS/flow-console"

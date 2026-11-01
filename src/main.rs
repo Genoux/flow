@@ -137,8 +137,8 @@ fn run() -> Result<()> {
             return Ok(());
         }
         // What the console's shortcut picker reads on a Mac, where capturing a
-        // chord needs the event tap and the tap lives here, signed as Flow with
-        // Input Monitoring. One key edge per line, in the daemon's own
+        // chord needs the event tap and the tap lives here, in the Flow Agent
+        // helper with Input Monitoring. One key edge per line, in the daemon's own
         // vocabulary, until killed.
         #[cfg(target_os = "macos")]
         Some("keys") => return print_key_edges(),
