@@ -246,7 +246,7 @@ fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), Str
             .arg(&tarball)
             .arg("-C")
             .arg(&dir))?;
-        verify_binaries(&dir.join(&name).join(BINARIES), "", tag)?;
+        verify_binaries(LAYOUT, &dir.join(&name).join(BINARIES), "", tag)?;
         let mut installer = Command::new("bash");
         installer
             .arg(dir.join(&name).join("packaging/install.sh"))
@@ -254,7 +254,7 @@ fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), Str
         installer.args(["--no-activate", "--no-restart"]);
         run(&mut installer)?;
         let (dir, suffix) = crate::system::installed_binaries(channel)?;
-        verify_binaries(&dir, &suffix, tag)
+        verify_binaries(LAYOUT, &dir, &suffix, tag)
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result
@@ -267,17 +267,47 @@ const TARGET: &str = if cfg!(target_os = "macos") {
 };
 
 const BINARIES: &str = if cfg!(target_os = "macos") {
-    "Flow.app/Contents/MacOS"
+    "Flow.app"
 } else {
     "bin"
 };
 
-fn verify_binaries(dir: &std::path::Path, suffix: &str, tag: &str) -> Result<(), String> {
+/// Where a release keeps `flow` and `flow-console`.
+#[derive(Clone, Copy)]
+enum Layout {
+    /// Side by side in `bin/`, named with a channel suffix.
+    Flat,
+    /// In Flow.app, `flow` inside the helper bundle and not beside the console.
+    MacBundle,
+}
+
+const LAYOUT: Layout = if cfg!(target_os = "macos") {
+    Layout::MacBundle
+} else {
+    Layout::Flat
+};
+
+impl Layout {
+    fn path(self, dir: &std::path::Path, name: &str, suffix: &str) -> std::path::PathBuf {
+        match (self, name) {
+            (Self::Flat, _) => dir.join(format!("{name}{suffix}")),
+            (Self::MacBundle, "flow") => dir.join(flow_paths::AGENT_PROGRAM),
+            (Self::MacBundle, _) => dir.join("Contents/MacOS").join(name),
+        }
+    }
+}
+
+fn verify_binaries(
+    layout: Layout,
+    dir: &std::path::Path,
+    suffix: &str,
+    tag: &str,
+) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let expected = tag.trim_start_matches('v');
     let version = semver::Version::parse(expected).map_err(|e| e.to_string())?;
     for name in ["flow", "flow-console"] {
-        let path = dir.join(format!("{name}{suffix}"));
+        let path = layout.path(dir, name, suffix);
         if !path
             .metadata()
             .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -373,34 +403,60 @@ mod tests {
 
     #[test]
     fn installation_requires_matching_binaries_and_preserves_legacy_rollback() {
+        use super::Layout;
+        for (layout, suffix) in [(Layout::Flat, "-stable"), (Layout::MacBundle, "")] {
+            installation_is_verified(layout, suffix);
+        }
+    }
+
+    fn installation_is_verified(layout: super::Layout, suffix: &str) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("flow-version-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "flow-version-test-{}-{}",
+            std::process::id(),
+            suffix.len()
+        ));
         std::fs::create_dir(&dir).unwrap();
         let write = |name: &str, body: &str| {
-            let path = dir.join(format!("{name}-stable"));
+            let path = layout.path(&dir, name, suffix);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         };
+        let verify = |tag: &str| super::verify_binaries(layout, &dir, suffix, tag);
         write("flow", "echo flow 0.3.1");
-        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_err());
+        assert!(verify("v0.3.1").is_err());
         write("flow-console", "echo flow-console 0.3.0");
-        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_err());
+        assert!(verify("v0.3.1").is_err());
         write("flow-console", "echo flow-console 0.3.1; exit 1");
-        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_err());
+        assert!(verify("v0.3.1").is_err());
         write("flow-console", "echo flow-console 0.3.1");
-        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1").is_ok());
+        assert!(verify("v0.3.1").is_ok());
         write("flow", "echo flow 0.3.1-experimental.1");
-        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1-experimental.1").is_err());
+        assert!(verify("v0.3.1-experimental.1").is_err());
         write("flow-console", "echo flow-console 0.3.1-experimental.1");
-        assert!(super::verify_binaries(&dir, "-stable", "v0.3.1-experimental.1").is_ok());
+        assert!(verify("v0.3.1-experimental.1").is_ok());
         write("flow", "echo flow 0.3.0");
         write(
             "flow-console",
             &format!("touch '{}'", dir.join("launched").display()),
         );
-        assert!(super::verify_binaries(&dir, "-stable", "v0.3.0").is_ok());
+        assert!(verify("v0.3.0").is_ok());
         assert!(!dir.join("launched").exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_mac_layout_puts_flow_in_the_helper_and_the_console_beside_it() {
+        let app = std::path::Path::new("/Flow.app");
+        assert_eq!(
+            super::Layout::MacBundle.path(app, "flow-console", ""),
+            app.join("Contents/MacOS/flow-console")
+        );
+        assert_eq!(
+            super::Layout::MacBundle.path(app, "flow", ""),
+            app.join("Contents/Helpers/Flow Agent.app/Contents/MacOS/flow")
+        );
     }
 
     fn assets_of(tag: &str) -> String {

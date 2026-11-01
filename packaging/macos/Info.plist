@@ -22,7 +22,5 @@
   <string>6.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
-  <key>NSMicrophoneUsageDescription</key>
-  <string>Flow records your voice while you hold the dictation shortcut, and transcribes it on this Mac.</string>
 </dict>
 </plist>

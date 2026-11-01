@@ -181,10 +181,13 @@ jobs:
           mkdir -p "$name"
           bash packaging/macos/bundle.sh target/release/flow \
             crates/console/target/release/flow-console "${GITHUB_REF_NAME#v}" "$name"
-          codesign -d -r- "$name/Flow.app/Contents/MacOS/flow" 2>&1 | grep -q 'certificate root' || {
-            echo "Flow.app was not signed with the release certificate" >&2
-            exit 1
-          }
+          for binary in Contents/MacOS/flow-console \
+            "Contents/Helpers/Flow Agent.app/Contents/MacOS/flow"; do
+            codesign -d -r- "$name/Flow.app/$binary" 2>&1 | grep -q 'certificate root' || {
+              echo "$binary was not signed with the release certificate" >&2
+              exit 1
+            }
+          done
           rm -f "$FLOW_SIGNING_P12" "$FLOW_SIGNING_PASSWORD_FILE"
 
       # Laid out like the Linux tarball, with Flow.app where that has bin/:

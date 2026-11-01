@@ -13,7 +13,7 @@ set -euo pipefail
 daemon="$1" console="$2" version="$3" out="$4"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 app="$out/Flow.app"
-bundle_id=com.genoux.flow
+agent="$app/Contents/Helpers/Flow Agent.app"
 
 # apple-codesign 0.29.0, pinned. Apple's `codesign` refuses untrusted
 # self-signed identities; rcodesign signs straight from the .p12 with no keychain.
@@ -43,11 +43,16 @@ fetch_rcodesign() {
 }
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" \
+  "$agent/Contents/MacOS" "$agent/Contents/Resources"
 # CFBundleVersion must be dot-separated integers, so a prerelease tag is cut.
 sed -e "s|@VERSION@|$version|g" -e "s|@BUILD@|${version%%-*}|g" \
   "$here/Info.plist" > "$app/Contents/Info.plist"
-install -m755 "$daemon" "$app/Contents/MacOS/flow"
+sed -e "s|@VERSION@|$version|g" -e "s|@BUILD@|${version%%-*}|g" \
+  "$here/AgentInfo.plist" > "$agent/Contents/Info.plist"
+# The daemon, tray and CLI are a bundle of their own so that Flow.app's
+# identity belongs to the console alone; see flow_paths::AGENT_PROGRAM.
+install -m755 "$daemon" "$agent/Contents/MacOS/flow"
 install -m755 "$console" "$app/Contents/MacOS/flow-console"
 # Which build this app is. There is one Flow.app, so the channel is a property
 # of the bundle and not of a link beside it as on Linux; the console reads it
@@ -63,22 +68,35 @@ for size in 16 32 128 256 512; do
   sips -z "$((size * 2))" "$((size * 2))" "$source_png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/flow.icns"
+cp "$app/Contents/Resources/flow.icns" "$agent/Contents/Resources/flow.icns"
 
 if [ -f "$p12" ] && [ -f "$password_file" ]; then
   rcodesign="$(fetch_rcodesign)"
-  # Signing the bundle re-signs every executable in it, so the daemon's
-  # identifier is named here; signed separately beforehand, it came out as
-  # plain "flow". It is the bundle's own, not a separate one: the notification
-  # centre refuses a process whose signing identifier differs from its bundle
-  # id, and System Settings lists one Flow rather than a Flow and a daemon.
-  if ! output="$("$rcodesign" sign --p12-file "$p12" --p12-password-file "$password_file" \
-    --binary-identifier "Contents/MacOS/flow:$bundle_id" "$app" 2>&1)"; then
-    echo "$output" >&2
-    exit 1
-  fi
+  # The outer pass also re-signs nested bundles. Signing the helper first is
+  # what gives it its identity from its own Info.plist, and `signed_as` below
+  # is what guarantees it. The notification centre refuses a signing
+  # identifier that differs from the bundle id.
+  for bundle in "$agent" "$app"; do
+    if ! output="$("$rcodesign" sign --p12-file "$p12" --p12-password-file "$password_file" "$bundle" 2>&1)"; then
+      echo "$output" >&2
+      exit 1
+    fi
+  done
 else
   codesign --force --deep --sign - "$app"
   printf '\033[1;33m%s\033[0m\n' "No signing certificate at $p12 - signed ad-hoc, so macOS permissions must be re-granted after every rebuild."
 fi
 
 codesign --verify --deep --strict "$app"
+# sed reads to the end: `grep -q` stops at the match, codesign dies of SIGPIPE,
+# and pipefail turns a correct signature into a failure.
+signed_as() {
+  local identifier
+  identifier="$(codesign -dv "$1" 2>&1 | sed -n 's/^Identifier=//p')"
+  [ "$identifier" = "$2" ] || {
+    echo "$1 was signed as '$identifier', not $2" >&2
+    exit 1
+  }
+}
+signed_as "$agent" com.genoux.flow.agent
+signed_as "$app" com.genoux.flow

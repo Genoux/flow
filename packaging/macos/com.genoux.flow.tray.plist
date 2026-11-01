@@ -6,7 +6,7 @@
   <string>com.genoux.flow.tray</string>
   <key>ProgramArguments</key>
   <array>
-    <string>@APP@/Contents/MacOS/flow</string>
+    <string>@APP@/Contents/Helpers/Flow Agent.app/Contents/MacOS/flow</string>
     <string>tray</string>
   </array>
   <key>RunAtLoad</key>

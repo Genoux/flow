@@ -1,5 +1,5 @@
 //! A notification from Flow itself, through UserNotifications, so it carries
-//! Flow's name and icon.
+//! Flow Agent's name and icon.
 
 use block2::RcBlock;
 use objc2::runtime::Bool;

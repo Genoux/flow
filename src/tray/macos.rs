@@ -194,8 +194,7 @@ fn report(what: &str, outcome: Result<(), String>) {
 pub fn open_console() {
     let Some(bundle) = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.ancestors().nth(3).map(std::path::Path::to_path_buf))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .and_then(|exe| flow_paths::app_bundle(&exe))
     else {
         eprintln!("tray: not running from an app bundle, cannot open Flow");
         return;

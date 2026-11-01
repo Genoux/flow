@@ -144,9 +144,46 @@ pub fn log_file() -> PathBuf {
     home().join("Library/Logs/Flow/flow.log")
 }
 
+/// Where `flow` (daemon, tray and CLI) sits inside Flow.app. It has its own
+/// bundle so that a running daemon is not mistaken for Flow.app itself.
+pub const AGENT_PROGRAM: &str = "Contents/Helpers/Flow Agent.app/Contents/MacOS/flow";
+
+/// The Flow.app that `exe` runs from: the outermost `.app`, since the helper
+/// bundle is itself an `.app` nested inside it.
+pub fn app_bundle(exe: &std::path::Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .last()
+        .map(std::path::Path::to_path_buf)
+}
+
+/// The helper's `flow`, from any executable inside Flow.app.
+pub fn agent_program(exe: &std::path::Path) -> Option<PathBuf> {
+    app_bundle(exe).map(|bundle| bundle.join(AGENT_PROGRAM))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_is_the_outermost_bundle_from_either_binary() {
+        let app = PathBuf::from("/Users/me/Applications/Flow.app");
+        for exe in [
+            app.join("Contents/MacOS/flow-console"),
+            app.join(AGENT_PROGRAM),
+        ] {
+            assert_eq!(app_bundle(&exe), Some(app.clone()));
+            assert_eq!(agent_program(&exe), Some(app.join(AGENT_PROGRAM)));
+        }
+    }
+
+    #[test]
+    fn a_binary_outside_a_bundle_has_no_app() {
+        let exe = std::path::Path::new("/usr/local/bin/flow");
+        assert_eq!(app_bundle(exe), None);
+        assert_eq!(agent_program(exe), None);
+    }
 
     #[test]
     fn fallback_rejects_shared_foreign_and_symlink_directories() {
