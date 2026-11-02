@@ -477,11 +477,10 @@ pub fn run(
                             pending = next;
                         }
                         latch = hotkey::Latch::Off;
-                        // The true length of the hold, timed from the original
-                        // press - not `held`, which only covers time since the
-                        // last spurious re-press if any chatter was absorbed
-                        // above, and would otherwise read as a tap every time.
-                        let total = hold_started.take().map_or(held, |at| at.elapsed());
+                        // Timed at the release, before the window waited for a
+                        // re-press: measured after it, every tap passed MIN_HOLD.
+                        hold_started = None;
+                        let total = pressed_for;
                         match session.take().map(|s| s.finish(&capture)) {
                             Some(samples) if hotkey::was_long_enough(total) => Some(samples),
                             Some(_) => {
@@ -601,7 +600,7 @@ fn settle_release(
     held: Duration,
     incoming: &std::sync::mpsc::Receiver<hotkey::Event>,
 ) -> Settled {
-    match incoming.recv_timeout(RELEASE_DEBOUNCE) {
+    match incoming.recv_timeout(hotkey::release_window(pressed_for, RELEASE_DEBOUNCE)) {
         Ok(hotkey::Event::Pressed | hotkey::Event::Start) => {
             *latch = latch.repressed(pressed_for);
             Settled::Continue
