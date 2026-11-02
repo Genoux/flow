@@ -1,6 +1,7 @@
 use evdev::KeyCode;
 use flow::hotkey::{
-    Chord, Event, Latch, Modifier, PttState, TapAction, chord_released, tap_action,
+    Chord, DOUBLE_TAP, Event, Latch, Modifier, PttState, TapAction, chord_released, release_window,
+    tap_action,
 };
 use std::collections::HashSet;
 use std::time::Duration;
@@ -690,4 +691,20 @@ fn chatter_while_armed_keeps_it_armed() {
         Latch::Armed.repressed(Duration::from_millis(180)),
         Latch::Armed
     );
+}
+
+#[test]
+fn a_tap_waits_long_enough_for_a_second_tap() {
+    let debounce = Duration::from_millis(250);
+    assert!(DOUBLE_TAP > debounce);
+    assert_eq!(
+        release_window(Duration::from_millis(80), debounce),
+        DOUBLE_TAP
+    );
+}
+
+#[test]
+fn a_real_hold_ends_on_the_debounce() {
+    let debounce = Duration::from_millis(250);
+    assert_eq!(release_window(Duration::from_secs(2), debounce), debounce);
 }

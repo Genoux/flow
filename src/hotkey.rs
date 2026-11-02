@@ -668,6 +668,20 @@ pub fn was_long_enough(held: Duration) -> bool {
     held >= MIN_HOLD
 }
 
+/// Release to re-press. The chatter debounce alone (250ms) missed every
+/// double-tap of a Mac's fn key: a natural second tap lands later than that.
+pub const DOUBLE_TAP: Duration = Duration::from_millis(400);
+
+/// How long a release waits for the key to come back. Only a tap can begin a
+/// double-tap, so a real hold keeps the chatter `debounce` and ends as fast.
+pub fn release_window(pressed_for: Duration, debounce: Duration) -> Duration {
+    if was_long_enough(pressed_for) {
+        debounce
+    } else {
+        DOUBLE_TAP.max(debounce)
+    }
+}
+
 /// True once any key we saw at press has gone up: breaking the chord anywhere
 /// breaks all of it. An empty `chord` is the state before anything was seen
 /// down, which is unknown rather than released.
