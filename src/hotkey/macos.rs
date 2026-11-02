@@ -7,17 +7,21 @@
 
 use anyhow::{Context, Result, anyhow};
 use evdev::KeyCode;
-use objc2_core_foundation::{CFMachPort, CFRunLoop, kCFRunLoopCommonModes};
+use objc2_core_foundation::{
+    CFMachPort, CFRetained, CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, kCFRunLoopCommonModes,
+    kCFRunLoopDefaultMode,
+};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
     CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
     CGPreflightListenEventAccess, CGRequestListenEventAccess,
 };
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant, SystemTime};
 
 /// kVK_* virtual keycode to evdev key. Spelled out like `LETTERS` in the parent
 /// module: Apple's codes follow the physical layout, so arithmetic on them is
@@ -286,8 +290,15 @@ struct TapContext {
     /// What this tap has reported as down, to compare against the system's
     /// own view once the tap has been off.
     held: RefCell<HashSet<KeyCode>>,
-    tap: OnceCell<objc2_core_foundation::CFRetained<CFMachPort>>,
+    tap: RefCell<Option<CFRetained<CFMachPort>>>,
 }
+
+/// How long the tap's run loop runs between checks for a sleep.
+const TAP_CHECK: Duration = Duration::from_secs(2);
+
+/// Wall-clock time that passed while uptime did not. `Instant` is
+/// `CLOCK_UPTIME_RAW` on macOS, which stops while the Mac sleeps.
+const SLEPT: Duration = Duration::from_secs(5);
 
 /// Start the tap on its own thread, which then lives in a run loop for the rest
 /// of the process, and hand back the key edges it sees.
@@ -307,12 +318,68 @@ pub fn listen() -> Result<Receiver<(KeyCode, bool)>> {
     Ok(receiver)
 }
 
+/// A tap can outlive a sleep switched on and still deliver nothing, with no
+/// `TapDisabled*` notice to say so: push to talk stayed dead after every wake
+/// until the daemon restarted, and a restart is a new tap. So the loop runs in
+/// slices and builds a new tap whenever the Mac slept in one.
 fn run_tap(edges: Sender<(KeyCode, bool)>, ready: Sender<Result<()>>) {
     let context = Box::new(TapContext {
         edges,
         held: RefCell::default(),
-        tap: OnceCell::new(),
+        tap: RefCell::default(),
     });
+    let Some(run_loop) = CFRunLoop::current() else {
+        let _ = ready.send(Err(anyhow!(
+            "could not attach the keyboard tap to a run loop"
+        )));
+        return;
+    };
+    let mut source = match attach(&context, &run_loop) {
+        Ok(source) => Some(source),
+        Err(err) => {
+            let _ = ready.send(Err(err));
+            return;
+        }
+    };
+    let _ = ready.send(Ok(()));
+
+    loop {
+        let (wall, uptime) = (SystemTime::now(), Instant::now());
+        // SAFETY: an immutable constant exported by CoreFoundation.
+        let ran = CFRunLoop::run_in_mode(
+            unsafe { kCFRunLoopDefaultMode },
+            TAP_CHECK.as_secs_f64(),
+            false,
+        );
+        let asleep = wall
+            .elapsed()
+            .unwrap_or_default()
+            .saturating_sub(uptime.elapsed());
+        // `Finished` is a run loop with no source left: the tap's port was
+        // invalidated under it. Returning at once, it would otherwise spin.
+        if asleep < SLEPT && ran != CFRunLoopRunResult::Finished {
+            continue;
+        }
+        if let Some(old) = source.take() {
+            detach(&context, &run_loop, &old);
+        }
+        match attach(&context, &run_loop) {
+            Ok(rebuilt) => {
+                source = Some(rebuilt);
+                release_stale(&context);
+                eprintln!("keyboard tap rebuilt after {}s asleep", asleep.as_secs());
+            }
+            // Creating a tap can fail for a moment right after wake; giving up
+            // here would leave push to talk dead until a restart.
+            Err(err) => {
+                eprintln!("{err}");
+                std::thread::sleep(TAP_CHECK);
+            }
+        }
+    }
+}
+
+fn attach(context: &TapContext, run_loop: &CFRunLoop) -> Result<CFRetained<CFRunLoopSource>> {
     let wanted = [
         CGEventType::KeyDown,
         CGEventType::KeyUp,
@@ -322,8 +389,8 @@ fn run_tap(edges: Sender<(KeyCode, bool)>, ready: Sender<Result<()>>) {
     .fold(0u64, |mask, kind| mask | 1 << kind.0);
 
     // SAFETY: `on_event` matches CGEventTapCallBack, and `context` is only
-    // freed when this function returns, which is after the run loop that calls
-    // it has stopped.
+    // freed when `run_tap` returns, which is after the run loop that calls it
+    // has stopped.
     let tap = unsafe {
         CGEvent::tap_create(
             CGEventTapLocation::SessionEventTap,
@@ -331,7 +398,7 @@ fn run_tap(edges: Sender<(KeyCode, bool)>, ready: Sender<Result<()>>) {
             CGEventTapOptions::ListenOnly,
             wanted,
             Some(on_event),
-            std::ptr::from_ref::<TapContext>(&context).cast_mut().cast(),
+            std::ptr::from_ref::<TapContext>(context).cast_mut().cast(),
         )
     };
     let Some(tap) = tap else {
@@ -340,28 +407,26 @@ fn run_tap(edges: Sender<(KeyCode, bool)>, ready: Sender<Result<()>>) {
         if !CGPreflightListenEventAccess() {
             CGRequestListenEventAccess();
         }
-        let _ = ready.send(Err(anyhow!(
+        return Err(anyhow!(
             "could not watch the keyboard - grant Input Monitoring to the app running flow \
              in System Settings > Privacy & Security, then restart flow"
-        )));
-        return;
+        ));
     };
-
-    let source = CFMachPort::new_run_loop_source(None, Some(&tap), 0);
-    let run_loop = CFRunLoop::current();
-    let (Some(source), Some(run_loop)) = (source, run_loop) else {
-        let _ = ready.send(Err(anyhow!(
-            "could not attach the keyboard tap to a run loop"
-        )));
-        return;
-    };
+    let source = CFMachPort::new_run_loop_source(None, Some(&tap), 0)
+        .ok_or_else(|| anyhow!("could not attach the keyboard tap to a run loop"))?;
     // SAFETY: an immutable constant exported by CoreFoundation.
     run_loop.add_source(Some(&source), unsafe { kCFRunLoopCommonModes });
     CGEvent::tap_enable(&tap, true);
-    let _ = context.tap.set(tap);
+    *context.tap.borrow_mut() = Some(tap);
+    Ok(source)
+}
 
-    let _ = ready.send(Ok(()));
-    CFRunLoop::run();
+fn detach(context: &TapContext, run_loop: &CFRunLoop, source: &CFRunLoopSource) {
+    // SAFETY: an immutable constant exported by CoreFoundation.
+    run_loop.remove_source(Some(source), unsafe { kCFRunLoopCommonModes });
+    if let Some(tap) = context.tap.borrow_mut().take() {
+        tap.invalidate();
+    }
 }
 
 /// macOS switches a tap off when its callback is slow or when it decides to,
@@ -379,7 +444,7 @@ unsafe extern "C-unwind" fn on_event(
     let context = unsafe { &*context.cast::<TapContext>() };
     match kind {
         CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
-            if let Some(tap) = context.tap.get() {
+            if let Some(tap) = context.tap.borrow().as_ref() {
                 CGEvent::tap_enable(tap, true);
             }
             release_stale(context);
