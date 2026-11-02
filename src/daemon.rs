@@ -83,6 +83,7 @@ pub fn run(
     } else {
         eprintln!("mic is silent - check the source above is unmuted and actually streaming");
     }
+    capture.rest();
 
     let mut injector = inject::Injector::new()?;
     // Made before the overlay: a click on its hands-free buttons is sent into
@@ -550,11 +551,14 @@ struct Session;
 
 impl Session {
     fn finish(self, capture: &audio::Capture) -> Vec<f32> {
-        capture.end()
+        let samples = capture.end();
+        capture.rest();
+        samples
     }
 
     fn discard(self, capture: &audio::Capture) {
         let _ = capture.abandon();
+        capture.rest();
     }
 }
 
@@ -659,6 +663,8 @@ fn begin(
     chime::set_enabled(sound);
 
     capture.abandon();
+    // Ahead of the duck wait: the start latency of the input hides under the fade.
+    capture.resume();
     stream_progress.lock().expect("stream progress").clear();
 
     // Up immediately so the key press is acknowledged, but armed rather than
@@ -707,6 +713,7 @@ fn begin(
                     Settled::Ended(_) => {
                         *latch = hotkey::Latch::Off;
                         *slot = None;
+                        capture.rest();
                         overlay.cancel();
                         reporter.ready();
                         eprintln!("released before the mic opened ({held:?}) - nothing recorded");
@@ -717,6 +724,7 @@ fn begin(
             Ok(hotkey::Event::Stop) if hold_to_talk => {
                 *latch = hotkey::Latch::Off;
                 *slot = None;
+                capture.rest();
                 overlay.cancel();
                 reporter.ready();
                 eprintln!("discarded: the hold ended before the mic opened");
@@ -725,6 +733,7 @@ fn begin(
             Ok(hotkey::Event::Cancelled) => {
                 *latch = hotkey::Latch::Off;
                 *slot = None;
+                capture.rest();
                 overlay.cancel();
                 reporter.ready();
                 eprintln!("discarded: the hold ended before the mic opened");

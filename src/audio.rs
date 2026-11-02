@@ -480,6 +480,12 @@ impl MonoResampler {
 /// torn down and rebuilt for nothing.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Whether a stream that has delivered nothing for `silent` is dead rather than
+/// paused.
+fn needs_reopen(running: bool, silent: Duration) -> bool {
+    running && silent >= STREAM_TIMEOUT
+}
+
 /// Always-on capture so a network mic stays RUNNING between holds. Opening a
 /// new stream per press is what let PipeWire suspend PhoneMic and feed silence.
 pub struct Capture {
@@ -493,6 +499,11 @@ pub struct Capture {
     pre_roll: Arc<Mutex<VecDeque<f32>>>,
     last_write: Arc<AtomicU64>,
     heard: Arc<AtomicU64>,
+    /// Whether the stream is meant to be running. Always true on Linux; on a Mac
+    /// it is true only from `resume` to `rest`, because the system shows the
+    /// microphone indicator for as long as an input unit runs. A stream rebuilt
+    /// while this is false must come up paused.
+    running: AtomicBool,
     /// The source the config asks for, and the source actually applied to the
     /// stream as it stands. Two fields rather than one because a rebuilt stream
     /// is a new source-output id, so what was wanted outlives what was applied.
@@ -555,6 +566,7 @@ impl Capture {
             pre_roll: Arc::new(Mutex::new(VecDeque::with_capacity(PRE_ROLL))),
             last_write: Arc::new(AtomicU64::new(now_millis())),
             heard: Arc::new(AtomicU64::new(0)),
+            running: AtomicBool::new(true),
             wanted_source: Mutex::new(None),
             routed_to: Mutex::new(None),
             attached_to: Mutex::new(None),
@@ -590,7 +602,11 @@ impl Capture {
             |err| eprintln!("stream error: {err}"),
             None,
         )?;
-        stream.play()?;
+        if self.running.load(Ordering::Relaxed) {
+            stream.play()?;
+        } else {
+            stream.pause()?;
+        }
 
         // The ring survives the swap by design - the Monitor holds the same Arc -
         // but its contents came from the device that just went away, and `begin`
@@ -735,13 +751,18 @@ impl Capture {
 
     /// [`Capture::ensure_live`] for a caller already holding `reopen`.
     fn ensure_live_locked(&self) -> bool {
-        if self.silent_for() < STREAM_TIMEOUT {
+        // A paused stream is silent by design; `resume` restarts the clock.
+        if !needs_reopen(self.running.load(Ordering::Relaxed), self.silent_for()) {
             return true;
         }
         eprintln!(
             "capture stopped delivering {:?} ago - reopening",
             self.silent_for()
         );
+        self.reopen_locked()
+    }
+
+    fn reopen_locked(&self) -> bool {
         let wanted = self.wanted_source.lock().unwrap().clone();
         match open_input(wanted.as_deref()).and_then(|device| self.attach(&device)) {
             Ok(()) => {
@@ -792,6 +813,52 @@ impl Capture {
             std::thread::sleep(Duration::from_millis(20));
         }
         false
+    }
+
+    /// Start the stream for a press. Only a Mac pauses between dictations, so
+    /// this is a no-op elsewhere.
+    ///
+    /// Called as early as the press allows, ahead of the duck wait, so the
+    /// CoreAudio start hides under the fade. The ring is emptied because it
+    /// holds the previous session's audio, which `begin` would prepend.
+    pub fn resume(&self) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let _reopen = self.reopen.lock().unwrap();
+        self.running.store(true, Ordering::Relaxed);
+        self.pre_roll.lock().unwrap().clear();
+        // Measured from here: a paused stream has not delivered since it stopped.
+        self.last_write.store(now_millis(), Ordering::Relaxed);
+        // Resetting the clock above blinds `ensure_live` for this press, so a
+        // stream that will not start is rebuilt here instead.
+        let started = match self.stream.lock().unwrap().as_ref() {
+            Some(stream) => stream.play().map_err(|err| err.to_string()),
+            None => Err("no stream".into()),
+        };
+        if let Err(err) = started {
+            eprintln!("could not start the microphone: {err} - reopening");
+            self.reopen_locked();
+        }
+    }
+
+    /// Pause the stream once a dictation's audio has been taken, so the system
+    /// stops showing the microphone as in use. No-op elsewhere, and while a
+    /// recording is live.
+    pub fn rest(&self) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let _reopen = self.reopen.lock().unwrap();
+        if self.live.load(Ordering::Relaxed) {
+            return;
+        }
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(stream) = self.stream.lock().unwrap().as_ref()
+            && let Err(err) = stream.pause()
+        {
+            eprintln!("could not pause the microphone: {err}");
+        }
     }
 
     pub fn begin(&self) {
@@ -959,6 +1026,13 @@ pub const SILENCE_RMS: f32 = 0.005;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paused_stream_is_never_dead() {
+        assert!(!needs_reopen(false, STREAM_TIMEOUT * 10));
+        assert!(needs_reopen(true, STREAM_TIMEOUT));
+        assert!(!needs_reopen(true, Duration::from_millis(100)));
+    }
 
     /// Two streams, ours second, because the bug this guards is returning the
     /// id of whichever block happened to come first and moving another app's
