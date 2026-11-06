@@ -424,7 +424,7 @@ pub fn run(
                         None
                     }
                 }
-                hotkey::Event::Stop => {
+                hotkey::Event::Stop | hotkey::Event::Finish => {
                     if let Some(watch) = chord_watch.take() {
                         watch.disarm();
                     }
@@ -770,8 +770,9 @@ fn begin(
     // that is when it became true.
     overlay.record(hold_to_talk);
     // Not at the latch itself: a stop click during the duck wait would hit the
-    // abort arm above and discard, where a latched stop must finish.
-    if *latch == hotkey::Latch::On {
+    // abort arm above and discard, where a latched stop must finish. A tapped
+    // recording is hands-free from the first tap, so it gets the buttons too.
+    if !hold_to_talk || *latch == hotkey::Latch::On {
         overlay.latched();
     }
     None

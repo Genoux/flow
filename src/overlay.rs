@@ -761,11 +761,12 @@ pub enum IslandButton {
 }
 
 impl IslandButton {
-    /// A click is the event the key or `flow stop` would have sent, so the
-    /// daemon has one way to end a hands-free session.
+    /// Cancel is the same event a stray key sends. Stop is `Finish` rather
+    /// than `Stop`, because tap-to-talk ignores `Stop` and the button has to
+    /// end a tapped recording as well as a latched one.
     pub fn event(self) -> hotkey::Event {
         match self {
-            Self::Stop => hotkey::Event::Stop,
+            Self::Stop => hotkey::Event::Finish,
             Self::Cancel => hotkey::Event::Cancelled,
         }
     }
@@ -2065,7 +2066,7 @@ mod tests {
         let y = BUTTON_CENTRE_Y;
         assert_eq!(
             click_event(HANDS_FREE_LEFT + STOP_CENTRE.0, y),
-            Some(hotkey::Event::Stop)
+            Some(hotkey::Event::Finish)
         );
         assert_eq!(
             click_event(HANDS_FREE_LEFT + CANCEL_CENTRE.0, y),

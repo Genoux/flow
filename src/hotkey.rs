@@ -380,6 +380,10 @@ pub enum Event {
     /// even when the compositor's release bind never fires.
     Start,
     Stop,
+    /// The island's stop button: finish the live recording, held or tapped.
+    /// Not `Stop`, which tap-to-talk ignores because Hyprland's release bind
+    /// sends it on every tap.
+    Finish,
 }
 
 /// Native press and compositor `flow start` are the same physical tap, ~25ms
@@ -403,6 +407,8 @@ pub enum TapAction {
 /// stop` and would otherwise make this setting a no-op.
 pub fn tap_action(event: Event, recording: bool, echo: bool) -> TapAction {
     match event {
+        Event::Finish if recording => TapAction::Finish,
+        Event::Finish => TapAction::Ignore,
         Event::Pressed | Event::Start if echo => TapAction::Ignore,
         Event::Pressed | Event::Start if recording => TapAction::Finish,
         Event::Pressed | Event::Start => TapAction::Begin,
