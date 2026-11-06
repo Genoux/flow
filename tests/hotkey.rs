@@ -80,6 +80,9 @@ fn tap_to_talk_ignores_release_and_compositor_stop() {
         TapAction::Ignore,
     );
     assert_eq!(tap_action(Event::Stop, true, false), TapAction::Ignore);
+    // The island's stop button is not a release: it ends a tapped recording.
+    assert_eq!(tap_action(Event::Finish, true, false), TapAction::Finish);
+    assert_eq!(tap_action(Event::Finish, false, false), TapAction::Ignore);
 }
 
 /// Native `Pressed` and compositor `Start` are one tap. The second must not

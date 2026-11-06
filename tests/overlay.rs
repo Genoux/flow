@@ -757,7 +757,7 @@ fn the_bars_and_the_pill_ends_are_not_buttons() {
 /// path for ending a hands-free session.
 #[test]
 fn a_click_is_the_event_the_key_would_have_sent() {
-    assert_eq!(IslandButton::Stop.event(), Event::Stop);
+    assert_eq!(IslandButton::Stop.event(), Event::Finish);
     assert_eq!(IslandButton::Cancel.event(), Event::Cancelled);
 }
 
