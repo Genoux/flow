@@ -55,34 +55,16 @@ jobs:
           # wrote it. Save on main, restore everywhere.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # --all-targets is the point of this job. tests/chord_live.rs stopped
-      # compiling at 6dfbdba and went unnoticed for six commits, because one
-      # broken test target fails the whole `cargo test` run and nobody ran it.
-      #
-      # --workspace only means anything because the root Cargo.toml now lists
-      # its members: path dependencies are not members by default, so this
-      # used to build the path crates and run none of their tests.
-      - name: Format
+      # scripts/check holds the steps: format, build and test both workspace
+      # roots, clippy, and the packaging validators. --all-targets is the point:
+      # tests/chord_live.rs stopped compiling at 6dfbdba and went unnoticed for
+      # six commits, because one broken test target fails the whole `cargo test`
+      # run and nobody ran it. --workspace only means anything because the root
+      # Cargo.toml lists its members: path dependencies are not members by default.
+      - name: Check
         run: |
-          cargo fmt --check
-          cargo fmt --check --manifest-path crates/console/Cargo.toml
-
-      - name: Build tests (daemon)
-        run: cargo test --workspace --all-targets --no-run
-
-      - name: Test (daemon)
-        run: cargo test --workspace
-
-      - name: Clippy (daemon)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test (console)
-        working-directory: crates/console
-        run: cargo test
-
-      - name: Clippy (console)
-        working-directory: crates/console
-        run: cargo clippy --all-targets -- -D warnings
+          sudo apt-get install -y --no-install-recommends desktop-file-utils
+          scripts/check
 
       # llama.cpp takes twelve minutes to compile and the release profile builds
       # it again from scratch, so main pays that once and every tag restores it.
@@ -93,20 +75,6 @@ jobs:
         run: |
           cargo build --release
           cargo build --release --manifest-path crates/console/Cargo.toml
-
-      # The desktop entry is product surface and nothing else compiles it. It
-      # already shipped with three main categories, which put Offhand in three
-      # menus at once - a validator catches that and a reviewer does not.
-      - name: Packaging
-        run: |
-          sudo apt-get install -y --no-install-recommends desktop-file-utils
-          desktop-file-validate packaging/offhand-console.desktop
-          python3 tests/packaging_channels.py
-          bash -n packaging/install.sh
-          bash -n packaging/uninstall.sh
-          bash -n packaging/macos/install.sh
-          bash -n packaging/macos/uninstall.sh
-          bash -n packaging/macos/bundle.sh
 
   # The macOS half of the daemon and console only compiles on a Mac, so the
   # Linux job cannot see a change that breaks it. Not a required check: it

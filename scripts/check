@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# The one health check (R5). CI runs exactly this.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# The console is its own workspace root (iced pulls wgpu, which the daemon must
+# not link), so every cargo step runs once per root.
+cargo fmt --check
+cargo fmt --check --manifest-path crates/console/Cargo.toml
+
+# --all-targets: one test target that stops compiling fails the whole run.
+cargo test --workspace --all-targets --no-run
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+
+cargo test --manifest-path crates/console/Cargo.toml
+cargo clippy --manifest-path crates/console/Cargo.toml --all-targets -- -D warnings
+
+# The desktop entry is product surface and nothing else compiles it.
+desktop-file-validate packaging/offhand-console.desktop
+python3 tests/packaging_channels.py
+for script in packaging/install.sh packaging/uninstall.sh packaging/macos/install.sh \
+  packaging/macos/uninstall.sh packaging/macos/bundle.sh; do
+  bash -n "$script"
+done

@@ -105,3 +105,17 @@ OpenRouter request. `offhand install` fetches the speech model.
 - Runs as the systemd user unit `offhand.service`. On compositors that never activate `graphical-session.target` the unit's `WantedBy=` never fires, so it stays `disabled` and is started from the compositor's own autostart instead.
 - Config is three layers: `Config::default()`, then `~/.config/offhand/config.toml`, then CLI flags. Absent file is normal; a broken one is fatal by design. Keep `offhand.service` flag-free so the config file is the single place behaviour lives.
 - The git history carries no agent attribution: no `Co-authored-by:` trailers, no tool signatures in messages, no leftover agent branches. Agent tooling directories (`.claude`, `.cursor`, `.serena`) stay untracked. This has had to be rewritten out of the history more than once — do not reintroduce it in a single commit.
+
+## Project rules
+
+- The daemon and the console are separate workspace roots that ship as one
+  tarball, so `scripts/check` runs every cargo step once per root and
+  `.toolkit/version-files` lists `crates/console/Cargo.toml`; `.toolkit/version`
+  fails when the two versions disagree. `release.yml` calls it.
+- `scripts/check` needs `desktop-file-utils` locally (`desktop-file-validate`);
+  CI installs it before running the script.
+- The macOS job in `ci.yml` stays a separate, non-required job: it guards the
+  port and only compiles on a Mac, so `scripts/check` (Linux) cannot replace it.
+- Known exception (R3.4): five commits in history (`f9ceca2`, `2a36e94`,
+  `a71a97e`, `0bc954d`, `ce2b609`) carry attribution lines, so `jb check`
+  reports them. They are not rewritten (R3.7) without the owner asking.
