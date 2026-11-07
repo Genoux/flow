@@ -1,0 +1,45 @@
+#!/bin/sh
+# Managed by jb-toolkit (jb sync). RULES.md R4.2.
+# Prints the project version. Fails when no manifest names one or two disagree.
+#   .toolkit/version          print the version
+#   .toolkit/version --files  print "<file> <version>" for every manifest read
+# Extra manifests (e.g. workspace members) go one path per line in
+# .toolkit/version-files, which the project owns.
+cd "$(dirname "$0")/.." || exit 1
+
+read_version() {
+  case "$1" in
+    *Cargo.toml|*pyproject.toml)
+      # The first literal version line; `version.workspace = true` is skipped.
+      sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1 ;;
+    *package.json)
+      sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1 ;;
+    *VERSION)
+      tr -d '[:space:]' < "$1" ;;
+  esac
+}
+
+files=""
+for f in Cargo.toml package.json pyproject.toml VERSION; do
+  [ -f "$f" ] && files="$files $f"
+done
+if [ -f .toolkit/version-files ]; then
+  files="$files $(grep -v '^[[:space:]]*#' .toolkit/version-files | tr '\n' ' ')"
+fi
+
+found=""
+for f in $files; do
+  [ -f "$f" ] || { echo "listed manifest $f does not exist" >&2; exit 1; }
+  v=$(read_version "$f")
+  [ -n "$v" ] || continue
+  [ "${1-}" = "--files" ] && echo "$f $v"
+  if [ -z "$found" ]; then
+    found=$v
+  elif [ "$v" != "$found" ]; then
+    echo "versions disagree: $f is $v, another manifest is $found" >&2
+    exit 1
+  fi
+done
+
+[ -n "$found" ] || { echo "no version found (Cargo.toml, package.json, pyproject.toml or VERSION)" >&2; exit 1; }
+[ "${1-}" = "--files" ] || echo "$found"

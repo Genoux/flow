@@ -1,0 +1,30 @@
+#!/bin/sh
+# Managed by jb-toolkit (jb sync). RULES.md R3.3, R3.4.
+msg_file="$1"
+header=$(grep -v '^#' "$msg_file" | sed -n '1p')
+
+# Messages git writes itself are left alone.
+case "$header" in
+  "Merge "*|"Revert \""*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+esac
+
+types='feat|fix|chore|docs|refactor|perf|test|ci|build|style|revert'
+if ! printf '%s' "$header" | grep -Eq "^($types)(\([a-z0-9][a-z0-9-]*\))?!?: [^A-Z].*[^.]$"; then
+  cat >&2 <<MSG
+commit message must be a Conventional Commit (R3.3):
+  <type>(<optional scope>): <lower-case subject, no trailing period>
+  types: $(echo "$types" | tr '|' ' ')
+got: $header
+MSG
+  exit 1
+fi
+
+if [ "${#header}" -gt 72 ]; then
+  echo "commit header is ${#header} characters; keep it to 72 (R3.3)." >&2
+  exit 1
+fi
+
+if grep -v '^#' "$msg_file" | grep -Eiq '^co-authored-by:|generated with|🤖'; then
+  echo "no agent attribution in commit messages (R3.4): remove Co-authored-by / 'Generated with' lines." >&2
+  exit 1
+fi

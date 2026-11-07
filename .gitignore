@@ -11,3 +11,19 @@ crates/console/target/
 .engram
 .impeccable
 .serena
+
+# >>> jb-toolkit (managed by jb sync; add your own lines outside this block)
+.DS_Store
+.env
+.env.*
+!.env.example
+.demo/
+dist/
+# agent tooling stays untracked (R3.4)
+.claude/
+.cursor/
+.codex/
+.serena/
+.engram/
+.atl/
+# <<< jb-toolkit

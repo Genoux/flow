@@ -1,0 +1,26 @@
+#!/bin/sh
+# Managed by jb-toolkit (jb sync). RULES.md R3.1, R3.4, R6.5.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+# main only moves through pull requests. The first commit of a new repo is
+# the one exception: there is nothing to branch from yet.
+if [ "$branch" = "main" ] && git rev-parse -q --verify HEAD >/dev/null; then
+  echo "main takes no commits: branch first (git switch -c feat/<name>) and open a pull request." >&2
+  exit 1
+fi
+
+staged=$(git diff --cached --name-only --diff-filter=AR)
+
+bad=$(printf '%s\n' "$staged" | grep -E '^(.*/)?\.(claude|cursor|codex|serena|engram|atl)/' | head -5)
+if [ -n "$bad" ]; then
+  echo "agent tooling folders stay untracked (R3.4):" >&2
+  printf '  %s\n' $bad >&2
+  exit 1
+fi
+
+bad=$(printf '%s\n' "$staged" | grep -E '(^|/)\.env(\..+)?$' | grep -vE '\.env\.example$' | head -5)
+if [ -n "$bad" ]; then
+  echo "secrets stay out of git; commit .env.example instead (R6.5):" >&2
+  printf '  %s\n' $bad >&2
+  exit 1
+fi

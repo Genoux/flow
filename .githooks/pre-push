@@ -1,0 +1,25 @@
+#!/bin/sh
+# Managed by jb-toolkit (jb sync). RULES.md R3.1, R3.2.
+# stdin: <local ref> <local sha> <remote ref> <remote sha>
+pattern='^(feat|fix|chore|docs|refactor|perf|test|ci|build|release|experiment)/[a-z0-9][a-z0-9._-]*$'
+while read -r local_ref _ remote_ref _; do
+  case "$remote_ref" in
+    refs/heads/*) ;;
+    *) continue ;;   # tags and deletes of non-branches pass
+  esac
+  branch=${remote_ref#refs/heads/}
+  [ "$local_ref" = "(delete)" ] && continue
+  if [ "$branch" = "main" ]; then
+    # A new repo's first push of main is allowed; afterwards main moves by PR.
+    if git ls-remote --exit-code --heads "$1" main >/dev/null 2>&1; then
+      echo "main moves only through pull requests (R3.1). Push a branch instead." >&2
+      exit 1
+    fi
+    continue
+  fi
+  if ! printf '%s' "$branch" | grep -Eq "$pattern"; then
+    echo "branch '$branch' does not follow <type>/<kebab-slug> (R3.2)." >&2
+    echo "rename it: git branch -m feat/<slug>" >&2
+    exit 1
+  fi
+done
