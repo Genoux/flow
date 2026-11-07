@@ -7,7 +7,9 @@
 
 use crate::*;
 use iced::widget::{column, container, row, stack, text, Space};
-use iced::{Element, Fill, Length};
+use iced::{Center, Element, Fill, Length, Padding};
+
+const RAIL_SIDE: f32 = 11.0;
 
 mod about;
 mod editorial;
@@ -55,11 +57,17 @@ impl Console {
     // -- rail ---------------------------------------------------------------
 
     fn rail(&self) -> Element<'_, Message> {
-        let mut items = column![
-            container(text("Flow").size(BODY).color(FG)).padding([0, 9]),
-            Space::new().height(14)
-        ]
-        .spacing(2);
+        let title = container(text("Flow").size(BODY).color(FG));
+        let (title, rail_top) = if cfg!(target_os = "macos") {
+            let title = title
+                .height(TITLE_BAR_HEIGHT)
+                .align_y(Center)
+                .padding(Padding::ZERO.left(TITLE_AFTER_BUTTONS - RAIL_SIDE));
+            (title, 0.0)
+        } else {
+            (title.padding([0, 9]), 26.0)
+        };
+        let mut items = column![title, Space::new().height(14)].spacing(2);
 
         for section in Section::ALL {
             let selected = section == self.section;
@@ -86,7 +94,7 @@ impl Console {
         )
         .width(Length::Fixed(RAIL_WIDTH))
         .height(Fill)
-        .padding([26, 11])
+        .padding(Padding::from([26.0, RAIL_SIDE]).top(rail_top))
         .into()
     }
 

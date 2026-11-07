@@ -24,6 +24,12 @@ flow-paths = { path = "../flow-paths" }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 evdev = "0.13"
 
+# The unified title bar (`titlebar.rs`), which iced has no setting for. The
+# same versions winit already builds against, so nothing new is compiled.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSToolbar", "NSView", "NSWindow"] }
+
 [[bin]]
 name = "flow-console"
 path = "src/main.rs"

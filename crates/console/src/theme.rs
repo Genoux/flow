@@ -180,6 +180,13 @@ pub(crate) const CONTROL_TEXT: f32 = BODY;
 
 pub(crate) const RAIL_WIDTH: f32 = 176.0;
 
+/// macOS draws the window buttons over the content (`fullsize_content_view`),
+/// so there the rail's title shares their row, as Finder and Notes do: the
+/// height of the unified title bar (`titlebar.rs`), starting this far from
+/// the window's left edge.
+pub(crate) const TITLE_BAR_HEIGHT: f32 = 52.0;
+pub(crate) const TITLE_AFTER_BUTTONS: f32 = 90.0;
+
 /// How far back the Overview keeps daily counts. Not the number of weeks on
 /// screen: the calendar draws as many weeks as the pane is wide, so this is
 /// the ceiling for a very wide window - two years, past which a dictation

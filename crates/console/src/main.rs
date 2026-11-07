@@ -27,6 +27,7 @@ mod smooth_scroll;
 mod storage;
 mod system;
 mod theme;
+mod titlebar;
 mod update;
 mod vocabulary;
 
@@ -41,7 +42,8 @@ use crate::layout::{
 use crate::theme::{
     mix, progress, ACCENT, BG, BODY, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, DISPLAY,
     ENTRY_INSET, ERR, FADE, FAINT, FG, GAP, HAIRLINE, HEAD, LABEL, LABEL_GAP, MICRO, MUTED, OK,
-    PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD, STARTING, TITLE, WARN,
+    PAGE_TOP, PANE_INSET, RAIL_WIDTH, ROW_PAD, STARTING, TITLE, TITLE_AFTER_BUTTONS,
+    TITLE_BAR_HEIGHT, WARN,
 };
 use iced::{Color, Subscription, Task, Theme};
 
@@ -76,6 +78,12 @@ fn main() -> iced::Result {
             platform_specific: iced::window::settings::PlatformSpecific {
                 application_id: "flow-console".to_string(),
                 ..Default::default()
+            },
+            #[cfg(target_os = "macos")]
+            platform_specific: iced::window::settings::PlatformSpecific {
+                title_hidden: true,
+                titlebar_transparent: true,
+                fullsize_content_view: true,
             },
             ..Default::default()
         })
@@ -555,6 +563,7 @@ impl Console {
             // already the request; a Begin button in front of it would only be
             // asking the same question twice.
             Task::batch([
+                titlebar::unify(),
                 screen::preload_images(),
                 // PipeWire can stall while devices are being relinked (remote
                 // desktop connections do exactly that), and closing even one
