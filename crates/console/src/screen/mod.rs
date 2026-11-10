@@ -57,7 +57,8 @@ impl Console {
     // -- rail ---------------------------------------------------------------
 
     fn rail(&self) -> Element<'_, Message> {
-        let title = container(text("Offhand").size(BODY).color(FG));
+        // Sized so the small letters of the name match the rail's labels.
+        let title = container(crate::brand::lockup(BODY * 1.15, FG));
         let (title, rail_top) = if cfg!(target_os = "macos") {
             let title = title
                 .height(TITLE_BAR_HEIGHT)
