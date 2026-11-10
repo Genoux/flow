@@ -103,7 +103,15 @@ pub fn adopt_flow_directories(
             if current.exists() || !former.exists() {
                 return Ok(());
             }
-            std::fs::rename(former, current)
+            // The daemon and the tray start together and both get here. The
+            // one that loses the race finds the old folder already gone, which
+            // is the outcome it wanted.
+            match std::fs::rename(&former, &current) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && current.exists() => {
+                    Ok(())
+                }
+                outcome => outcome,
+            }
         })
         .into_iter()
         .collect()
