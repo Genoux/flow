@@ -165,9 +165,9 @@ pub(crate) fn option_row(
     // The mark, not the fill, is what says which microphone is on. `RAIL_ON`
     // over the panel is 1.23:1, and it is also what hover paints, so state and
     // cursor said the same thing in the same material and every row swept past
-    // impersonated the current one. A dot in the green the toggles and sliders
-    // already mean "on" with says it once - and says it in chroma rather than a
-    // near-black luminance step, which is the first thing a video encoder drops
+    // impersonated the current one. A dot in the accent the toggles and sliders
+    // already mean "on" with says it once - and says it as a bright mark rather
+    // than a near-black luminance step, which is the first thing a video encoder drops
     // on a streamed desktop. Trailing, so the labels keep the left edge they
     // share with the dialog title, and width-matched when absent so no row
     // shifts as the choice moves.
@@ -398,7 +398,7 @@ fn ghost(_theme: &Theme, _status: button::Status) -> button::Style {
 /// A paper, not a word: drawn rather than picked from a font so it matches
 /// the rest of the chrome instead of arriving as someone else's glyph. Copied
 /// swaps the glyph itself to a checkmark, full opacity and accent - a colour
-/// change alone on the same paper reads as "this button is now green", not as
+/// change alone on the same paper reads as "this button changed colour", not as
 /// "this worked".
 ///
 /// A `mouse_area`, not a `button` and not a tooltip: both of those captured

@@ -850,8 +850,8 @@ fn activity_label(activity: daemon::Activity, reachable: Option<bool>) -> (&'sta
             Some(false) => ("Disconnected", ERR),
             None => ("Running", OK),
         },
-        daemon::Activity::Listening => ("Listening", ACCENT),
-        daemon::Activity::Working => ("Refining", ACCENT),
+        daemon::Activity::Listening => ("Listening", OK),
+        daemon::Activity::Working => ("Refining", OK),
     }
 }
 

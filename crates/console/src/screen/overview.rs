@@ -106,7 +106,7 @@ impl Console {
     fn install_banner(&self) -> Option<Element<'_, Message>> {
         let (line, offer, tone) = self.install_problem()?.banner();
 
-        // Filled only when the news is good. A saturated green button is the
+        // Filled only when the news is good. A filled bone button is the
         // brightest thing in an amber banner, and the eye lands on the way out
         // before it has read the problem - the same reason setup's error screen
         // outlines its button instead of filling it.
