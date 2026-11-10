@@ -408,8 +408,8 @@ fn attach(context: &TapContext, run_loop: &CFRunLoop) -> Result<CFRetained<CFRun
             CGRequestListenEventAccess();
         }
         return Err(anyhow!(
-            "could not watch the keyboard - grant Input Monitoring to the app running flow \
-             in System Settings > Privacy & Security, then restart flow"
+            "could not watch the keyboard - grant Input Monitoring to the app running offhand \
+             in System Settings > Privacy & Security, then restart offhand"
         ));
     };
     let source = CFMachPort::new_run_loop_source(None, Some(&tap), 0)

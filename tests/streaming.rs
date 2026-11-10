@@ -1,10 +1,10 @@
-use flow::stt::Stt;
+use offhand::stt::Stt;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore = "requires the installed nemotron model and FLOW_TEST_WAV (16 kHz mono)"]
+#[ignore = "requires the installed nemotron model and OFFHAND_TEST_WAV (16 kHz mono)"]
 fn streaming_keeps_the_tail_and_resets_between_dictations() {
-    let path = std::env::var("FLOW_TEST_WAV").expect("FLOW_TEST_WAV");
+    let path = std::env::var("OFFHAND_TEST_WAV").expect("OFFHAND_TEST_WAV");
     let mut wav = hound::WavReader::open(path).unwrap();
     assert_eq!(wav.spec().sample_rate, 16_000);
     assert_eq!(wav.spec().channels, 1);
@@ -12,11 +12,11 @@ fn streaming_keeps_the_tail_and_resets_between_dictations() {
         .samples::<i16>()
         .map(|s| s.unwrap() as f32 / 32768.0)
         .collect();
-    let dir = std::env::var("FLOW_TEST_MODEL")
+    let dir = std::env::var("OFFHAND_TEST_MODEL")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             std::path::PathBuf::from(std::env::var("HOME").unwrap())
-                .join(".local/share/flow/models/nemotron")
+                .join(".local/share/offhand/models/nemotron")
         });
     let mut stt = Stt::load(&dir).unwrap();
     let started = Instant::now();

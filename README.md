@@ -1,8 +1,8 @@
-# Flow
+# Offhand
 
 Hold a key, talk, let go. The text appears where your cursor already was.
 
-Flow is a dictation app for Linux. Speech recognition runs locally; refining uses
+Offhand is a dictation app for Linux. Speech recognition runs locally; refining uses
 the selected OpenRouter model. There is no window to
 focus and no button to press: the only interface is a key you hold and a small
 island that appears while you speak.
@@ -32,11 +32,11 @@ and the desktop entry. Nothing is written outside your home directory, and
 nothing runs as root — except one udev rule, which the script prints for you to
 run yourself rather than doing behind your back.
 
-Then open **Flow** from your launcher, or `flow-console` from a terminal. The first
+Then open **Offhand** from your launcher, or `offhand-console` from a terminal. The first
 launch fetches the speech model itself — there is a progress screen and nothing to
 type — and Nemotron then runs on-device for every dictation. If a model file ever
 goes missing or turns up damaged, the window notices at launch and offers **Repair**
-on the same screen; no terminal is needed for either case, though `flow install`
+on the same screen; no terminal is needed for either case, though `offhand install`
 does the same fetch if you would rather run it yourself. Cleanup above
 `cleanup = "none"` needs an OpenRouter key, pasted into **Settings → OpenRouter**:
 that is what Gemini 3.1 Flash-Lite is reached through.
@@ -53,7 +53,7 @@ restarts the daemon onto the new build if it was already running.
 There are two release channels. **Stable** is for everyday use. **Experimental**
 lets you try upcoming changes before they reach stable and may be less reliable.
 Enable **Settings → Build → Experimental build** to opt in, or disable it to return
-to stable. Flow downloads and verifies the selected release and restarts to apply
+to stable. Offhand downloads and verifies the selected release and restarts to apply
 it. Both builds, your models, settings and history stay on disk. Updates follow
 the selected channel. A release installer refuses to install under the wrong channel.
 
@@ -65,18 +65,18 @@ alone, and prints how to delete those if you want them gone.
 | | |
 |---|---|
 | `Super+Shift+D` (hold) | Dictate. Release to paste. |
-| **Flow** in your launcher | Settings, history and vocabulary in a window |
-| `flow-console` | The same window, from a terminal |
-| `flow logs` | What the daemon has been saying |
-| `flow retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
-| `flow start` / `flow stop` | Trigger dictation without the chord, for a compositor bind |
-| `flow probe` | Whether OpenRouter answers, and which model refining would use |
-| `flow install` | Re-fetch any speech-model file that is missing or fails its hash |
-| `flow help` | Every command and flag |
+| **Offhand** in your launcher | Settings, history and vocabulary in a window |
+| `offhand-console` | The same window, from a terminal |
+| `offhand logs` | What the daemon has been saying |
+| `offhand retry [n]` | Re-run a saved dictation through the pipeline (needs `record_debug`) |
+| `offhand start` / `offhand stop` | Trigger dictation without the chord, for a compositor bind |
+| `offhand probe` | Whether OpenRouter answers, and which model refining would use |
+| `offhand install` | Re-fetch any speech-model file that is missing or fails its hash |
+| `offhand help` | Every command and flag |
 
 ## Configuration
 
-Everything lives in `~/.config/flow/config.toml`, and the file is optional —
+Everything lives in `~/.config/offhand/config.toml`, and the file is optional —
 every key has a working default. `packaging/config.template.toml` documents all
 of them. The ones people actually change:
 
@@ -90,7 +90,7 @@ openrouter_key = "sk-or-…" # easier to paste in Settings than to type here
 The key is a billable credential. Saving it from the window writes the file
 `0600`; if you put it there by hand, do the same.
 
-Word fixes go next door in `~/.config/flow/vocabulary.txt` — one term per line,
+Word fixes go next door in `~/.config/offhand/vocabulary.txt` — one term per line,
 for names the recogniser mishears. Note that vocabulary is applied *by the
 refining model*, so it does nothing at `cleanup = "none"`.
 
@@ -99,7 +99,7 @@ refining model*, so it does nothing at `cleanup = "none"`.
 One model on-device, one through OpenRouter:
 
 - **Nemotron 3.5 ASR streaming multilingual 0.6B** turns audio into text, on the
-  CPU. `flow install` fetches it once (~2.6GB, ONNX, licensed OpenMDW-1.1 — the
+  CPU. `offhand install` fetches it once (~2.6GB, ONNX, licensed OpenMDW-1.1 — the
   weights and origin notices travel with any redistribution). Audio is transcribed
   during recording in 560 ms chunks, preserving context across chunks. Release
   finishes the remaining audio.
@@ -125,13 +125,13 @@ you actually said.
 Start with [TROUBLESHOOTING.md](TROUBLESHOOTING.md). The short version:
 
 ```bash
-flow logs                      # the last 50 lines
-flow retry                     # what it heard, and refined
-FLOW_DEBUG=1 flow daemon       # the chatty version, run in a terminal
+offhand logs                      # the last 50 lines
+offhand retry                     # what it heard, and refined
+OFFHAND_DEBUG=1 offhand daemon    # the chatty version, run in a terminal
 ```
 
-`flow retry` needs `record_debug = true` in your config — it replays saved
-audio, and Flow keeps none by default.
+`offhand retry` needs `record_debug = true` in your config — it replays saved
+audio, and Offhand keeps none by default.
 
 ## Building without the installer
 

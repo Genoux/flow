@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 const RECENT: usize = 8;
 
 pub fn socket_path() -> PathBuf {
-    flow_paths::socket()
+    offhand_paths::socket()
 }
 
 /// What the daemon is doing right now.
@@ -65,7 +65,7 @@ struct State {
     /// Set when something the user needs to act on has gone wrong - a failed
     /// injection, a missing model. Cleared by the next success.
     problem: Option<String>,
-    /// Whether OpenRouter answered the last time Flow asked.
+    /// Whether OpenRouter answered the last time Offhand asked.
     ///
     /// Starts unknown rather than optimistic: a window that says Connected
     /// before anything has been sent is guessing, and the first thing it would

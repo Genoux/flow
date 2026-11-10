@@ -327,10 +327,10 @@ fn trigger_key(name: &str) -> Result<KeyCode> {
                 // Digits, unlike letters, really are sequential: KEY_1 is 2.
                 '1'..='9' => KeyCode(KeyCode::KEY_1.0 + (character as u16 - '1' as u16)),
                 '0' => KeyCode::KEY_0,
-                _ => return Err(anyhow!("{name:?} is not a key flow can watch")),
+                _ => return Err(anyhow!("{name:?} is not a key offhand can watch")),
             }
         }
-        _ => return Err(anyhow!("{name:?} is not a key flow can watch")),
+        _ => return Err(anyhow!("{name:?} is not a key offhand can watch")),
     };
     Ok(named)
 }
@@ -376,7 +376,7 @@ pub enum Event {
     Released {
         held: Duration,
     },
-    /// From `flow start` / `flow stop`. Start arms a chord watcher so hold works
+    /// From `offhand start` / `offhand stop`. Start arms a chord watcher so hold works
     /// even when the compositor's release bind never fires.
     Start,
     Stop,
@@ -386,7 +386,7 @@ pub enum Event {
     Finish,
 }
 
-/// Native press and compositor `flow start` are the same physical tap, ~25ms
+/// Native press and compositor `offhand start` are the same physical tap, ~25ms
 /// apart, and keyd chatters a spurious re-press 45-215ms after a real one
 /// (see `RELEASE_DEBOUNCE` in daemon.rs, which this matches). Acting on
 /// either would start a dictation and stop it before the mic opened, or stop
@@ -402,8 +402,8 @@ pub enum TapAction {
     Ignore,
 }
 
-/// Tap-to-talk: the chord (or `flow start`) is a switch. Release does not
-/// end the session - including Hyprland's release bind, which sends `flow
+/// Tap-to-talk: the chord (or `offhand start`) is a switch. Release does not
+/// end the session - including Hyprland's release bind, which sends `offhand
 /// stop` and would otherwise make this setting a no-op.
 pub fn tap_action(event: Event, recording: bool, echo: bool) -> TapAction {
     match event {
@@ -833,13 +833,13 @@ fn chord_snapshot(devices: &[Device], chord: &Chord) -> HashSet<KeyCode> {
 }
 
 /// Cancels a running [`watch_chord_release`] when the hold ends another way
-/// (explicit `flow stop`, a replacement start, process exit).
+/// (explicit `offhand stop`, a replacement start, process exit).
 pub struct ChordWatch {
     cancel: Arc<AtomicBool>,
 }
 
 impl ChordWatch {
-    /// Snapshot the dictation chord at `flow start` and emit [`Event::Stop`]
+    /// Snapshot the dictation chord at `offhand start` and emit [`Event::Stop`]
     /// when any of those keys is released. Hyprland's release binds miss
     /// modifier chords; this is what makes compositor-driven hold reliable.
     #[cfg(target_os = "linux")]
@@ -850,11 +850,11 @@ impl ChordWatch {
         Self { cancel }
     }
 
-    /// Nothing to watch: macOS has no compositor bind that sends `flow start`,
+    /// Nothing to watch: macOS has no compositor bind that sends `offhand start`,
     /// and the native tap already ends a hold on its own.
     #[cfg(target_os = "macos")]
     pub fn arm(_events: Sender<Event>, _chord: Chord) -> Self {
-        eprintln!("chord watch: not available on macos - waiting for `flow stop`");
+        eprintln!("chord watch: not available on macos - waiting for `offhand stop`");
         Self {
             cancel: Arc::new(AtomicBool::new(false)),
         }
@@ -871,7 +871,7 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Ch
     let state_devices = chord_devices();
     let event_devices = chord_devices();
     if state_devices.is_empty() {
-        eprintln!("chord watch: no readable keyboard - bind `flow stop` on release as fallback");
+        eprintln!("chord watch: no readable keyboard - bind `offhand stop` on release as fallback");
         return;
     }
 
@@ -888,9 +888,9 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Ch
 
     // Nothing held means this was not a key being held down at all - a script,
     // a foot pedal, a stream deck. Stopping here would cut those recordings to
-    // the ~40ms it took to look, so the explicit `flow stop` is left to end them.
+    // the ~40ms it took to look, so the explicit `offhand stop` is left to end them.
     if held.is_empty() {
-        eprintln!("chord watch: no chord keys held - waiting for `flow stop`");
+        eprintln!("chord watch: no chord keys held - waiting for `offhand stop`");
         return;
     }
 
@@ -949,7 +949,7 @@ fn watch_chord_release(events: Sender<Event>, cancel: Arc<AtomicBool>, chord: Ch
     }
 }
 
-/// Modifiers held according to the events flow has actually seen, and whether
+/// Modifiers held according to the events offhand has actually seen, and whether
 /// anyone is watching.
 ///
 /// `EVIOCGKEY` - what `get_key_state` reads - can be stale, and on this machine it

@@ -18,7 +18,7 @@ use std::sync::LazyLock;
 /// square. Regenerate with:
 ///
 /// ```sh
-/// rsvg-convert -o assets/tray.png assets/tray.svg
+/// rsvg-convert -w 64 -h 64 -o assets/tray.png assets/tray.svg
 /// magick assets/tray.png -strip PNG32:assets/tray.png
 /// ```
 const ICON: &[u8] = include_bytes!("../../assets/tray.png");
@@ -28,7 +28,7 @@ const ICON: &[u8] = include_bytes!("../../assets/tray.png");
 static PIXMAP: LazyLock<Vec<Pixmap>> = LazyLock::new(|| vec![argb(ICON)]);
 
 /// The registered item. Dropping it does not unregister; [`Icon::hide`] does.
-pub struct Icon(ksni::blocking::Handle<Flow>);
+pub struct Icon(ksni::blocking::Handle<Offhand>);
 
 impl Icon {
     pub fn hide(self) {
@@ -42,7 +42,7 @@ pub fn show() -> Option<Icon> {
     // The tray service starts with the user manager and can easily beat the bar
     // to it. A watcher that is not up yet is not the same as a desktop that
     // will never have one; the host must be allowed to arrive afterwards.
-    match Flow.assume_sni_available(true).spawn() {
+    match Offhand.assume_sni_available(true).spawn() {
         Ok(handle) => Some(Icon(handle)),
         Err(err) => {
             eprintln!("tray icon unavailable ({err}); the daemon is unaffected");
@@ -51,15 +51,15 @@ pub fn show() -> Option<Icon> {
     }
 }
 
-pub struct Flow;
+pub struct Offhand;
 
-impl Tray for Flow {
+impl Tray for Offhand {
     fn id(&self) -> String {
-        "flow".into()
+        "offhand".into()
     }
 
     fn title(&self) -> String {
-        "Flow".into()
+        "Offhand".into()
     }
 
     fn icon_pixmap(&self) -> Vec<Pixmap> {
@@ -68,7 +68,7 @@ impl Tray for Flow {
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
-            title: "Flow".into(),
+            title: "Offhand".into(),
             description: super::tooltip(dictation_running()).into(),
             ..Default::default()
         }
@@ -102,7 +102,7 @@ impl Tray for Flow {
 /// duplicate window is the worse of the two: it is a second copy of a page that
 /// edits config files.
 pub fn open_console() {
-    if running("flow-console") {
+    if running("offhand-console") {
         return;
     }
     // Handed to the user manager rather than spawned as a child, because this
@@ -116,7 +116,7 @@ pub fn open_console() {
         .args(["--user", "--quiet", "--collect", "--", &console_program()])
         .spawn()
     else {
-        eprintln!("tray: systemd-run is not available, cannot open flow-console");
+        eprintln!("tray: systemd-run is not available, cannot open offhand-console");
         return;
     };
     // Waited on its own thread, the way `chime` waits on paplay. A child
@@ -132,28 +132,28 @@ pub fn open_console() {
 /// never `$PATH`, so a `~/.local/bin` install has to be named in full.
 fn console_program() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    let local = format!("{home}/.local/bin/flow-console");
+    let local = format!("{home}/.local/bin/offhand-console");
     if std::path::Path::new(&local).is_file() {
         local
     } else {
-        "flow-console".into()
+        "offhand-console".into()
     }
 }
 
 pub fn dictation_running() -> bool {
     std::process::Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", "flow.service"])
+        .args(["--user", "is-active", "--quiet", "offhand.service"])
         .status()
         .is_ok_and(|status| status.success())
 }
 
 pub fn dictation(verb: Verb) {
     let _ = std::process::Command::new("systemctl")
-        .args(["--user", verb.as_str(), "flow.service"])
+        .args(["--user", verb.as_str(), "offhand.service"])
         .status();
 }
 
-/// End Flow entirely: the dictation daemon and this controller with it.
+/// End Offhand entirely: the dictation daemon and this controller with it.
 ///
 /// Stopping our own unit is what makes this Quit rather than a second way to
 /// hide the icon - `show_tray = false` leaves the controller running so the
@@ -162,7 +162,7 @@ pub fn dictation(verb: Verb) {
 /// it is reached.
 pub fn quit() {
     let _ = std::process::Command::new("systemctl")
-        .args(["--user", "stop", "flow.service", "flow-tray.service"])
+        .args(["--user", "stop", "offhand.service", "offhand-tray.service"])
         .status();
 }
 
@@ -259,12 +259,12 @@ mod tests {
     }
 
     /// The reported failure, in the one line that caused it: a closed console
-    /// left a zombie named `flow-console`, `running` counted it as an open
+    /// left a zombie named `offhand-console`, `running` counted it as an open
     /// window, and the tray icon went dead for the rest of the session.
     #[test]
     fn an_unreaped_console_does_not_count_as_running() {
-        let dead = "2885662 (flow-console) Z 2874041 2874041 0 0 -1 4194560 0 0";
-        let alive = "2874041 (flow) S 2039268 2874041 0 0 -1 4194304 0 0";
+        let dead = "2885662 (offhand-console) Z 2874041 2874041 0 0 -1 4194560 0 0";
+        let alive = "2874041 (offhand) S 2039268 2874041 0 0 -1 4194304 0 0";
         assert!(zombie(dead));
         assert!(!zombie(alive));
     }

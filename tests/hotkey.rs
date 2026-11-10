@@ -1,5 +1,5 @@
 use evdev::KeyCode;
-use flow::hotkey::{
+use offhand::hotkey::{
     Chord, DOUBLE_TAP, Event, Latch, Modifier, PttState, TapAction, chord_released, release_window,
     tap_action,
 };
@@ -48,7 +48,7 @@ fn the_default_is_super_shift_d() {
 /// downstream by voice detection and the hesitation-only skip.
 #[test]
 fn a_tap_too_short_to_hold_speech_is_discarded() {
-    use flow::hotkey::was_long_enough;
+    use offhand::hotkey::was_long_enough;
 
     for stray in [0, 50, 120, 199] {
         assert!(
@@ -64,7 +64,7 @@ fn a_tap_too_short_to_hold_speech_is_discarded() {
     }
 }
 
-/// Hyprland binds USR1 on press and USR2 on release of the same chord Flow
+/// Hyprland binds USR1 on press and USR2 on release of the same chord Offhand
 /// watches natively. If tap-to-talk honoured that stop, turning the setting
 /// off would still end every dictation the moment the keys came up.
 #[test]
@@ -508,7 +508,7 @@ fn duplicate_modifiers_are_rejected() {
 /// clipboard, so the daemon now tracks modifiers from events instead.
 #[test]
 fn modifiers_are_judged_from_what_was_actually_seen() {
-    use flow::hotkey::any_modifier_in;
+    use offhand::hotkey::any_modifier_in;
 
     assert!(!any_modifier_in(&HashSet::new()), "nothing held");
     assert!(
@@ -528,7 +528,7 @@ fn modifiers_are_judged_from_what_was_actually_seen() {
 #[ignore]
 fn the_device_fallback_still_answers() {
     let started = std::time::Instant::now();
-    let released = flow::hotkey::wait_for_modifiers_released(Duration::from_millis(300));
+    let released = offhand::hotkey::wait_for_modifiers_released(Duration::from_millis(300));
     eprintln!(
         "device fallback: released={released} in {:?}",
         started.elapsed()
@@ -545,11 +545,11 @@ fn the_modifier_check_is_not_a_device_scan() {
     use std::time::Instant;
 
     // First call may pay discovery once; the daemon warms it at startup.
-    flow::hotkey::wait_for_modifiers_released(Duration::from_secs(1));
+    offhand::hotkey::wait_for_modifiers_released(Duration::from_secs(1));
 
     let started = Instant::now();
     for _ in 0..5 {
-        flow::hotkey::wait_for_modifiers_released(Duration::from_secs(1));
+        offhand::hotkey::wait_for_modifiers_released(Duration::from_secs(1));
     }
     let each = started.elapsed() / 5;
     eprintln!("modifier check: {each:?} per call");
@@ -645,7 +645,7 @@ fn an_unrelated_fn_press_does_not_start_a_modifier_chord() {
 #[test]
 fn fn_does_not_hold_up_a_paste_on_linux() {
     let held: HashSet<KeyCode> = [FN].into();
-    assert!(!flow::hotkey::any_modifier_in(&held));
+    assert!(!offhand::hotkey::any_modifier_in(&held));
 }
 
 // -- hands-free latch -------------------------------------------------------

@@ -1,4 +1,4 @@
-use flow::overlay::{Analyzer, BAND_COUNT, WINDOW};
+use offhand::overlay::{Analyzer, BAND_COUNT, WINDOW};
 
 fn tone(hz: f32, amplitude: f32) -> Vec<f32> {
     (0..WINDOW * 2)
@@ -63,7 +63,7 @@ fn a_silent_window_rests_and_a_short_one_is_ignored() {
 /// from the actual microphone before retuning BAND_GAIN.
 #[test]
 fn every_band_carries_part_of_real_speech() {
-    let samples = flow::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
+    let samples = offhand::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
     let mut analyzer = Analyzer::new();
 
     let (mut totals, mut pinned) = ([0.0f32; BAND_COUNT], [0u32; BAND_COUNT]);

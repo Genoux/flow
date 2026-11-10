@@ -287,12 +287,12 @@ pub fn available() -> bool {
 }
 
 /// The keyboard on a Mac is read by the daemon binary's event tap, as
-/// `flow keys`, rather than here: the tap is what holds Input Monitoring, and
+/// `offhand keys`, rather than here: the tap is what holds Input Monitoring, and
 /// its key table is the daemon's, so there is one mapping from a Mac's key codes
 /// to the keys a chord is written in. This only reads what it prints.
 ///
 /// Killed on the way out, and its stdin is the lifeline for when that never
-/// runs: the pipe closes with this process, and `flow keys` ends with it.
+/// runs: the pipe closes with this process, and `offhand keys` ends with it.
 #[cfg(target_os = "macos")]
 struct Watcher {
     child: std::process::Child,
@@ -305,7 +305,7 @@ impl Watcher {
         use std::io::BufRead;
         use std::process::{Command, Stdio};
 
-        let mut child = Command::new(crate::system::flow_program())
+        let mut child = Command::new(crate::system::offhand_program())
             .arg("keys")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -387,10 +387,10 @@ pub fn capture(cancel: &dyn Fn() -> bool) -> Result<Option<String>, String> {
 /// grant is reported by [`capture`] where the picker has room to say so.
 #[cfg(target_os = "macos")]
 pub fn available() -> bool {
-    std::path::Path::new(&crate::system::flow_program()).is_file()
+    std::path::Path::new(&crate::system::offhand_program()).is_file()
 }
 
-/// One line of `flow keys`: `KEY_D 1` for a press, `KEY_D 0` for a release.
+/// One line of `offhand keys`: `KEY_D 1` for a press, `KEY_D 0` for a release.
 #[cfg(any(target_os = "macos", test))]
 fn parse_edge(line: &str) -> Option<(KeyCode, i32)> {
     let mut words = line.split_whitespace();

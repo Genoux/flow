@@ -1,4 +1,4 @@
-//! Flow's status and settings window.
+//! Offhand's status and settings window.
 //!
 //! A separate binary from the daemon on purpose: iced brings wgpu with it, and
 //! the daemon has no business carrying that to record audio. The two talk over
@@ -49,11 +49,17 @@ use iced::{Color, Subscription, Task, Theme};
 
 fn main() -> iced::Result {
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("flow-console {}", update::running());
+        println!("offhand-console {}", update::running());
         return Ok(());
     }
+    if let Err(err) = offhand_paths::adopt_flow_directories(
+        &offhand_paths::config_home(),
+        &offhand_paths::data_home(),
+    ) {
+        eprintln!("could not carry over the Flow config and data: {err}");
+    }
     iced::application(Console::new, Console::update, Console::view)
-        .title("Flow")
+        .title("Offhand")
         .antialiasing(true)
         .font(include_bytes!("../../../assets/NotoSerifDisplay-Regular.ttf").as_slice())
         .default_font(theme::UI_FONT)
@@ -76,7 +82,7 @@ fn main() -> iced::Result {
             // entirely, so this cannot be set unconditionally.
             #[cfg(target_os = "linux")]
             platform_specific: iced::window::settings::PlatformSpecific {
-                application_id: "flow-console".to_string(),
+                application_id: "offhand-console".to_string(),
                 ..Default::default()
             },
             #[cfg(target_os = "macos")]
@@ -153,7 +159,7 @@ enum Section {
     Vocabulary,
     /// What used to be Models. Both models now arrive with the install, so the
     /// screen that asked which to fetch has no question left on it - what it
-    /// has instead is the one choice that changes what Flow writes.
+    /// has instead is the one choice that changes what Offhand writes.
     Style,
     /// Dictation and Audio merged. Eight rows across two rail sections meant a
     /// click to discover which one held the switch you wanted; they are labelled
@@ -176,7 +182,7 @@ impl Section {
         Section::About,
     ];
 
-    /// Which section to open on, from `FLOW_SECTION`.
+    /// Which section to open on, from `OFFHAND_SECTION`.
     ///
     /// For iterating on one screen: the window restarts on every rebuild, and
     /// landing on Overview each time costs a click back to whatever is being
@@ -184,7 +190,7 @@ impl Section {
     /// names, which would drift the first time a section is renamed. An unset
     /// or unrecognised value opens Overview, same as always.
     fn initial() -> Self {
-        std::env::var("FLOW_SECTION")
+        std::env::var("OFFHAND_SECTION")
             .ok()
             .and_then(|wanted| Self::from_label(&wanted))
             .unwrap_or(Section::Overview)
@@ -196,7 +202,7 @@ impl Section {
             .find(|section| section.label().eq_ignore_ascii_case(name.trim()))
     }
 
-    /// Whether this screen still means something when Flow cannot run.
+    /// Whether this screen still means something when Offhand cannot run.
     ///
     /// Without a key there is no daemon at all - not a daemon doing less - so
     /// Vocabulary and Style describe behaviour with no process to belong to.
@@ -285,7 +291,7 @@ enum Message {
     /// request with the saved key.
     TestKey,
     ClearKey,
-    /// `None` is `flow probe` not answering at all - no `flow` on PATH, or
+    /// `None` is `offhand probe` not answering at all - no `offhand` on PATH, or
     /// past the budget - rather than any of the outcomes it can report.
     KeyTested(Option<openrouter::Outcome>),
     Select(Section),
@@ -316,7 +322,7 @@ enum Message {
     OpenConfig,
     /// Reveal a path in the file manager. About's config and history rows.
     OpenPath(std::path::PathBuf),
-    /// systemctl --user <verb> flow.service
+    /// systemctl --user <verb> offhand.service
     Service(&'static str),
     /// A service command finished away from the UI thread.
     ServiceFinished(&'static str, Result<(), String>),
@@ -347,7 +353,7 @@ enum Message {
     /// Start, or restart after a failure, the setup/repair screen - or, if the
     /// only problem is a missing key, take the user to Settings instead.
     BeginSetup,
-    /// One line from `flow install --porcelain`.
+    /// One line from `offhand install --porcelain`.
     SetupEvent(setup::Event),
     /// Automatic startup, or a retry from setup, finished.
     SetupStarted(Result<(), String>),
@@ -429,7 +435,7 @@ struct Console {
     restart_pending: bool,
     /// How many installed files are missing or the wrong length, asked of the
     /// daemon binary at launch and again whenever setup ends. `None` when
-    /// nothing could answer - `flow` not on PATH, or it did not reply inside
+    /// nothing could answer - `offhand` not on PATH, or it did not reply inside
     /// the launch budget.
     damage: Option<usize>,
     /// The one model download that can be in flight: first run's, or a repair
@@ -460,7 +466,7 @@ struct Console {
     /// The last Test result, cleared on every new save - a verdict about the
     /// key that was saved when it ran, not about whatever replaces it.
     key_test: Option<openrouter::Outcome>,
-    /// Which build the `flow` symlink points at, read at launch. The link is
+    /// Which build the `offhand` symlink points at, read at launch. The link is
     /// the source of truth; this is only what the switch renders.
     channel: system::Channel,
     /// True while waiting for the user to press a new chord.
@@ -494,7 +500,7 @@ impl Console {
         //
         // Asked once here rather than twice: a directory check alone called a
         // truncated file healthy, which left the fault to a banner the user
-        // could dismiss on a Flow that could not transcribe.
+        // could dismiss on an Offhand that could not transcribe.
         let damage = system::startup_damage();
         let first_run = model_is_broken(damage) || settings.openrouter_key.is_none();
         let cleanup_selection = settings::Cleanup::ALL.map(|level| {
@@ -559,7 +565,7 @@ impl Console {
                 entry_motion: std::collections::HashMap::new(),
                 toggle_motion: std::collections::HashMap::new(),
             },
-            // Setup starts itself. Launching Flow with nothing installed is
+            // Setup starts itself. Launching Offhand with nothing installed is
             // already the request; a Begin button in front of it would only be
             // asking the same question twice.
             Task::batch([
@@ -573,7 +579,7 @@ impl Console {
                 if first_run {
                     Task::done(Message::BeginSetup)
                 } else {
-                    // Opening an installed Flow is also asking it to be ready.
+                    // Opening an installed Offhand is also asking it to be ready.
                     // `start` is harmless when the daemon is already up, and
                     // gives a stopped daemon its expected default behaviour.
                     Task::perform(async { system::service("start") }, |result| {
@@ -590,7 +596,7 @@ impl Console {
                 // Costs one small refining request per window, which is the
                 // price of the answer being current instead of remembered.
                 Task::done(Message::TestKey),
-                // Whether there is a newer Flow, asked without being asked.
+                // Whether there is a newer Offhand, asked without being asked.
                 // A release nobody knows about is a release nobody installs,
                 // and the answer belongs on screen before the question occurs
                 // to anyone - the Overview names an available version among
@@ -715,7 +721,7 @@ impl Console {
         Task::perform(async { system::service("restart") }, Message::SetupStarted)
     }
 
-    /// Spawn `flow install` once the intro has landed. Hashing during the
+    /// Spawn `offhand install` once the intro has landed. Hashing during the
     /// fade is what made the motion hitch.
     fn launch_install(&mut self) -> Task<Message> {
         let Some(state) = self.download.as_mut() else {
@@ -728,7 +734,7 @@ impl Console {
         Task::run(setup::install(), Message::SetupEvent)
     }
 
-    /// The speech model is on disk, so Flow can dictate: start the daemon.
+    /// The speech model is on disk, so Offhand can dictate: start the daemon.
     ///
     /// There is no button for this and nothing to confirm. Called from
     /// everything that can move setup forward, because what it is waiting on
@@ -797,7 +803,7 @@ impl Console {
     }
 
     fn install_problem(&self) -> Option<InstallProblem> {
-        let model_installed = flow_paths::speech_model_dir().is_dir();
+        let model_installed = offhand_paths::speech_model_dir().is_dir();
         if model_is_broken(self.damage) {
             return Some(if model_installed {
                 InstallProblem::ModelDamaged
@@ -806,7 +812,7 @@ impl Console {
             });
         }
         // A missing key is NOT an install problem. Dictation is on-device, so
-        // Flow works without one at `cleanup = none` - and treating the key as
+        // Offhand works without one at `cleanup = none` - and treating the key as
         // unfinished setup put "Setup unfinished" over a working product,
         // disabled History, Vocabulary and Style in the nav, and hid the
         // start/stop control. What the key gates is refining, which is said in
@@ -826,7 +832,7 @@ fn believe_disconnect(activity: daemon::Activity) -> bool {
 
 /// The line and dot colour for each activity the daemon can report. Offline
 /// and Ready both read as calm (no accent) - the accent is reserved for the
-/// two states where Flow is actually doing something with your voice.
+/// two states where Offhand is actually doing something with your voice.
 ///
 /// Ready is the one that had to change. "Running" was true of the process and
 /// silent about the only thing that decides whether the hotkey works: every
@@ -850,7 +856,7 @@ fn activity_label(activity: daemon::Activity, reachable: Option<bool>) -> (&'sta
 
 /// The one thing to do to the service, which is whichever of its two states
 /// it is not in. Restart used to live here, and a control that reads the same
-/// whether Flow is up or down says nothing about which it is; Start and Stop
+/// whether Offhand is up or down says nothing about which it is; Start and Stop
 /// are the status told twice, once as a word and once as an offer.
 fn service_action_label(running: bool) -> &'static str {
     if running {
@@ -870,14 +876,14 @@ fn update_state(status: &update::Status) -> (Color, String) {
         update::Status::Checking => (MUTED, "checking…".into()),
         update::Status::Current => (OK, "up to date".into()),
         update::Status::Available(tag) => (ACCENT, format!("{tag} is available")),
-        update::Status::Installed(tag) => (OK, format!("{tag} installed - restart Flow")),
+        update::Status::Installed(tag) => (OK, format!("{tag} installed - restart Offhand")),
         update::Status::Failed(why) => (ERR, format!("could not check: {why}")),
     }
 }
 
 /// Whether the speech model on disk can be trusted.
 ///
-/// `None` is no verdict from the daemon binary - a wedged or older `flow` - so
+/// `None` is no verdict from the daemon binary - a wedged or older `offhand` - so
 /// the window falls back to the one thing it can see for itself.
 fn model_is_broken(damage: Option<usize>) -> bool {
     match damage {
@@ -909,7 +915,7 @@ impl InstallProblem {
 ///
 /// `NeedsSetup` wins over whatever the socket says. A daemon left running from
 /// before the models went missing still answers it, and reporting that as
-/// Running would put "Flow is running" over a product that cannot dictate.
+/// Running would put "Offhand is running" over a product that cannot dictate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Status {
     /// Setup unfinished. No start, no stop - the banner owns the way out.
@@ -1012,7 +1018,7 @@ mod tests {
     /// Running and Stopped are states of a product that is installed. Neither
     /// may be reported while a model is missing - a daemon left over from
     /// before that happened still answers the socket, and believing it would
-    /// put "Flow is running" over something that cannot dictate a word.
+    /// put "Offhand is running" over something that cannot dictate a word.
     #[test]
     fn an_unfinished_setup_outranks_whatever_the_socket_says() {
         for activity in [
@@ -1038,7 +1044,7 @@ mod tests {
     }
 
     /// The lookup reads the nav labels, so renaming a section would otherwise
-    /// silently turn FLOW_SECTION into "open Overview" with nothing to say so.
+    /// silently turn OFFHAND_SECTION into "open Overview" with nothing to say so.
     #[test]
     fn every_section_can_be_named() {
         for section in Section::ALL {

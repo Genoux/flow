@@ -1,5 +1,5 @@
-# Words Flow mishears, spelled the way you want them written. One per line.
-# The Vocabulary screen in the Flow window edits this same file.
+# Words Offhand mishears, spelled the way you want them written. One per line.
+# The Vocabulary screen in the Offhand window edits this same file.
 #
 # Works when the word sounds close:
 #   "hyper land"  -> Hyprland

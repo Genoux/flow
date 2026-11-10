@@ -48,7 +48,7 @@ define_class!(
     /// event. Anything else on the pill does nothing.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "FlowIslandView"]
+    #[name = "OffhandIslandView"]
     #[ivars = Sender<hotkey::Event>]
     struct IslandView;
 

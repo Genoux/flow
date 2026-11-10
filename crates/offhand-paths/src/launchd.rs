@@ -1,4 +1,4 @@
-//! Starting and stopping a LaunchAgent the way Flow means it to be started
+//! Starting and stopping a LaunchAgent the way Offhand means it to be started
 //! and stopped.
 //!
 //! Shared because two programs do it - the console's Start and Stop, and the
@@ -127,7 +127,7 @@ impl Agent {
                 let plist = self.plist()?;
                 if !plist.is_file() {
                     return Err(
-                        "Flow's LaunchAgent is not installed. Run the installer again.".into(),
+                        "Offhand's LaunchAgent is not installed. Run the installer again.".into(),
                     );
                 }
                 launchctl(run, &["bootstrap", &domain()?, &plist.to_string_lossy()])
@@ -141,7 +141,7 @@ impl Agent {
         let mut polls = 0;
         while self.job(run)? != Job::NotLoaded {
             if polls == BOOTOUT_POLLS {
-                return Err("Flow is still shutting down. Try again in a moment.".into());
+                return Err("Offhand is still shutting down. Try again in a moment.".into());
             }
             polls += 1;
             std::thread::sleep(Duration::from_millis(100));
@@ -239,10 +239,10 @@ fn plan(verb: Verb, job: Job, disabled: bool) -> Vec<Step> {
 mod tests {
     use super::*;
 
-    const LOADED: &str = "gui/501/com.genoux.flow = {\n\tactive count = 1\n\tpath = /x\n\tstate = running\n\n\truns = 1\n\t\tstate = active\n}";
-    const STOPPED: &str = "gui/501/com.genoux.flow = {\n\tpath = /x\n\tstate = not running\n}";
+    const LOADED: &str = "gui/501/com.genoux.offhand = {\n\tactive count = 1\n\tpath = /x\n\tstate = running\n\n\truns = 1\n\t\tstate = active\n}";
+    const STOPPED: &str = "gui/501/com.genoux.offhand = {\n\tpath = /x\n\tstate = not running\n}";
     const NOT_FOUND: &str =
-        "Could not find service \"com.genoux.flow\" in domain for user gui: 501";
+        "Could not find service \"com.genoux.offhand\" in domain for user gui: 501";
 
     /// The nested `state = active` lines come after the job's own and must not
     /// be mistaken for it.
@@ -274,8 +274,8 @@ mod tests {
 
     #[test]
     fn a_label_is_enabled_unless_print_disabled_says_otherwise() {
-        let listing = "disabled services = {\n\t\"com.genoux.flow\" => disabled\n\t\"com.other\" => enabled\n}";
-        assert!(!enabled(listing, "com.genoux.flow"));
+        let listing = "disabled services = {\n\t\"com.genoux.offhand\" => disabled\n\t\"com.other\" => enabled\n}";
+        assert!(!enabled(listing, "com.genoux.offhand"));
         assert!(enabled(listing, "com.other"));
         assert!(enabled(listing, "com.absent"));
     }

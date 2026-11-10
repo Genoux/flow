@@ -6,7 +6,7 @@
 //! cut lands in silence: tests/chunking.rs shows a cut between sentences costs
 //! nothing, and a cut through a word would cost a word.
 
-use flow::audio::{SAMPLE_RATE, SILENCE_RMS, split_at_silence};
+use offhand::audio::{SAMPLE_RATE, SILENCE_RMS, split_at_silence};
 
 const RATE: usize = SAMPLE_RATE as usize;
 

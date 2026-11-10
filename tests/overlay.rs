@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use flow::hotkey::Event;
-use flow::overlay::{
+use offhand::hotkey::Event;
+use offhand::overlay::{
     BLOOM, DWELL, IslandButton, MUTED, NO_INPUT, SURFACE_WIDTH, Silence, TOAST_HOLD, TOAST_LIFE,
     TOAST_RISE, WINDOW, arrived, band_fraction, bar_height, bloom, button_at, dead_line, ease_out,
     fit, fresh_window, hands_free_step, mountain, resting, rounded_rect_distance, silence, smooth,
@@ -109,7 +109,7 @@ fn the_silhouette_is_a_mountain() {
 #[test]
 fn a_flat_voice_still_draws_a_mountain() {
     let bands = [0.8; 4];
-    let heights: Vec<f32> = (0..flow::overlay::BAR_COUNT)
+    let heights: Vec<f32> = (0..offhand::overlay::BAR_COUNT)
         .map(|bar| bar_height(bar, &bands))
         .collect();
     assert!(
@@ -265,7 +265,7 @@ fn easing_still_keeps_up_with_speech() {
 
 // -- resting on the room ----------------------------------------------------
 
-use flow::overlay::Analyzer;
+use offhand::overlay::Analyzer;
 
 /// Measured on this machine: a quiet room reads rms 0.008 at the median and
 /// 0.021 at its loudest, against the old fixed gate of 0.005 - so 92% of silence
@@ -371,7 +371,7 @@ fn distance_is_negative_inside_and_positive_past_the_corner() {
 // The island is the only feedback that anything is happening, so it has to
 // outlive the paste. These cover the two ways it used to come down early.
 
-use flow::overlay::Lifecycle;
+use offhand::overlay::Lifecycle;
 
 #[test]
 fn the_island_survives_until_the_text_has_landed() {
@@ -667,7 +667,7 @@ fn a_hold_into_a_dead_line_is_still_stopped() {
 #[test]
 fn the_resting_swell_travels_left_to_right() {
     let crest = |seconds: f32| {
-        (0..flow::overlay::BAR_COUNT)
+        (0..offhand::overlay::BAR_COUNT)
             .max_by(|a, b| {
                 resting(*a, seconds)
                     .partial_cmp(&resting(*b, seconds))
@@ -695,7 +695,7 @@ fn the_resting_swell_is_never_as_tall_as_a_voice() {
     let tallest = (0..200)
         .flat_map(|step| {
             let seconds = step as f32 / 10.0;
-            (0..flow::overlay::BAR_COUNT).map(move |bar| resting(bar, seconds))
+            (0..offhand::overlay::BAR_COUNT).map(move |bar| resting(bar, seconds))
         })
         .fold(0.0f32, f32::max);
     assert!(
@@ -753,7 +753,7 @@ fn the_bars_and_the_pill_ends_are_not_buttons() {
     assert_eq!(button_at(-5.0, -5.0), None);
 }
 
-/// A click is the same event as the key and `flow stop`, so the daemon has one
+/// A click is the same event as the key and `offhand stop`, so the daemon has one
 /// path for ending a hands-free session.
 #[test]
 fn a_click_is_the_event_the_key_would_have_sent() {

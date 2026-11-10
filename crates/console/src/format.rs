@@ -58,7 +58,7 @@ pub(crate) fn clip_tail(text: &str, chars: usize) -> String {
     format!("…{tail}")
 }
 
-/// `$HOME/…` as `~/…`, which is how the rest of Flow writes these paths.
+/// `$HOME/…` as `~/…`, which is how the rest of Offhand writes these paths.
 /// Anything outside home is left alone - a custom XDG directory is the
 /// actual location, not a tilde we invented.
 pub(crate) fn display_path(path: &std::path::Path) -> String {
@@ -122,15 +122,15 @@ mod tests {
     fn home_is_written_as_a_tilde() {
         let home = Path::new("/home/j");
         assert_eq!(
-            collapse_home(Path::new("/home/j/.config/flow/config.toml"), Some(home)),
-            "~/.config/flow/config.toml"
+            collapse_home(Path::new("/home/j/.config/offhand/config.toml"), Some(home)),
+            "~/.config/offhand/config.toml"
         );
         assert_eq!(
             collapse_home(
-                Path::new("/home/j/.local/share/flow/history.jsonl"),
+                Path::new("/home/j/.local/share/offhand/history.jsonl"),
                 Some(home)
             ),
-            "~/.local/share/flow/history.jsonl"
+            "~/.local/share/offhand/history.jsonl"
         );
         assert_eq!(collapse_home(home, Some(home)), "~");
     }
@@ -139,10 +139,10 @@ mod tests {
     fn a_path_outside_home_is_left_alone() {
         assert_eq!(
             collapse_home(
-                Path::new("/custom/config/flow/config.toml"),
+                Path::new("/custom/config/offhand/config.toml"),
                 Some(Path::new("/home/j"))
             ),
-            "/custom/config/flow/config.toml"
+            "/custom/config/offhand/config.toml"
         );
         assert_eq!(collapse_home(Path::new("/tmp/x"), None), "/tmp/x");
     }
@@ -151,8 +151,8 @@ mod tests {
     fn a_long_path_keeps_the_filename() {
         assert_eq!(clip_tail("abcdef", 6), "abcdef");
         assert_eq!(
-            clip_tail("/private/tmp/claude/flow/config.toml", 17),
-            "…flow/config.toml"
+            clip_tail("/private/tmp/claude/offhand/config.toml", 20),
+            "…offhand/config.toml"
         );
     }
 }

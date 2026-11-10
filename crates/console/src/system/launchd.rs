@@ -1,27 +1,28 @@
-//! The LaunchAgent that runs Flow on a Mac.
+//! The LaunchAgent that runs Offhand on a Mac.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use flow_paths::launchd::{Agent, Verb};
+use offhand_paths::launchd::{Agent, Verb};
 
-use super::{reopen_flow, run, run_for, Channel, BUDGET};
+use super::{reopen_offhand, run, run_for, Channel, BUDGET};
 
-const LABEL: &str = "com.genoux.flow";
+const LABEL: &str = "com.genoux.offhand";
 
 pub(crate) const OPENER: &str = "open";
 
 /// The app is opened from Finder, whose PATH is `/usr/bin:/bin:...`, so a bare
-/// `flow` finds nothing.
-pub(crate) fn flow_program() -> String {
+/// `offhand` finds nothing.
+pub(crate) fn offhand_program() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|exe| {
-            flow_paths::agent_program(&exe).or_else(|| exe.parent().map(|dir| dir.join("flow")))
+            offhand_paths::agent_program(&exe)
+                .or_else(|| exe.parent().map(|dir| dir.join("offhand")))
         })
         .map_or_else(
-            || "flow".to_owned(),
+            || "offhand".to_owned(),
             |path| path.to_string_lossy().into_owned(),
         )
 }
@@ -30,16 +31,16 @@ pub(crate) fn flow_program() -> String {
 /// daemon matches `input_device` against and what a person knows the mic by.
 ///
 /// Asked of the daemon binary rather than CoreAudio, so the names are the ones
-/// `audio::open_input` will find - see `flow inputs`.
+/// `audio::open_input` will find - see `offhand inputs`.
 pub(crate) fn input_sources() -> Vec<(String, String)> {
-    run(&flow_program(), &["inputs"])
+    run(&offhand_program(), &["inputs"])
         .map(|output| inputs(&String::from_utf8_lossy(&output.stdout)))
         .unwrap_or_default()
 }
 
 /// What Automatic records from: the input the system has as its default.
 pub(crate) fn default_input() -> Option<String> {
-    let output = run(&flow_program(), &["inputs", "--default"])?;
+    let output = run(&offhand_program(), &["inputs", "--default"])?;
     let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (!name.is_empty()).then_some(name)
 }
@@ -56,7 +57,7 @@ fn inputs(listing: &str) -> Vec<(String, String)> {
 
 const AGENT: Agent = Agent { label: LABEL };
 const TRAY: Agent = Agent {
-    label: "com.genoux.flow.tray",
+    label: "com.genoux.offhand.tray",
 };
 
 fn launchctl_for(budget: Duration) -> impl Fn(&[&str]) -> Option<std::process::Output> {
@@ -102,11 +103,11 @@ pub(super) fn ensure_running() -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("Flow did not finish starting. Run `flow logs` for details.".into())
+    Err("Offhand did not finish starting. Run `offhand logs` for details.".into())
 }
 
 /// The tray is its own agent, KeepAlive, so it is nearly always up already.
-/// This is for after Quit Flow unloaded it. Without its plist - a dev build, or
+/// This is for after Quit Offhand unloaded it. Without its plist - a dev build, or
 /// an update that has not rewritten it yet - there is nothing to start, and
 /// that is not worth a banner every time the console opens.
 pub(crate) fn start_tray() -> Result<(), String> {
@@ -117,15 +118,15 @@ pub(crate) fn start_tray() -> Result<(), String> {
 }
 
 /// `ps` gives a bare name or a full path depending on how the process started.
-fn comm_is_flow(comm: &str) -> bool {
+fn comm_is_offhand(comm: &str) -> bool {
     std::path::Path::new(comm.trim())
         .file_name()
-        .is_some_and(|name| name == "flow")
+        .is_some_and(|name| name == "offhand")
 }
 
-pub(super) fn is_flow_process(pid: u32) -> bool {
+pub(super) fn is_offhand_process(pid: u32) -> bool {
     run("ps", &["-p", &pid.to_string(), "-o", "comm="])
-        .is_some_and(|output| comm_is_flow(&String::from_utf8_lossy(&output.stdout)))
+        .is_some_and(|output| comm_is_offhand(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// `open -n` because the old window is still alive for the moment it takes to
@@ -133,15 +134,15 @@ pub(super) fn is_flow_process(pid: u32) -> bool {
 pub(crate) fn restart_app() -> Result<(), String> {
     let bundle = std::env::current_exe()
         .ok()
-        .and_then(|exe| flow_paths::app_bundle(&exe))
-        .ok_or("Flow is not running from an app bundle. Reopen it from Applications.")?;
+        .and_then(|exe| offhand_paths::app_bundle(&exe))
+        .ok_or("Offhand is not running from an app bundle. Reopen it from Applications.")?;
     super::service("restart")?;
     // launchd keeps a loaded job's ProgramArguments in memory, so a tray from
     // before an update would go on running from the old layout.
     if TRAY.plist_installed()? {
         TRAY.control(Verb::Restart, &launchctl_for(BUDGET))?;
     }
-    reopen_flow("open", &["-n", &bundle.to_string_lossy()])
+    reopen_offhand("open", &["-n", &bundle.to_string_lossy()])
 }
 
 pub(crate) fn session() -> String {
@@ -158,7 +159,7 @@ pub(super) fn reveal(path: &std::path::Path) -> Result<(), String> {
 
 /// The build this app is, as recorded in the bundle when it was made.
 ///
-/// A Mac has one Flow.app, so there is no second build to point a link at: the
+/// A Mac has one Offhand.app, so there is no second build to point a link at: the
 /// channel is whichever release is installed in the slot, and switching is
 /// installing the other one over it. Read from the bundle each time rather than
 /// remembered, so after an install it names the new build without a restart.
@@ -190,7 +191,7 @@ pub(crate) fn set_channel(_channel: Channel) -> Result<(), String> {
 }
 
 pub(crate) fn installed_binaries(_channel: Channel) -> Result<(PathBuf, String), String> {
-    Ok((home()?.join("Applications/Flow.app"), String::new()))
+    Ok((home()?.join("Applications/Offhand.app"), String::new()))
 }
 
 #[cfg(test)]
@@ -240,14 +241,14 @@ mod tests {
 
     #[test]
     fn ps_may_name_the_process_by_path_or_bare() {
-        assert!(comm_is_flow("flow\n"));
-        assert!(comm_is_flow(
-            "/Users/me/Applications/Flow.app/Contents/Helpers/Flow Agent.app/Contents/MacOS/flow\n"
+        assert!(comm_is_offhand("offhand\n"));
+        assert!(comm_is_offhand(
+            "/Users/me/Applications/Offhand.app/Contents/Helpers/Offhand Agent.app/Contents/MacOS/offhand\n"
         ));
-        assert!(!comm_is_flow(
-            "/Users/me/Applications/Flow.app/Contents/MacOS/flow-console"
+        assert!(!comm_is_offhand(
+            "/Users/me/Applications/Offhand.app/Contents/MacOS/offhand-console"
         ));
-        assert!(!comm_is_flow("workflow"));
-        assert!(!comm_is_flow(""));
+        assert!(!comm_is_offhand("offhanded"));
+        assert!(!comm_is_offhand(""));
     }
 }

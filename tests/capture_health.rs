@@ -12,8 +12,8 @@ use std::time::Duration;
 #[test]
 #[ignore]
 fn an_idle_capture_keeps_delivering() {
-    let device = flow::audio::open_device().expect("device");
-    let capture = flow::audio::Capture::open(&device).expect("open");
+    let device = offhand::audio::open_device().expect("device");
+    let capture = offhand::audio::Capture::open(&device).expect("open");
 
     let mut worst = Duration::ZERO;
     for second in 1..=8 {
@@ -36,8 +36,8 @@ fn an_idle_capture_keeps_delivering() {
 #[test]
 #[ignore]
 fn a_dead_stream_is_detected_and_reopened() {
-    let device = flow::audio::open_device().expect("device");
-    let capture = flow::audio::Capture::open(&device).expect("open");
+    let device = offhand::audio::open_device().expect("device");
+    let capture = offhand::audio::Capture::open(&device).expect("open");
 
     std::thread::sleep(Duration::from_millis(300));
     assert!(

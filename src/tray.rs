@@ -1,4 +1,4 @@
-//! Flow's persistent launcher and daemon controller in the system tray.
+//! Offhand's persistent launcher and daemon controller in the system tray.
 //!
 //! This runs in its own small service. In particular it is not owned by the
 //! dictation daemon: the icon is how a stopped daemon can be opened or started,
@@ -57,7 +57,7 @@ enum Entry {
 fn menu(running: bool) -> [Entry; 6] {
     [
         Entry::Item {
-            label: "Open Flow",
+            label: "Open Offhand",
             action: Action::Open,
         },
         Entry::Separator,
@@ -71,7 +71,7 @@ fn menu(running: bool) -> [Entry; 6] {
         },
         Entry::Separator,
         Entry::Item {
-            label: "Quit Flow",
+            label: "Quit Offhand",
             action: Action::Quit,
         },
     ]
@@ -84,7 +84,7 @@ fn tooltip(running: bool) -> &'static str {
     if running {
         "Dictation is running. Hold your chord and speak."
     } else {
-        "Dictation is stopped. Open Flow or start it from the menu."
+        "Dictation is stopped. Open Offhand or start it from the menu."
     }
 }
 
@@ -144,7 +144,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stopping_dictation_does_not_call_it_quitting_flow() {
+    fn stopping_dictation_does_not_call_it_quitting_offhand() {
         assert_eq!(daemon_action_label(true), "Stop Dictation");
         assert_eq!(daemon_action_label(false), "Start Dictation");
     }
@@ -163,10 +163,10 @@ mod tests {
         assert_eq!(
             labels(true),
             [
-                "Open Flow",
+                "Open Offhand",
                 "Stop Dictation",
                 "Restart Dictation",
-                "Quit Flow"
+                "Quit Offhand"
             ]
         );
         assert_eq!(labels(false)[1], "Start Dictation");

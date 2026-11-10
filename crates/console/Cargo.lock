@@ -807,25 +807,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
 
 [[package]]
-name = "flow-console"
-version = "0.6.1"
-dependencies = [
- "evdev",
- "flow-paths",
- "iced",
- "iced_runtime",
- "image",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "semver",
- "serde_json",
-]
-
-[[package]]
-name = "flow-paths"
-version = "0.1.0"
-
-[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2232,6 +2213,25 @@ dependencies = [
  "objc2-core-location",
  "objc2-foundation 0.2.2",
 ]
+
+[[package]]
+name = "offhand-console"
+version = "0.6.1"
+dependencies = [
+ "evdev",
+ "iced",
+ "iced_runtime",
+ "image",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "offhand-paths",
+ "semver",
+ "serde_json",
+]
+
+[[package]]
+name = "offhand-paths"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"

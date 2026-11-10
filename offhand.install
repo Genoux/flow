@@ -1,0 +1,30 @@
+# Flow units a user enabled outlive the package that shipped them: the daemon
+# keeps running from the deleted binary until logout and would hold the
+# microphone and the hotkey beside offhand.service.
+_retire_flow() {
+	local user
+	for user in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+		systemctl --machine="$user@.host" --user stop flow.service flow-tray.service 2>/dev/null || true
+		systemctl --machine="$user@.host" --user disable flow.service flow-tray.service 2>/dev/null || true
+	done
+}
+
+post_install() {
+	_retire_flow
+	udevadm control --reload-rules
+	udevadm trigger
+	cat <<-'EOF'
+	Offhand types by opening /dev/uinput. If your user isn't already in the
+	'input' group (or otherwise granted a uinput ACL), run:
+
+	  sudo usermod -aG input "$USER"
+
+	then log out and back in. Start the daemon with:
+
+	  systemctl --user enable --now offhand.service
+	EOF
+}
+
+post_upgrade() {
+	post_install
+}

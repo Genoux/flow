@@ -1,18 +1,18 @@
 //! First run, and repair: one model, one ring, then the console.
 //!
-//! A fresh install has no speech model on disk, and Flow cannot dictate
+//! A fresh install has no speech model on disk, and Offhand cannot dictate
 //! without it - so the window opens on this instead of on seven sections
 //! reporting nothing. It fetches Nemotron, starts the daemon, and fades into
 //! the Overview. There is nothing to read and nothing to press.
 //!
 //! The same screen runs when a file the daemon pins goes missing or comes
-//! back the wrong length: `flow check --porcelain` finds that at launch, and
+//! back the wrong length: `offhand check --porcelain` finds that at launch, and
 //! Overview's banner offers the same download under a different name, Repair.
 //! Refining is not this screen's business - it lives behind an OpenRouter key
 //! on the Settings screen, and a missing key never blocks dictation the way a
 //! missing recogniser does.
 //!
-//! The download itself is `flow install --porcelain`, not a copy of it. The
+//! The download itself is `offhand install --porcelain`, not a copy of it. The
 //! pinned revision and sha256s live in the daemon's `install.rs` and are the
 //! reason an install can be trusted; a second downloader in the window would
 //! be a second place for them to be wrong. The size comes from the same
@@ -33,10 +33,10 @@ use std::process::{Command, Stdio};
 /// but holds a damaged file is not this - the console can still open, and the
 /// fix is offered from Overview's banner instead, under Repair.
 pub fn needed() -> bool {
-    !flow_paths::speech_model_dir().is_dir()
+    !offhand_paths::speech_model_dir().is_dir()
 }
 
-/// One line of `flow install --porcelain`, or the end of it.
+/// One line of `offhand install --porcelain`, or the end of it.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Total bytes this install will fetch.
@@ -63,15 +63,15 @@ pub enum Event {
 /// There is no way to cancel this from the caller, and no `Drop` reaches back
 /// to kill it either - the model is not optional, so there is nothing a user
 /// could decide against once this has started. If the window closes
-/// mid-download, `flow install --porcelain` keeps running and finishes
+/// mid-download, `offhand install --porcelain` keeps running and finishes
 /// unattended: the fetch is idempotent and `curl -C -` resumes, so an orphaned
-/// install completing the thing Flow actually needs is the outcome, not a
+/// install completing the thing Offhand actually needs is the outcome, not a
 /// leak to guard against.
 pub fn install() -> impl iced::futures::Stream<Item = Event> {
     let (tx, rx) = iced::futures::channel::mpsc::unbounded();
 
     std::thread::spawn(move || {
-        let mut child = match Command::new(crate::system::flow_program())
+        let mut child = match Command::new(crate::system::offhand_program())
             .args(["install", "--porcelain"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -89,7 +89,7 @@ pub fn install() -> impl iced::futures::Stream<Item = Event> {
                     " Is it on your PATH?"
                 };
                 let _ = tx.unbounded_send(Event::Failed(format!(
-                    "Couldn't run flow install ({err}).{hint}"
+                    "Couldn't run offhand install ({err}).{hint}"
                 )));
                 return;
             }
@@ -119,7 +119,7 @@ pub fn install() -> impl iced::futures::Stream<Item = Event> {
                 use std::io::Read;
                 let _ = stderr.read_to_string(&mut reason);
             }
-            // The first line, not the last. `flow install` returns an anyhow
+            // The first line, not the last. `offhand install` returns an anyhow
             // error from `main`, so what reaches stderr is "Error: <what we
             // said>" followed by a "Caused by:" chain - and taking the end of
             // that put the innermost mechanical cause on screen ("The requested
@@ -185,7 +185,7 @@ pub struct State {
     /// "0 MB of 2.6 GB" appeared at full strength in a column that had already
     /// settled, which is the one thing on this screen that still popped.
     pub count_in: f32,
-    /// True once `flow install` has been spawned. The intro plays first so
+    /// True once `offhand install` has been spawned. The intro plays first so
     /// hashing what is already on disk cannot hitch the fade.
     pub spawned: bool,
     /// True once anything has actually come down the wire. Sticky, so the
@@ -194,7 +194,7 @@ pub struct State {
     pub fetching: bool,
     /// Set after setup starts the daemon, so nothing issues that start twice.
     pub daemon_started: bool,
-    /// True while systemd is starting Flow.
+    /// True while systemd is starting Offhand.
     pub starting_daemon: bool,
     /// Starting the daemon is separate from installing the model. Its error
     /// lives here so setup can offer the right retry instead of downloading
@@ -330,13 +330,13 @@ impl State {
     pub fn caption(&self) -> String {
         match self.failed() {
             Some(why) => why.to_string(),
-            None if self.starting_daemon => "Starting Flow…".to_string(),
+            None if self.starting_daemon => "Starting Offhand…".to_string(),
             // The last thing on screen, and the reason the outro holds before
             // it runs. A repair that finds everything right is over in about a
             // second, and a second that ends in silence reads as a button that
             // did not work - so it ends on the answer instead.
             None if self.finished() => match self.fetching {
-                true => "Flow is ready".to_string(),
+                true => "Offhand is ready".to_string(),
                 false => "Nothing to fix".to_string(),
             },
             // Hashing a missing file is microseconds, so on a first run this is
@@ -381,7 +381,7 @@ impl State {
 fn action_label(state: &State) -> Option<&'static str> {
     state.failed().map(|_| {
         if state.start_error.is_some() {
-            "Start Flow"
+            "Start Offhand"
         } else {
             "Try again"
         }
@@ -859,7 +859,7 @@ mod tests {
             start_error: Some("systemd user session is unavailable".into()),
             ..speech()
         };
-        assert_eq!(action_label(&state), Some("Start Flow"));
+        assert_eq!(action_label(&state), Some("Start Offhand"));
     }
 
     /// The ring approaches the real figure and settles, rather than snapping
@@ -1014,7 +1014,7 @@ mod closing_line {
 
     #[test]
     fn a_run_that_fetched_something_ends_on_the_install() {
-        assert_eq!(done(true).caption(), "Flow is ready");
+        assert_eq!(done(true).caption(), "Offhand is ready");
     }
 
     #[test]

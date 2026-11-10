@@ -1,14 +1,14 @@
 use anyhow::{Context, Result, anyhow};
 use std::path::PathBuf;
 
-/// `flow start` / `flow stop` signal the daemon. Start alone is enough for
+/// `offhand start` / `offhand stop` signal the daemon. Start alone is enough for
 /// hold-to-talk: the daemon watches the physical chord and stops on release.
 /// An explicit stop remains safe if nothing is recording.
 pub const START: libc::c_int = signal_hook::consts::SIGUSR1;
 pub const STOP: libc::c_int = signal_hook::consts::SIGUSR2;
 
 pub fn pid_file() -> PathBuf {
-    flow_paths::pid_file()
+    offhand_paths::pid_file()
 }
 
 pub fn write_pid() -> Result<()> {

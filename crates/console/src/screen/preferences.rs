@@ -1,4 +1,4 @@
-//! Everything you can change about how Flow behaves, on one page.
+//! Everything you can change about how Offhand behaves, on one page.
 //!
 //! Dictation and Audio used to be two rail sections holding four rows each,
 //! which meant a click to find out whether the thing you wanted was on the
@@ -149,11 +149,11 @@ impl Console {
         ]
     }
 
-    /// What Flow listens to, and what is done to the room before it does.
-    /// Ducking belongs here rather than with the sounds Flow makes: it exists to
+    /// What Offhand listens to, and what is done to the room before it does.
+    /// Ducking belongs here rather than with the sounds Offhand makes: it exists to
     /// keep your speakers out of the microphone, which is a fact about the
     /// input, not about the output.
-    /// Flow transcribes and refines through OpenRouter, so this key is not a
+    /// Offhand transcribes and refines through OpenRouter, so this key is not a
     /// preference - without it the hotkey has nothing to talk to. The box is
     /// secure and never shows the saved key back in full: what is on disk is a
     /// credential, and re-displaying it only invites a shoulder-surf. A
@@ -248,7 +248,7 @@ impl Console {
         let note = if self.updating {
             "Downloading and verifying the release…".to_string()
         } else if matches!(self.update, update::Status::Installed(_)) {
-            "Restart Flow to apply.".to_string()
+            "Restart Offhand to apply.".to_string()
         } else if on {
             update::running().to_string()
         } else {
@@ -283,7 +283,7 @@ impl Console {
 
     /// The line under Input, which is the microphone itself.
     ///
-    /// It used to explain the feature here - "Only Flow. Your system default is
+    /// It used to explain the feature here - "Only Offhand. Your system default is
     /// untouched." - while the device name sat in the value slot on the right,
     /// squeezed into a column shared with the "Lower other apps" slider and
     /// clipped at 26 characters because that is all that fits there. Two
@@ -349,7 +349,7 @@ impl Console {
             // the same string on two rows stacked one above the other.
             match (&self.input, cfg!(target_os = "macos")) {
                 // A headset that becomes the default would put itself into
-                // call mode the moment Flow opened it, so Flow does not follow
+                // call mode the moment Offhand opened it, so Offhand does not follow
                 // it there.
                 (Some(_), true) => "Auto-detect (built-in over Bluetooth)",
                 (Some(_), false) => "Auto-detect (system default)",
@@ -408,7 +408,7 @@ impl Console {
                     ]
                     .align_y(iced::Center),
                     Space::new().height(4),
-                    text("Flow records from this. Your system default stays as it is.")
+                    text("Offhand records from this. Your system default stays as it is.")
                         .size(MICRO)
                         .color(dissolve(FAINT, lift)),
                 ])

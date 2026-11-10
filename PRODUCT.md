@@ -31,13 +31,13 @@ Linux-only. No second platform is in the product.
 Two surfaces, one product:
 
 - The **island** — a Wayland overlay that appears only while recording. This is the daily interface.
-- The **console** (`flow-console`, launcher name **Flow**) — Overview, History, Dictation, Audio, Vocabulary, Models, About. Settings, history and vocabulary live here. The daemon never carries this window.
+- The **console** (`offhand-console`, launcher name **Offhand**) — Overview, History, Dictation, Audio, Vocabulary, Models, About. Settings, history and vocabulary live here. The daemon never carries this window.
 
 On a machine with no speech model the console opens on **setup** instead of the rail: one centred page that downloads both models and starts the daemon at the end. It names the card refining will use in a single quiet line and says nothing else about hardware — a person installing a dictation tool is not shopping for an inference backend. About has a Run setup control that re-enters the same screen to verify the models and repair anything missing. The installer script no longer fetches the models; the window does, so a 3 GB download happens somewhere it can be watched and skipped rather than in a terminal.
 
-The daemon is the systemd user unit `flow.service`. Dictation is hold-to-talk: default chord `super+shift+d`, watched directly from evdev. A compositor bind calling `flow start` / `flow stop` is a second path, not the only one. Release stops; this is never a toggle.
+The daemon is the systemd user unit `offhand.service`. Dictation is hold-to-talk: default chord `super+shift+d`, watched directly from evdev. A compositor bind calling `offhand start` / `offhand stop` is a second path, not the only one. Release stops; this is never a toggle.
 
-Audio follows the system default input (PipeWire or ALSA). Other apps duck while recording. Config is optional and lives at `~/.config/flow/config.toml`; vocabulary is `~/.config/flow/vocabulary.txt`, one term per line, applied by the refining model. History is a local transcript log.
+Audio follows the system default input (PipeWire or ALSA). Other apps duck while recording. Config is optional and lives at `~/.config/offhand/config.toml`; vocabulary is `~/.config/offhand/vocabulary.txt`, one term per line, applied by the refining model. History is a local transcript log.
 
 ## Capabilities and Constraints
 
@@ -68,18 +68,18 @@ Audio follows the system default input (PipeWire or ALSA). Other apps duck while
 
 ## Brand Commitments
 
-Name: **Flow**. MIT.
+Name: **Offhand**. MIT.
 
 Voice is the product's own copy: short, concrete, spoken as sentences. The one-line claim is "Push-to-talk dictation that runs entirely on your own machine." The one-line use is "Hold a key, talk, let go."
 
-No separate logo, wordmark, or brand kit is on hand. The island and the console must read as one product.
+The brand files live in `branding/offhand/`: the name Offhand, a wordmark in Funnel Display bold lowercase, a mark of three flat bars, and ink `#16181b` with bone `#f3efe6`. The island and the console must read as one product.
 
 ## Evidence on Hand
 
 - README and TROUBLESHOOTING at the repo root; config keys in `packaging/config.template.toml`.
 - Island implementation: `src/overlay.rs`.
 - Console: `crates/console/` (iced).
-- Desktop entry: `packaging/flow-console.desktop`.
+- Desktop entry: `packaging/offhand-console.desktop`.
 
 No testimonials, customers, benchmarks for marketing, or press. Future work must not invent them. Model speed and hardware notes in the repo are engineering measurements, not claims to quote as social proof.
 

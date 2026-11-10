@@ -1,4 +1,4 @@
-//! `flow install` - fetch the local speech model and seed the config templates.
+//! `offhand install` - fetch the local speech model and seed the config templates.
 //!
 //! The model is pinned to an immutable commit rather than a branch, and
 //! verified by sha256 before it is put in place. A partial download lands at
@@ -90,12 +90,12 @@ pub fn total_bytes(assets: &[Asset]) -> u64 {
 }
 
 pub fn models_root() -> PathBuf {
-    flow_paths::models_dir()
+    offhand_paths::models_dir()
 }
 
 // ponytail: sha256sum from coreutils rather than a hashing crate. Already
 // shelling out to curl for the download, and this keeps a 2.4GB verify out of
-// process memory. Swap in the sha2 crate if flow ever needs to run somewhere
+// process memory. Swap in the sha2 crate if offhand ever needs to run somewhere
 // without it. macOS ships `shasum` instead and prints the same
 // `<hash>  <path>` line.
 pub fn sha256(path: &Path) -> Result<String> {
@@ -121,7 +121,7 @@ pub fn sha256(path: &Path) -> Result<String> {
 }
 
 /// Already correct on disk? Then it is done - this is what makes re-running
-/// `flow install` cheap and makes a failed run resumable.
+/// `offhand install` cheap and makes a failed run resumable.
 fn is_installed(path: &Path, asset: &Asset) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.len() == asset.bytes)
         && sha256(path).is_ok_and(|hash| hash == asset.sha256)
@@ -212,7 +212,7 @@ fn fetch(asset: &Asset, root: &Path, base: u64, report: &mut dyn FnMut(Event)) -
     }
 
     // `-C -` resumes from whatever a previous interrupted run left in the part
-    // file, so a killed `flow install` can pick up where it stopped rather than
+    // file, so a killed `offhand install` can pick up where it stopped rather than
     // refetching 2.4GB from zero. curl draws its own progress bar here - there
     // is no second renderer to keep in step with any more.
     let part = path.with_extension("part");
@@ -301,7 +301,7 @@ fn seed_templates(report: &mut dyn FnMut(Event)) -> Result<()> {
             include_str!("../packaging/config.template.toml"),
         ),
         (
-            flow_paths::vocabulary_file(),
+            offhand_paths::vocabulary_file(),
             include_str!("../packaging/vocabulary.template.txt"),
         ),
     ] {
@@ -351,7 +351,7 @@ pub fn run() -> Result<()> {
     fetch_all(SPEECH, &root)?;
     seed_templates(&mut |_| {})?;
     eprintln!(
-        "\ndone. add an OpenRouter key in the console's Settings for the cleanup model, then `flow daemon`."
+        "\ndone. add an OpenRouter key in the console's Settings for the cleanup model, then `offhand daemon`."
     );
     Ok(())
 }
@@ -362,7 +362,7 @@ pub fn run() -> Result<()> {
 /// and a sha256 pass over the 2.45GB `encoder.onnx.data` is real time to spend
 /// on every open - length is what catches how installs actually break: a file
 /// deleted, a download cut short, a disk that filled. Bytes that are wrong at
-/// the right length are what `flow install` hashes for, once someone asks it
+/// the right length are what `offhand install` hashes for, once someone asks it
 /// to repair.
 pub fn damaged() -> Vec<&'static Asset> {
     damaged_in(&models_root())
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn seeding_never_overwrites_what_is_already_there() {
-        let path = std::env::temp_dir().join(format!("flow-seed-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("offhand-seed-{}.toml", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         assert!(seed(&path, "first").unwrap(), "a fresh path is written");

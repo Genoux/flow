@@ -62,8 +62,8 @@ impl Injector {
         // holds; the user's old pasteboard is deliberately not restored here.
         ensure!(
             CGPreflightPostEventAccess(),
-            "macOS will not let flow send keystrokes - grant Accessibility to the app running \
-             flow in System Settings > Privacy & Security"
+            "macOS will not let offhand send keystrokes - grant Accessibility to the app running \
+             offhand in System Settings > Privacy & Security"
         );
 
         let modifiers_clear =

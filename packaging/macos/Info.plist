@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>com.genoux.flow</string>
+  <string>com.genoux.offhand</string>
   <key>CFBundleName</key>
-  <string>Flow</string>
+  <string>Offhand</string>
   <key>CFBundleDisplayName</key>
-  <string>Flow</string>
+  <string>Offhand</string>
   <key>CFBundleExecutable</key>
-  <string>flow-console</string>
+  <string>offhand-console</string>
   <key>CFBundleIconFile</key>
-  <string>flow</string>
+  <string>offhand</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

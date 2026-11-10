@@ -1,4 +1,4 @@
-//! Flow must capture from whatever the system calls its default input, with no
+//! Offhand must capture from whatever the system calls its default input, with no
 //! device of its own baked in - switching source in the OS is the only control.
 
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -7,7 +7,7 @@ fn id(device: &cpal::Device) -> String {
     device.id().map(|i| i.to_string()).unwrap_or_default()
 }
 
-/// The regression guard: reintroducing a preferred-device match would pin Flow to
+/// The regression guard: reintroducing a preferred-device match would pin Offhand to
 /// one soundcard and quietly ignore the user's choice.
 #[test]
 fn the_capture_device_is_the_system_default() {
@@ -17,11 +17,11 @@ fn the_capture_device_is_the_system_default() {
         return;
     };
 
-    let opened = flow::audio::open_device().expect("open");
+    let opened = offhand::audio::open_device().expect("open");
     assert_eq!(
         id(&opened),
         id(&expected),
-        "flow picked its own device instead of the system default"
+        "offhand picked its own device instead of the system default"
     );
 }
 
@@ -30,7 +30,7 @@ fn the_capture_device_is_the_system_default() {
 /// hardcoded "pipewire" device be deleted, so it is worth holding onto.
 #[test]
 fn the_default_device_converts_to_what_the_model_wants() {
-    let device = flow::audio::open_device().expect("open");
+    let device = offhand::audio::open_device().expect("open");
 
     // A listed device is not a working one. CI runners offer ALSA's "default"
     // with no card behind it, so the old is_none() guard waved them through and
@@ -42,11 +42,11 @@ fn the_default_device_converts_to_what_the_model_wants() {
         return;
     }
 
-    let capture = flow::audio::Capture::open(&device);
+    let capture = offhand::audio::Capture::open(&device);
     assert!(
         capture.is_ok(),
         "default device refused {}Hz mono: {:?}",
-        flow::audio::SAMPLE_RATE,
+        offhand::audio::SAMPLE_RATE,
         capture.err()
     );
 }

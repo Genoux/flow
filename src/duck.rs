@@ -80,7 +80,7 @@ pub fn level() -> u32 {
 static GENERATION: AtomicUsize = AtomicUsize::new(0);
 
 fn state_file() -> PathBuf {
-    flow_paths::duck_state_file()
+    offhand_paths::duck_state_file()
 }
 
 /// The originals of a restore that is still ramping back. A dictation that

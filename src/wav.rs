@@ -72,8 +72,10 @@ mod tests {
 
     #[test]
     fn recordings_are_private_and_readable_after_rewrite() {
-        let path =
-            std::env::temp_dir().join(format!("flow-wav-permissions-{}.wav", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "offhand-wav-permissions-{}.wav",
+            std::process::id()
+        ));
         for existing_mode in [None, Some(0o644)] {
             if let Some(mode) = existing_mode {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();

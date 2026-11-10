@@ -128,7 +128,7 @@ pub(crate) const ERR: Color = Color {
 pub(crate) const OK: Color = ACCENT;
 /// "Something needs you" - and the same amber as STARTING, on the same
 /// principle as OK above. One meaning per colour: green invites, amber warns,
-/// red is a failure. A broken install is not a failure of Flow's, it is a job
+/// red is a failure. A broken install is not a failure of Offhand's, it is a job
 /// waiting to be done, so it takes the middle one.
 pub(crate) const WARN: Color = STARTING;
 pub(crate) const ON_ACCENT: Color = Color {

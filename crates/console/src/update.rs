@@ -1,4 +1,4 @@
-//! Whether a newer Flow exists than the one running, and installing it.
+//! Whether a newer Offhand exists than the one running, and installing it.
 //!
 //! Asks GitHub for the published releases and compares the highest tag this
 //! build may be offered against its own version. Installing is the release tarball unpacked into a
@@ -178,7 +178,7 @@ fn pick_channel(json: &str, channel: crate::system::Channel) -> Result<Option<St
 /// job failed - and every release before the Mac build existed has none. Picking
 /// one of those would offer an install that can only fail on a 404.
 fn has_assets(release: &serde_json::Value, tag: &str) -> bool {
-    let tarball = format!("flow-{tag}-{TARGET}.tar.gz");
+    let tarball = format!("offhand-{tag}-{TARGET}.tar.gz");
     let checksum = format!("{tarball}.sha256");
     let has = |wanted: &str| {
         release["assets"]
@@ -193,12 +193,12 @@ fn has_assets(release: &serde_json::Value, tag: &str) -> bool {
 fn install_channel(tag: &str, channel: crate::system::Channel) -> Result<(), String> {
     semver::Version::parse(tag.strip_prefix('v').ok_or("Invalid release tag")?)
         .map_err(|_| "Invalid release tag")?;
-    let name = format!("flow-{tag}-{TARGET}");
+    let name = format!("offhand-{tag}-{TARGET}");
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("flow-update-{}-{unique}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("offhand-update-{}-{unique}", std::process::id()));
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -267,17 +267,17 @@ const TARGET: &str = if cfg!(target_os = "macos") {
 };
 
 const BINARIES: &str = if cfg!(target_os = "macos") {
-    "Flow.app"
+    "Offhand.app"
 } else {
     "bin"
 };
 
-/// Where a release keeps `flow` and `flow-console`.
+/// Where a release keeps `offhand` and `offhand-console`.
 #[derive(Clone, Copy)]
 enum Layout {
     /// Side by side in `bin/`, named with a channel suffix.
     Flat,
-    /// In Flow.app, `flow` inside the helper bundle and not beside the console.
+    /// In Offhand.app, `offhand` inside the helper bundle and not beside the console.
     MacBundle,
 }
 
@@ -291,7 +291,7 @@ impl Layout {
     fn path(self, dir: &std::path::Path, name: &str, suffix: &str) -> std::path::PathBuf {
         match (self, name) {
             (Self::Flat, _) => dir.join(format!("{name}{suffix}")),
-            (Self::MacBundle, "flow") => dir.join(flow_paths::AGENT_PROGRAM),
+            (Self::MacBundle, "offhand") => dir.join(offhand_paths::AGENT_PROGRAM),
             (Self::MacBundle, _) => dir.join("Contents/MacOS").join(name),
         }
     }
@@ -306,7 +306,7 @@ fn verify_binaries(
     use std::os::unix::fs::PermissionsExt;
     let expected = tag.trim_start_matches('v');
     let version = semver::Version::parse(expected).map_err(|e| e.to_string())?;
-    for name in ["flow", "flow-console"] {
+    for name in ["offhand", "offhand-console"] {
         let path = layout.path(dir, name, suffix);
         if !path
             .metadata()
@@ -315,7 +315,7 @@ fn verify_binaries(
             return Err(format!("{name} is missing or not executable."));
         }
         // Releases before 0.3.1 open a window for --version; retain channel rollback.
-        if name == "flow-console" && (version.major, version.minor, version.patch) < (0, 3, 1) {
+        if name == "offhand-console" && (version.major, version.minor, version.patch) < (0, 3, 1) {
             continue;
         }
         let output = crate::system::run_for(
@@ -412,7 +412,7 @@ mod tests {
     fn installation_is_verified(layout: super::Layout, suffix: &str) {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!(
-            "flow-version-test-{}-{}",
+            "offhand-version-test-{}-{}",
             std::process::id(),
             suffix.len()
         ));
@@ -424,21 +424,24 @@ mod tests {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         };
         let verify = |tag: &str| super::verify_binaries(layout, &dir, suffix, tag);
-        write("flow", "echo flow 0.3.1");
+        write("offhand", "echo offhand 0.3.1");
         assert!(verify("v0.3.1").is_err());
-        write("flow-console", "echo flow-console 0.3.0");
+        write("offhand-console", "echo offhand-console 0.3.0");
         assert!(verify("v0.3.1").is_err());
-        write("flow-console", "echo flow-console 0.3.1; exit 1");
+        write("offhand-console", "echo offhand-console 0.3.1; exit 1");
         assert!(verify("v0.3.1").is_err());
-        write("flow-console", "echo flow-console 0.3.1");
+        write("offhand-console", "echo offhand-console 0.3.1");
         assert!(verify("v0.3.1").is_ok());
-        write("flow", "echo flow 0.3.1-experimental.1");
+        write("offhand", "echo offhand 0.3.1-experimental.1");
         assert!(verify("v0.3.1-experimental.1").is_err());
-        write("flow-console", "echo flow-console 0.3.1-experimental.1");
-        assert!(verify("v0.3.1-experimental.1").is_ok());
-        write("flow", "echo flow 0.3.0");
         write(
-            "flow-console",
+            "offhand-console",
+            "echo offhand-console 0.3.1-experimental.1",
+        );
+        assert!(verify("v0.3.1-experimental.1").is_ok());
+        write("offhand", "echo offhand 0.3.0");
+        write(
+            "offhand-console",
             &format!("touch '{}'", dir.join("launched").display()),
         );
         assert!(verify("v0.3.0").is_ok());
@@ -447,20 +450,20 @@ mod tests {
     }
 
     #[test]
-    fn the_mac_layout_puts_flow_in_the_helper_and_the_console_beside_it() {
-        let app = std::path::Path::new("/Flow.app");
+    fn the_mac_layout_puts_offhand_in_the_helper_and_the_console_beside_it() {
+        let app = std::path::Path::new("/Offhand.app");
         assert_eq!(
-            super::Layout::MacBundle.path(app, "flow-console", ""),
-            app.join("Contents/MacOS/flow-console")
+            super::Layout::MacBundle.path(app, "offhand-console", ""),
+            app.join("Contents/MacOS/offhand-console")
         );
         assert_eq!(
-            super::Layout::MacBundle.path(app, "flow", ""),
-            app.join("Contents/Helpers/Flow Agent.app/Contents/MacOS/flow")
+            super::Layout::MacBundle.path(app, "offhand", ""),
+            app.join("Contents/Helpers/Offhand Agent.app/Contents/MacOS/offhand")
         );
     }
 
     fn assets_of(tag: &str) -> String {
-        let tarball = format!("flow-{tag}-{}.tar.gz", super::TARGET);
+        let tarball = format!("offhand-{tag}-{}.tar.gz", super::TARGET);
         format!(r#"[{{"name":"{tarball}"}},{{"name":"{tarball}.sha256"}}]"#)
     }
 
@@ -543,7 +546,7 @@ mod tests {
 
     #[test]
     fn a_tarball_without_its_checksum_is_not_enough() {
-        let tarball = format!("flow-v0.5.0-{}.tar.gz", super::TARGET);
+        let tarball = format!("offhand-v0.5.0-{}.tar.gz", super::TARGET);
         let releases = format!(
             r#"[{{"tag_name":"v0.5.0","draft":false,"prerelease":false,"assets":[{{"name":"{tarball}"}}]}}]"#
         );

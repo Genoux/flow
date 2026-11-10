@@ -1,4 +1,4 @@
-//! Does the compositor accept the keymap Flow uploads?
+//! Does the compositor accept the keymap Offhand uploads?
 //!
 //! The keymap in `wayland_vk` is a hand-written xkb string, and libxkbcommon is
 //! the only thing that can say whether it parses. A compositor that rejects it
@@ -12,7 +12,7 @@
 //!   cargo test --release --test keymap_live -- --ignored --nocapture
 #![cfg(target_os = "linux")]
 
-use flow::wayland_vk::VirtualKeyboard;
+use offhand::wayland_vk::VirtualKeyboard;
 use std::time::Duration;
 
 #[test]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Flow.app and install it for this user. Reached through
+# Build Offhand.app and install it for this user. Reached through
 # packaging/install.sh on macOS; the flags are the same.
 #
 # Everything lands under $HOME - no sudo.
@@ -34,13 +34,13 @@ esac
 
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 apps="$HOME/Applications"
-app="$apps/Flow.app"
+app="$apps/Offhand.app"
 agents="$HOME/Library/LaunchAgents"
-label=com.genoux.flow
-tray_label=com.genoux.flow.tray
+label=com.genoux.offhand
+tray_label=com.genoux.offhand.tray
 # ponytail: launchd appends here forever and nothing rotates it; a few lines per
 # dictation makes that years of headroom. newsyslog.d can rotate it if not.
-log="$HOME/Library/Logs/Flow/flow.log"
+log="$HOME/Library/Logs/Offhand/offhand.log"
 domain="gui/$(id -u)"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -79,18 +79,18 @@ reload_agent() {
 
 mkdir -p "$apps" "$bin_dir" "$agents" "$(dirname "$log")"
 # Staged beside the destination so the swap below is a rename on one filesystem.
-stage="$(mktemp -d "$apps/.flow-install.XXXXXXXX")"
+stage="$(mktemp -d "$apps/.offhand-install.XXXXXXXX")"
 trap 'rm -rf "$stage"' EXIT
-if [ -d "$repo/Flow.app" ]; then
+if [ -d "$repo/Offhand.app" ]; then
   # --noqtn: a tarball fetched by a browser marks everything in it quarantined,
   # and Gatekeeper refuses a quarantined app that Apple did not sign.
-  ditto --noqtn "$repo/Flow.app" "$stage/Flow.app"
+  ditto --noqtn "$repo/Offhand.app" "$stage/Offhand.app"
 else
   say "Building (this takes a few minutes the first time)"
   cargo build --release --manifest-path "$repo/Cargo.toml"
   cargo build --release --manifest-path "$repo/crates/console/Cargo.toml"
-  daemon="$(target_dir "$repo/Cargo.toml")/release/flow"
-  console="$(target_dir "$repo/crates/console/Cargo.toml")/release/flow-console"
+  daemon="$(target_dir "$repo/Cargo.toml")/release/offhand"
+  console="$(target_dir "$repo/crates/console/Cargo.toml")/release/offhand-console"
   for binary in "$daemon" "$console"; do
     if [ ! -x "$binary" ]; then
       echo "built, but $binary is not there - cargo put it somewhere unexpected" >&2
@@ -98,28 +98,39 @@ else
     fi
   done
   version="$("$daemon" --version | awk '{print $2}')"
-  say "Bundling and signing Flow.app"
+  say "Bundling and signing Offhand.app"
   bash "$repo/packaging/macos/bundle.sh" "$daemon" "$console" "$version" "$stage"
 fi
 
-say "Installing Flow.app into $apps"
+# An install from when this was called Flow: its agents would run a second
+# daemon and a second menu bar item beside the new ones. The config and the
+# speech model are not touched here: offhand moves them the first time it runs.
+for flow_label in com.genoux.flow com.genoux.flow.tray; do
+  launchctl bootout "$domain/$flow_label" 2>/dev/null || true
+  rm -f "$agents/$flow_label.plist"
+done
+rm -rf "$apps/Flow.app"
+# Only the symlink the Flow installer made; a hand-installed binary is not ours.
+if [ -L "$bin_dir/flow" ]; then rm -f "$bin_dir/flow"; fi
+
+say "Installing Offhand.app into $apps"
 rm -rf "$app.old"
 [ ! -e "$app" ] || mv "$app" "$app.old"
-mv "$stage/Flow.app" "$app" || { [ ! -e "$app.old" ] || mv "$app.old" "$app"; exit 1; }
+mv "$stage/Offhand.app" "$app" || { [ ! -e "$app.old" ] || mv "$app.old" "$app"; exit 1; }
 rm -rf "$app.old"
 
-ln -sfn "$app/Contents/Helpers/Flow Agent.app/Contents/MacOS/flow" "$bin_dir/flow"
+ln -sfn "$app/Contents/Helpers/Offhand Agent.app/Contents/MacOS/offhand" "$bin_dir/offhand"
 
 # launchd expands neither ~ nor $HOME, so the template gets absolute paths.
 sed -e "s|@APP@|$app|g" -e "s|@LOG@|$log|g" \
-  "$repo/packaging/macos/com.genoux.flow.plist" > "$agents/$label.plist"
+  "$repo/packaging/macos/com.genoux.offhand.plist" > "$agents/$label.plist"
 plutil -lint "$agents/$label.plist" >/dev/null
 sed -e "s|@APP@|$app|g" -e "s|@LOG@|$log|g" \
   "$repo/packaging/macos/$tray_label.plist" > "$agents/$tray_label.plist"
 plutil -lint "$agents/$tray_label.plist" >/dev/null
 
 if "$models"; then
-  "$bin_dir/flow" install
+  "$bin_dir/offhand" install
 fi
 
 loaded=false
@@ -146,15 +157,15 @@ fi
 say "Done"
 case ":$PATH:" in
   *":$bin_dir:"*) ;;
-  *) printf '\n\033[1;33m%s\033[0m\n' "Warning: $bin_dir is not on your PATH - \`flow\` will not be found."
+  *) printf '\n\033[1;33m%s\033[0m\n' "Warning: $bin_dir is not on your PATH - \`offhand\` will not be found."
      ;;
 esac
 cat <<EOF
-Open Flow from $apps to finish setting up.
+Open Offhand from $apps to finish setting up.
 
 macOS will ask for three permissions the first time each is needed:
-Microphone, Input Monitoring and Accessibility. They are tied to Flow's
+Microphone, Input Monitoring and Accessibility. They are tied to Offhand's
 signing certificate, so they persist across updates.
 
-Logs:  flow logs
+Logs:  offhand logs
 EOF

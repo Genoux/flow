@@ -21,7 +21,7 @@ const KEEP: usize = 500;
 const LIMIT: usize = 1_000;
 
 pub fn path() -> PathBuf {
-    flow_paths::history_file()
+    offhand_paths::history_file()
 }
 
 /// One finished dictation, as the file records it.
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn the_record_says_why_the_text_looks_like_that() {
         let path =
-            std::env::temp_dir().join(format!("flow-history-outcome-{}", std::process::id()));
+            std::env::temp_dir().join(format!("offhand-history-outcome-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         append_to(
             &path,
@@ -177,8 +177,10 @@ mod tests {
 
     #[test]
     fn history_stays_private_after_append_and_trim() {
-        let path =
-            std::env::temp_dir().join(format!("flow-history-permissions-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "offhand-history-permissions-{}",
+            std::process::id()
+        ));
         append_to(&path, record("private words", "private raw"));
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,

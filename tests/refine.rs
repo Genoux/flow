@@ -4,14 +4,14 @@
 //! a model swap would break literal expectations, but "must not answer the
 //! question" has to hold for every model we ever ship.
 
-use flow::refine::{Cleanup, Style};
+use offhand::refine::{Cleanup, Style};
 
 /// The level plus the two terms the cases lean on, and deliberately nothing
 /// read from this machine: `Style::current` would fold in whatever is in the
 /// developer's own `vocabulary.txt`, and a suite that grades the prompt has to
 /// grade the same prompt everywhere.
 fn style(level: Cleanup) -> Style {
-    Style::new(level).with_vocabulary(vec!["Flow".into(), "Hyprland".into()])
+    Style::new(level).with_vocabulary(vec!["Offhand".into(), "Hyprland".into()])
 }
 
 struct Case {
@@ -175,19 +175,19 @@ const CASES: &[Case] = &[
     },
 ];
 
-/// Which device to refine on, from `FLOW_TEST_GPU`, or automatic when unset.
+/// Which device to refine on, from `OFFHAND_TEST_GPU`, or automatic when unset.
 ///
 /// Skipped without a key, the same way this used to skip without the weights.
 ///
 /// These now cost real OpenRouter requests, so they are opt-in by configuration
 /// rather than by a flag: a machine set up to dictate is a machine that can run
 /// them, and one that is not should not be failing on a network call.
-fn load() -> Option<flow::refine::Refiner> {
-    let Some(key) = flow::config::Config::load().openrouter_key else {
+fn load() -> Option<offhand::refine::Refiner> {
+    let Some(key) = offhand::config::Config::load().openrouter_key else {
         eprintln!("skipping: no OpenRouter key configured");
         return None;
     };
-    Some(flow::refine::Refiner::new(key))
+    Some(offhand::refine::Refiner::new(key))
 }
 
 /// One test, not several: cargo runs tests as parallel threads, and two
@@ -300,7 +300,7 @@ fn refining_behaves() {
         Err(err) => eprintln!("\n[language] guard caught it: {err}"),
         Ok(text) => {
             eprintln!("\n[language] -> {text:?}");
-            if flow::refine::changed_language(&text, quebecois) {
+            if offhand::refine::changed_language(&text, quebecois) {
                 failures.push(format!(
                     "translated french and the guard missed it: {text:?}"
                 ));
@@ -399,7 +399,7 @@ fn refining_behaves() {
 /// Both predecessors here vary what the prompt can vary below that boundary: the
 /// detected language.
 fn a_dictation_does_not_depend_on_the_one_before_it(
-    refiner: &flow::refine::Refiner,
+    refiner: &offhand::refine::Refiner,
     failures: &mut Vec<String>,
 ) {
     let long = std::time::Duration::from_secs(120);
@@ -431,10 +431,10 @@ fn a_dictation_does_not_depend_on_the_one_before_it(
 #[test]
 #[ignore = "sends a test phrase to OpenRouter using the configured key"]
 fn light_removes_fillers_and_duplicates_within_the_shipping_budget() {
-    let key = flow::config::Config::load()
+    let key = offhand::config::Config::load()
         .openrouter_key
         .expect("configured OpenRouter key");
-    let refiner = flow::refine::Refiner::new(key);
+    let refiner = offhand::refine::Refiner::new(key);
     let raw = "um um I would like like to send the report uh tomorrow";
     let started = std::time::Instant::now();
     let cleaned = refiner

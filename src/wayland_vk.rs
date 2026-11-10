@@ -2,19 +2,19 @@
 //!
 //! # Why this exists rather than uinput alone
 //!
-//! uinput types by pressing physical keys, and Flow pastes while the
+//! uinput types by pressing physical keys, and Offhand pastes while the
 //! push-to-talk chord may still be held. Ctrl+V pressed underneath a held
 //! Super+Shift arrives at the compositor as Super+Shift+Ctrl+V, which is a
 //! different chord and usually a window-manager binding rather than a paste.
 //!
 //! The virtual-keyboard protocol declares the depressed-modifier mask as a
-//! number instead of pressing modifier keys. Flow can therefore state "Control
+//! number instead of pressing modifier keys. Offhand can therefore state "Control
 //! is down, nothing else is" regardless of what the user's fingers are doing,
-//! and the application receives exactly the chord Flow meant to send.
+//! and the application receives exactly the chord Offhand meant to send.
 //!
 //! # Scope
 //!
-//! Flow pastes; it never types. The uploaded keymap defines the three keys the
+//! Offhand pastes; it never types. The uploaded keymap defines the three keys the
 //! paste chord can contain and nothing else, and [`VirtualKeyboard::send_combo`]
 //! refuses anything outside it rather than silently sending a key the
 //! compositor would read as blank.
@@ -52,7 +52,7 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 const SHIFT_MASK: u32 = 1 << 0;
 const CONTROL_MASK: u32 = 1 << 2;
 
-/// The keymap Flow uploads.
+/// The keymap Offhand uploads.
 ///
 /// `include "complete"` pulls the stock types and compat rules from
 /// xkeyboard-config, which every desktop that runs libxkbcommon already has.
@@ -61,18 +61,18 @@ const CONTROL_MASK: u32 = 1 << 2;
 ///
 /// The modifier keys are declared and bound with `modifier_map` because a mask
 /// bit only means Control if some key in the keymap makes Control real. They
-/// are never pressed - the mask is what Flow sends.
+/// are never pressed - the mask is what Offhand sends.
 const KEYMAP: &str = r#"xkb_keymap {
-xkb_keycodes "flow" {
+xkb_keycodes "offhand" {
 minimum = 8;
 maximum = 55;
 <K37> = 37;
 <K50> = 50;
 <K55> = 55;
 };
-xkb_types "flow" { include "complete" };
-xkb_compatibility "flow" { include "complete" };
-xkb_symbols "flow" {
+xkb_types "offhand" { include "complete" };
+xkb_compatibility "offhand" { include "complete" };
+xkb_symbols "offhand" {
 key <K37> { [ Control_L ] };
 key <K50> { [ Shift_L ] };
 key <K55> { [ v, V ] };
@@ -206,7 +206,7 @@ fn split_chord(keys: &[KeyCode]) -> Result<(u32, KeyCode)> {
 ///
 /// The file is unlinked as soon as it is open. The descriptor keeps it alive
 /// for as long as either side needs it, and nothing is left in the runtime
-/// directory if Flow is killed between here and exit.
+/// directory if Offhand is killed between here and exit.
 ///
 /// It is opened readable as well as writable because the compositor mmaps the
 /// descriptor with `PROT_READ`; on a write-only fd that call fails and the
@@ -214,7 +214,7 @@ fn split_chord(keys: &[KeyCode]) -> Result<(u32, KeyCode)> {
 /// names the real problem.
 fn upload_keymap(keyboard: &ZwpVirtualKeyboardV1) -> Result<()> {
     let directory = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    let path = format!("{directory}/flow-keymap-{}", std::process::id());
+    let path = format!("{directory}/offhand-keymap-{}", std::process::id());
 
     let mut file = File::options()
         .read(true)

@@ -1,6 +1,6 @@
 //! Desktop notifications for the failures the user would otherwise never see.
 //!
-//! Flow runs as a systemd user unit, so every `eprintln!` here goes to the
+//! Offhand runs as a systemd user unit, so every `eprintln!` here goes to the
 //! journal and nowhere else. That is fine for the running commentary - a line
 //! per dictation, timings, what was skipped and why - because nobody is meant
 //! to read it. It is not fine for the handful of failures where the user is
@@ -41,7 +41,7 @@ pub fn failure(summary: &str, body: &str) {
 fn notifier(summary: &str, body: &str) -> Command {
     let mut command = Command::new("notify-send");
     command.args([
-        "--app-name=flow",
+        "--app-name=offhand",
         &format!("--urgency={URGENCY}"),
         "--icon=audio-input-microphone",
         summary,

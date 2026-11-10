@@ -34,15 +34,15 @@ pub fn streams() -> Result<Vec<(u32, u32)>> {
     Ok(duckable(&serde_json::from_slice(&output.stdout)?))
 }
 
-/// The streams in a `pactl list sink-inputs` payload that Flow may touch, as
+/// The streams in a `pactl list sink-inputs` payload that Offhand may touch, as
 /// `(index, volume percent)`. Split from the call above so the two ways a
-/// stream is passed over - Flow's own chime, and an unbalanced player - can be
+/// stream is passed over - Offhand's own chime, and an unbalanced player - can be
 /// tested without an audio server.
 pub fn duckable(parsed: &serde_json::Value) -> Vec<(u32, u32)> {
     let mut found = Vec::new();
 
     for stream in parsed.as_array().into_iter().flatten() {
-        // Flow's own island chime. Ducking it would fade out the very sound
+        // Offhand's own island chime. Ducking it would fade out the very sound
         // saying the microphone is open - see [`crate::chime::CLIENT`].
         if stream
             .get("properties")
