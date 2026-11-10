@@ -32,7 +32,7 @@ const POST_ROLL_CAP: Duration = Duration::from_millis(400);
 
 /// Always the cpal default device, whatever a pinned microphone says.
 ///
-/// Flow used to hunt for a device named "pipewire" to get free rate conversion,
+/// Offhand used to hunt for a device named "pipewire" to get free rate conversion,
 /// but on a PipeWire machine `default` already IS PipeWire and converts
 /// identically (measured: both accept 16kHz mono f32 from 48kHz stereo
 /// hardware). That conversion is the reason this must not become a device
@@ -70,7 +70,7 @@ fn input_devices() -> Vec<(String, Device)> {
 }
 
 /// Every input by name, in the spelling [`open_input`] matches against. The
-/// console asks for this through `flow inputs` instead of linking cpal itself,
+/// console asks for this through `offhand inputs` instead of linking cpal itself,
 /// so the names it offers are the ones the daemon will find.
 pub fn input_names() -> Vec<String> {
     let mut names: Vec<String> = input_devices().into_iter().map(|(name, _)| name).collect();
@@ -187,7 +187,7 @@ pub fn default_source_name() -> Option<String> {
 /// The name of the running executable, which is what the PipeWire ALSA plugin
 /// names our capture stream after.
 ///
-/// Read at runtime rather than hardcoded to "flow". The plugin publishes
+/// Read at runtime rather than hardcoded to "offhand". The plugin publishes
 /// `alsa_capture.<binary>`, so anything running under another name - a test
 /// binary, a dev build, a renamed release - would look for a stream that does
 /// not exist and silently go on recording from the default microphone. That is
@@ -199,7 +199,7 @@ fn binary_name() -> String {
             path.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         })
-        .unwrap_or_else(|| "flow".to_string())
+        .unwrap_or_else(|| "offhand".to_string())
 }
 
 fn unquote(value: &str) -> Option<&str> {
@@ -245,7 +245,7 @@ fn our_source_output(listing: &str, binary: &str) -> Option<String> {
     None
 }
 
-/// Point Flow's live capture at `source`, leaving every other stream and the
+/// Point Offhand's live capture at `source`, leaving every other stream and the
 /// system default exactly as they were.
 ///
 /// This is the whole per-app routing mechanism. Rebuilding the cpal stream
@@ -776,8 +776,8 @@ impl Capture {
                 // is skipped as silence, so without this the tool looks like it
                 // stopped responding rather than like the mic went away.
                 crate::notify::failure(
-                    "Flow lost the microphone",
-                    "Check your sound settings, then restart Flow.",
+                    "Offhand lost the microphone",
+                    "Check your sound settings, then restart Offhand.",
                 );
                 eprintln!("reopen failed: {err}");
                 false
@@ -1048,8 +1048,8 @@ Source Output #6192836
 \tDriver: PipeWire
 \tSource: 6133567
 \tProperties:
-\t\tapplication.name = \"PipeWire ALSA [flow]\"
-\t\tnode.name = \"alsa_capture.flow\"
+\t\tapplication.name = \"PipeWire ALSA [offhand]\"
+\t\tnode.name = \"alsa_capture.offhand\"
 ";
 
     fn inputs() -> Vec<(String, Transport)> {
@@ -1129,7 +1129,7 @@ Source Output #6192836
     #[test]
     fn our_own_stream_is_the_one_that_moves() {
         assert_eq!(
-            our_source_output(OUTPUTS, "flow").as_deref(),
+            our_source_output(OUTPUTS, "offhand").as_deref(),
             Some("6192836")
         );
     }
@@ -1139,23 +1139,23 @@ Source Output #6192836
     #[test]
     fn another_app_is_never_mistaken_for_ours() {
         let others = OUTPUTS.split("Source Output #6192836").next().unwrap();
-        assert_eq!(our_source_output(others, "flow"), None);
-        assert_eq!(our_source_output("", "flow"), None);
+        assert_eq!(our_source_output(others, "offhand"), None);
+        assert_eq!(our_source_output("", "offhand"), None);
     }
 
-    /// The name is the binary's, not the string "flow". Looking for the wrong
+    /// The name is the binary's, not the string "offhand". Looking for the wrong
     /// one finds nothing and silently leaves the capture on the default
     /// microphone, which is how this was caught: the test binary is not called
-    /// flow, so the first version of this feature did nothing under test while
+    /// offhand, so the first version of this feature did nothing under test while
     /// appearing to work.
     #[test]
     fn the_stream_is_found_under_whatever_the_binary_is_called() {
-        let renamed = OUTPUTS.replace("flow", "flow-dev");
+        let renamed = OUTPUTS.replace("offhand", "offhand-dev");
         assert_eq!(
-            our_source_output(&renamed, "flow-dev").as_deref(),
+            our_source_output(&renamed, "offhand-dev").as_deref(),
             Some("6192836")
         );
-        assert_eq!(our_source_output(&renamed, "flow"), None);
+        assert_eq!(our_source_output(&renamed, "offhand"), None);
     }
 
     /// The ALSA plugin has published either spelling depending on the PipeWire
@@ -1163,25 +1163,25 @@ Source Output #6192836
     #[test]
     fn either_spelling_identifies_the_stream() {
         for line in [
-            r#"node.name = "alsa_capture.flow""#,
-            r#"application.name = "PipeWire ALSA [flow]""#,
+            r#"node.name = "alsa_capture.offhand""#,
+            r#"application.name = "PipeWire ALSA [offhand]""#,
         ] {
-            assert!(names_stream(line, "flow"), "{line} was not recognised");
+            assert!(names_stream(line, "offhand"), "{line} was not recognised");
         }
     }
 
-    /// A prefix match would claim `flow-dev`'s stream for `flow`, and move a
+    /// A prefix match would claim `offhand-dev`'s stream for `offhand`, and move a
     /// microphone out from under another running copy.
     #[test]
     fn a_similar_name_is_not_our_stream() {
         for line in [
-            r#"node.name = "alsa_capture.flow-dev""#,
-            r#"node.name = "alsa_capture.flowers""#,
+            r#"node.name = "alsa_capture.offhand-dev""#,
+            r#"node.name = "alsa_capture.offhanded""#,
             r#"node.name = "sunshine""#,
-            r#"application.name = "PipeWire ALSA [flow-dev]""#,
-            r#"application.name = "flow""#,
+            r#"application.name = "PipeWire ALSA [offhand-dev]""#,
+            r#"application.name = "offhand""#,
         ] {
-            assert!(!names_stream(line, "flow"), "{line} was claimed as ours");
+            assert!(!names_stream(line, "offhand"), "{line} was claimed as ours");
         }
     }
 

@@ -1,9 +1,9 @@
 [Unit]
-Description=Flow system tray
+Description=Offhand system tray
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/flow tray
+ExecStart=%h/.local/bin/offhand tray
 Restart=on-failure
 RestartSec=2
 

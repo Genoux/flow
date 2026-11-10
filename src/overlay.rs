@@ -1,4 +1,4 @@
-//! A small island that floats above everything while flow is recording. The
+//! A small island that floats above everything while offhand is recording. The
 //! bars are a mountain of the live voice: low at the ends, high in the middle.
 //! Frequency still colours them, but it is not allowed to raise the ends above
 //! the crest - that is how the island used to draw a W. Nothing here runs on a
@@ -103,7 +103,7 @@ const ISLAND: (f32, f32, f32) = (0.04, 0.045, 0.055);
 /// Clear of the `ignore_alpha = 0.1` in Hyprland's layer rule, below which it
 /// stops blurring behind the surface and the island becomes a hole in the screen.
 /// Hyprland also needs the rule itself to frost anything: without
-/// `layerrule = blur, flow` this is a faint tint over a sharp desktop.
+/// `layerrule = blur, offhand` this is a faint tint over a sharp desktop.
 const ISLAND_ALPHA: f32 = 0.55;
 
 /// A hairline ring around the edge, one pixel wide and one flat alpha.

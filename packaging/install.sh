@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Flow and put it where a desktop session can find it.
+# Build Offhand and put it where a desktop session can find it.
 #
 # Everything lands under $HOME - no sudo, nothing outside the user's own
 # directories - except the udev rule, which cannot live there and is the one
@@ -8,12 +8,12 @@
 set -euo pipefail
 
 # The daemon's Linux backends (/dev/uinput, Wayland, udev) do not exist
-# elsewhere; macOS has its own installer that builds and signs Flow.app.
+# elsewhere; macOS has its own installer that builds and signs Offhand.app.
 case "$(uname -s)" in
   Linux) ;;
   Darwin) exec bash "$(dirname "${BASH_SOURCE[0]}")/macos/install.sh" "$@" ;;
   *)
-    echo "Flow supports Linux and macOS - this is $(uname -s)." >&2
+    echo "Offhand supports Linux and macOS - this is $(uname -s)." >&2
     exit 1
     ;;
 esac
@@ -67,15 +67,15 @@ target_dir() {
     sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'
 }
 
-if [ -x "$repo/bin/flow" ]; then
-  daemon="$repo/bin/flow"
-  console="$repo/bin/flow-console"
+if [ -x "$repo/bin/offhand" ]; then
+  daemon="$repo/bin/offhand"
+  console="$repo/bin/offhand-console"
 else
   say "Building (this takes a few minutes the first time)"
   cargo build --release --manifest-path "$repo/Cargo.toml"
   cargo build --release --manifest-path "$repo/crates/console/Cargo.toml"
-  daemon="$(target_dir "$repo/Cargo.toml")/release/flow"
-  console="$(target_dir "$repo/crates/console/Cargo.toml")/release/flow-console"
+  daemon="$(target_dir "$repo/Cargo.toml")/release/offhand"
+  console="$(target_dir "$repo/crates/console/Cargo.toml")/release/offhand-console"
 fi
 
 for binary in "$daemon" "$console"; do
@@ -87,19 +87,19 @@ done
 
 say "Installing the $channel build into $bin_dir"
 mkdir -p "$bin_dir"
-stage="$(mktemp -d "$bin_dir/.flow-install.XXXXXXXX")"
+stage="$(mktemp -d "$bin_dir/.offhand-install.XXXXXXXX")"
 trap 'rm -rf "$stage"' EXIT
-install -m755 "$daemon" "$stage/flow-$channel"
-install -m755 "$console" "$stage/flow-console-$channel"
+install -m755 "$daemon" "$stage/offhand-$channel"
+install -m755 "$console" "$stage/offhand-console-$channel"
 
-current="$(readlink "$bin_dir/flow" 2>/dev/null || true)"
+current="$(readlink "$bin_dir/offhand" 2>/dev/null || true)"
 selected=stable
 case "$current" in
-  *flow-experimental) selected=experimental ;;
+  *offhand-experimental) selected=experimental ;;
 esac
-if [ ! -e "$bin_dir/flow" ]; then selected="$channel"; fi
+if [ ! -e "$bin_dir/offhand" ]; then selected="$channel"; fi
 
-for name in flow flow-console; do
+for name in offhand offhand-console; do
   link="$bin_dir/$name"
   if [ -e "$link" ] && [ ! -L "$link" ] && [ "$channel" = experimental ]; then
     if [ ! -e "$bin_dir/$name-stable" ]; then
@@ -113,30 +113,58 @@ done
 
 # Choose once from the daemon: independent choices left stable and experimental mixed.
 if "$activate" && [ "$selected" = "$channel" ]; then
-  for name in flow flow-console; do
+  for name in offhand offhand-console; do
     ln -s "$name-$channel" "$stage/$name"
     mv -Tf "$stage/$name" "$bin_dir/$name"
   done
 fi
 
+# An install from when this was called Flow. Its daemon and tray would run
+# beside the new ones, both holding the microphone and the hotkey, so they are
+# stopped and removed rather than left for the user to find. Whether dictation
+# was running, and whether it started at login, carries over to offhand.service
+# below. The config and the speech model are not touched here: offhand moves
+# them itself the first time it runs.
+flow_at_login=false
+flow_was_running=false
+flow_files=(
+  "$bin_dir/flow" "$bin_dir/flow-console"
+  "$bin_dir/flow-stable" "$bin_dir/flow-console-stable"
+  "$bin_dir/flow-experimental" "$bin_dir/flow-console-experimental"
+  "$units/flow.service" "$units/flow-tray.service"
+  "$apps/flow-console.desktop" "$icons/flow-console.png"
+)
+for file in "${flow_files[@]}"; do
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    say "Replacing the Flow install with Offhand"
+    if [ -e "$units/flow.service" ]; then
+      if systemctl --user is-enabled --quiet flow.service; then flow_at_login=true; fi
+      if systemctl --user is-active --quiet flow.service; then flow_was_running=true; fi
+    fi
+    systemctl --user disable --now flow.service flow-tray.service 2>/dev/null || true
+    rm -f "${flow_files[@]}"
+    break
+  fi
+done
+
 say "Installing the service, desktop entry and icon"
 mkdir -p "$units" "$apps" "$icons"
-install -m644 "$repo/packaging/flow.service" "$units/flow.service"
-install -m644 "$repo/packaging/flow-tray.service" "$units/flow-tray.service"
-install -m644 "$repo/packaging/flow-console.desktop" "$apps/flow-console.desktop"
-install -m644 "$repo/packaging/flow-console.png" "$icons/flow-console.png"
+install -m644 "$repo/packaging/offhand.service" "$units/offhand.service"
+install -m644 "$repo/packaging/offhand-tray.service" "$units/offhand-tray.service"
+install -m644 "$repo/packaging/offhand-console.desktop" "$apps/offhand-console.desktop"
+install -m644 "$repo/packaging/offhand-console.png" "$icons/offhand-console.png"
 # Rewritten to the absolute path of the icon just installed, rather than left
 # as a theme name. A name is resolved through the user's icon theme, so the
-# launcher shows Flow's own icon on a desktop whose theme happens to carry that
+# launcher shows Offhand's own icon on a desktop whose theme happens to carry that
 # name and a blank tile on one that does not - and ~/.local/share/icons/hicolor
-# has no index.theme, so `flow-console` as a bare name is skipped too. A path is
+# has no index.theme, so `offhand-console` as a bare name is skipped too. A path is
 # read straight off disk by every loader.
-sed -i "s|^Icon=.*|Icon=$icons/flow-console.png|" "$apps/flow-console.desktop"
+sed -i "s|^Icon=.*|Icon=$icons/offhand-console.png|" "$apps/offhand-console.desktop"
 systemctl --user daemon-reload
 # The tray is a lightweight controller and recovery path, not the dictation
-# engine. Keep it available at login even when Flow itself is stopped; its own
+# engine. Keep it available at login even when Offhand itself is stopped; its own
 # config decides whether an icon is published.
-if "$restart"; then systemctl --user enable --now flow-tray.service; fi
+if "$restart"; then systemctl --user enable --now offhand-tray.service; fi
 
 # Without these the launcher shows the entry only after the next login, which
 # reads as the install having silently failed. Both are optional tools and
@@ -147,18 +175,18 @@ command -v gtk-update-icon-cache >/dev/null &&
 
 # The console handles first-run model setup unless a headless install opts in.
 if "$models"; then
-  "$bin_dir/flow-$channel" install
+  "$bin_dir/offhand-$channel" install
 fi
 
 # The question is whether this user can open /dev/uinput, not whether our rule
 # file exists. Many setups already grant it - a logind uaccess ACL, an existing
 # input-group membership, or a rule some other tool installed. Checking for the
 # file demanded three sudo commands from people who needed none of them.
-rule=/etc/udev/rules.d/99-flow-uinput.rules
+rule=/etc/udev/rules.d/99-offhand-uinput.rules
 if [ ! -w /dev/uinput ]; then
   say "One step left, and it needs root"
   cat <<EOF
-Flow types by opening /dev/uinput, which is not writable by your user by
+Offhand types by opening /dev/uinput, which is not writable by your user by
 default. Install the rule and reload it:
 
   echo 'KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"' \\
@@ -173,29 +201,35 @@ fi
 # An update that leaves the old process running is not an update. Only when it
 # is already up: starting a daemon nobody asked for is the installer making a
 # decision that belongs to the user.
-if "$restart" && systemctl --user is-active --quiet flow.service; then
+if "$restart" && systemctl --user is-active --quiet offhand.service; then
   say "Restarting the running daemon onto the new build"
-  systemctl --user restart flow.service
+  systemctl --user restart offhand.service
 fi
-if "$restart" && systemctl --user is-active --quiet flow-tray.service; then
+if "$restart" && systemctl --user is-active --quiet offhand-tray.service; then
   say "Restarting the tray onto the new build"
-  systemctl --user restart flow-tray.service
+  systemctl --user restart offhand-tray.service
+fi
+
+if "$flow_at_login"; then systemctl --user enable offhand.service; fi
+if "$restart" && "$flow_was_running"; then
+  say "Starting the daemon in place of Flow's"
+  systemctl --user start offhand.service
 fi
 
 say "Done"
 case ":$PATH:" in
   *":$bin_dir:"*) ;;
-  *) printf '\n\033[1;33m%s\033[0m\n' "Warning: $bin_dir is not on your PATH - \`flow\` will not be found."
+  *) printf '\n\033[1;33m%s\033[0m\n' "Warning: $bin_dir is not on your PATH - \`offhand\` will not be found."
      echo "  Add it in your shell's rc file, or the desktop entry will work and the terminal will not."
      ;;
 esac
 # The one instruction that matters is first and on its own. Everything under
 # it is for later; the key is entered in the console before the daemon starts.
 cat <<EOF
-Open Flow to finish setting up the selected build.
+Open Offhand to finish setting up the selected build.
 
-  flow-console          or "Flow" in your launcher
+  offhand-console          or "Offhand" in your launcher
 
-Start it at login:    systemctl --user enable flow.service
-Everything else:      flow help
+Start it at login:    systemctl --user enable offhand.service
+Everything else:      offhand help
 EOF

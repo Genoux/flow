@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# Assemble and sign Flow.app: bundle.sh <flow> <flow-console> <version> <out-dir>
+# Assemble and sign Offhand.app: bundle.sh <offhand> <offhand-console> <version> <out-dir>
 #
-# Signing input is a self-signed .p12 (FLOW_SIGNING_P12 and
-# FLOW_SIGNING_PASSWORD_FILE, defaulting to ~/.config/flow-signing/). The
+# Signing input is a self-signed .p12 (OFFHAND_SIGNING_P12 and
+# OFFHAND_SIGNING_PASSWORD_FILE, defaulting to ~/.config/offhand-signing/). The
 # point of a stable certificate over ad-hoc is the designated requirement:
 # ad-hoc signatures are keyed on the code hash, so macOS drops the
 # Microphone/Input Monitoring/Accessibility grants on every rebuild, while
 # `identifier ... and certificate root = H"..."` is the same for every build.
 set -euo pipefail
 
-[ "$#" -eq 4 ] || { echo "usage: bundle.sh <flow> <flow-console> <version> <out-dir>" >&2; exit 1; }
+[ "$#" -eq 4 ] || { echo "usage: bundle.sh <offhand> <offhand-console> <version> <out-dir>" >&2; exit 1; }
 daemon="$1" console="$2" version="$3" out="$4"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-app="$out/Flow.app"
-agent="$app/Contents/Helpers/Flow Agent.app"
+app="$out/Offhand.app"
+agent="$app/Contents/Helpers/Offhand Agent.app"
 
 # apple-codesign 0.29.0, pinned. Apple's `codesign` refuses untrusted
 # self-signed identities; rcodesign signs straight from the .p12 with no keychain.
 rcodesign_url="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.29.0/apple-codesign-0.29.0-macos-universal.tar.gz"
 rcodesign_sha256=d98372d5524226ccf9dc0eda03d4e4f5826182dabb2fc3f2bd303ed9113a748d
 
-p12="${FLOW_SIGNING_P12:-$HOME/.config/flow-signing/flow-signing.p12}"
-password_file="${FLOW_SIGNING_PASSWORD_FILE:-$HOME/.config/flow-signing/p12.pass}"
+p12="${OFFHAND_SIGNING_P12:-$HOME/.config/offhand-signing/offhand-signing.p12}"
+password_file="${OFFHAND_SIGNING_PASSWORD_FILE:-$HOME/.config/offhand-signing/p12.pass}"
 
 fetch_rcodesign() {
-  local cache="${XDG_CACHE_HOME:-$HOME/Library/Caches}/flow-build"
+  local cache="${XDG_CACHE_HOME:-$HOME/Library/Caches}/offhand-build"
   local tool="$cache/rcodesign-$rcodesign_sha256"
   # The directory name carries the checksum of the archive it was unpacked
   # from, so its existence is the verification.
@@ -50,25 +50,29 @@ sed -e "s|@VERSION@|$version|g" -e "s|@BUILD@|${version%%-*}|g" \
   "$here/Info.plist" > "$app/Contents/Info.plist"
 sed -e "s|@VERSION@|$version|g" -e "s|@BUILD@|${version%%-*}|g" \
   "$here/AgentInfo.plist" > "$agent/Contents/Info.plist"
-# The daemon, tray and CLI are a bundle of their own so that Flow.app's
-# identity belongs to the console alone; see flow_paths::AGENT_PROGRAM.
-install -m755 "$daemon" "$agent/Contents/MacOS/flow"
-install -m755 "$console" "$app/Contents/MacOS/flow-console"
-# Which build this app is. There is one Flow.app, so the channel is a property
+# The daemon, tray and CLI are a bundle of their own so that Offhand.app's
+# identity belongs to the console alone; see offhand_paths::AGENT_PROGRAM.
+install -m755 "$daemon" "$agent/Contents/MacOS/offhand"
+install -m755 "$console" "$app/Contents/MacOS/offhand-console"
+# Which build this app is. There is one Offhand.app, so the channel is a property
 # of the bundle and not of a link beside it as on Linux; the console reads it
 # from here, and the signature seals it so it cannot drift from the binaries.
 install -m644 "$here/../channel" "$app/Contents/Resources/channel"
 
-iconset="$(mktemp -d)/flow.iconset"
+iconset="$(mktemp -d)/offhand.iconset"
 trap 'rm -rf "$(dirname "$iconset")"' EXIT
 mkdir "$iconset"
-source_png="$here/../flow-console.png"
+# Not the Linux icon: that tile fills its canvas, and macOS draws an icon at
+# the size of the canvas, so it would sit larger than every app beside it. This
+# one is the same tile on Apple's grid (824 of 1024), and 1024 is the largest
+# size the iconset asks for.
+source_png="$here/offhand.png"
 for size in 16 32 128 256 512; do
   sips -z "$size" "$size" "$source_png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
   sips -z "$((size * 2))" "$((size * 2))" "$source_png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
-iconutil -c icns "$iconset" -o "$app/Contents/Resources/flow.icns"
-cp "$app/Contents/Resources/flow.icns" "$agent/Contents/Resources/flow.icns"
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/offhand.icns"
+cp "$app/Contents/Resources/offhand.icns" "$agent/Contents/Resources/offhand.icns"
 
 if [ -f "$p12" ] && [ -f "$password_file" ]; then
   rcodesign="$(fetch_rcodesign)"
@@ -98,5 +102,5 @@ signed_as() {
     exit 1
   }
 }
-signed_as "$agent" com.genoux.flow.agent
-signed_as "$app" com.genoux.flow
+signed_as "$agent" com.genoux.offhand.agent
+signed_as "$app" com.genoux.offhand

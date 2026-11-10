@@ -1,6 +1,6 @@
 //! The application the menu bar item and the overlay are drawn by.
 //!
-//! AppKit belongs to the main thread, and what Flow does does not run there -
+//! AppKit belongs to the main thread, and what Offhand does does not run there -
 //! so the main thread is given to the app and the work to a thread of its own.
 
 use anyhow::{Context, Result};

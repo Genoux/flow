@@ -2,7 +2,7 @@
 //!
 //! Pure logic, testable without a network or a key. The GPU-placement tests
 //! that used to sit above these went with the local model.
-use flow::refine::needs_refining;
+use offhand::refine::needs_refining;
 
 /// Already capitalised, already punctuated, no fillers - the model can only
 /// return it unchanged, so paying ~200ms to hear that is waste.
@@ -68,7 +68,7 @@ fn empty_input_needs_nothing() {
 
 // -- hesitation is not text -------------------------------------------------
 
-use flow::refine::is_only_filler;
+use offhand::refine::is_only_filler;
 
 /// Holding the key and saying "uh" is a pause, not a dictation. It used to reach
 /// the model, which deleted the filler, found nothing left, and answered the

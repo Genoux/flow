@@ -57,7 +57,7 @@ impl Console {
     // -- rail ---------------------------------------------------------------
 
     fn rail(&self) -> Element<'_, Message> {
-        let title = container(text("Flow").size(BODY).color(FG));
+        let title = container(text("Offhand").size(BODY).color(FG));
         let (title, rail_top) = if cfg!(target_os = "macos") {
             let title = title
                 .height(TITLE_BAR_HEIGHT)
@@ -101,7 +101,7 @@ impl Console {
     // -- pane ---------------------------------------------------------------
 
     fn pane(&self) -> Element<'_, Message> {
-        // A disabled nav item cannot be clicked, but `FLOW_SECTION` can open
+        // A disabled nav item cannot be clicked, but `OFFHAND_SECTION` can open
         // one directly and a section can be disabled while it is already open -
         // stopping setup from Style would leave it on screen with a nav that
         // says it is unavailable. Overview is where the way out is.

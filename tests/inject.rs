@@ -5,7 +5,7 @@ use evdev::KeyCode;
 /// shortcut - SUPER+m exits the session on this machine.
 #[test]
 fn paste_is_a_chord_not_typed_characters() {
-    let normal = flow::inject::paste_keys(false);
+    let normal = offhand::inject::paste_keys(false);
     assert_eq!(normal, vec![KeyCode::KEY_LEFTCTRL, KeyCode::KEY_V]);
     assert!(!normal.contains(&KeyCode::KEY_LEFTMETA));
     assert!(!normal.contains(&KeyCode::KEY_LEFTSHIFT));
@@ -14,7 +14,7 @@ fn paste_is_a_chord_not_typed_characters() {
 #[test]
 fn terminal_paste_adds_shift() {
     assert_eq!(
-        flow::inject::paste_keys(true),
+        offhand::inject::paste_keys(true),
         vec![
             KeyCode::KEY_LEFTCTRL,
             KeyCode::KEY_LEFTSHIFT,
@@ -36,7 +36,7 @@ fn terminal_classes_are_recognised() {
         "st",
     ] {
         assert!(
-            flow::inject::is_terminal_class(class),
+            offhand::inject::is_terminal_class(class),
             "{class} should be a terminal",
         );
     }
@@ -55,13 +55,13 @@ fn non_terminals_do_not_get_the_terminal_chord() {
         "steam",
     ] {
         assert!(
-            !flow::inject::is_terminal_class(class),
+            !offhand::inject::is_terminal_class(class),
             "{class} should not be a terminal",
         );
     }
 }
 
-/// Each compositor answers a different shape, and Flow has to read all of
+/// Each compositor answers a different shape, and Offhand has to read all of
 /// them: Hyprland returns the focused window directly under `class`, niri the
 /// same under `app_id`, and Sway a whole tree in which one node is `focused`.
 /// Getting this wrong is silent - the paste falls back to the configured
@@ -70,13 +70,13 @@ fn non_terminals_do_not_get_the_terminal_chord() {
 fn the_focused_class_is_read_from_every_compositor_shape() {
     let hyprland = r#"{"class":"kitty","title":"nvim","focusHistoryID":0}"#;
     assert_eq!(
-        flow::inject::parse_focused_class(hyprland).as_deref(),
+        offhand::inject::parse_focused_class(hyprland).as_deref(),
         Some("kitty")
     );
 
     let niri = r#"{"id":3,"app_id":"Alacritty","title":"zsh"}"#;
     assert_eq!(
-        flow::inject::parse_focused_class(niri).as_deref(),
+        offhand::inject::parse_focused_class(niri).as_deref(),
         Some("alacritty")
     );
 
@@ -87,7 +87,7 @@ fn the_focused_class_is_read_from_every_compositor_shape() {
         ]}
     ]}"#;
     assert_eq!(
-        flow::inject::parse_focused_class(sway).as_deref(),
+        offhand::inject::parse_focused_class(sway).as_deref(),
         Some("foot")
     );
 }
@@ -99,8 +99,11 @@ fn the_focused_class_is_read_from_every_compositor_shape() {
 fn an_unfocused_or_unreadable_answer_yields_nothing() {
     let nothing_focused =
         r#"{"type":"root","nodes":[{"type":"con","app_id":"firefox","focused":false}]}"#;
-    assert_eq!(flow::inject::parse_focused_class(nothing_focused), None);
-    assert_eq!(flow::inject::parse_focused_class("not json"), None);
-    assert_eq!(flow::inject::parse_focused_class("{}"), None);
-    assert_eq!(flow::inject::parse_focused_class(r#"{"class":""}"#), None);
+    assert_eq!(offhand::inject::parse_focused_class(nothing_focused), None);
+    assert_eq!(offhand::inject::parse_focused_class("not json"), None);
+    assert_eq!(offhand::inject::parse_focused_class("{}"), None);
+    assert_eq!(
+        offhand::inject::parse_focused_class(r#"{"class":""}"#),
+        None
+    );
 }

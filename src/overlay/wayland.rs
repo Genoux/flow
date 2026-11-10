@@ -34,7 +34,7 @@ struct Wayland {
 /// BTN_LEFT from linux/input-event-codes.h.
 const BUTTON_LEFT: u32 = 0x110;
 
-/// The mapped surface. Dropped the moment recording stops, so nothing of flow
+/// The mapped surface. Dropped the moment recording stops, so nothing of offhand
 /// is on screen - or composited - between dictations.
 struct Island {
     surface: wl_surface::WlSurface,
@@ -52,7 +52,7 @@ impl Island {
             &surface,
             None,
             zwlr_layer_shell_v1::Layer::Overlay,
-            "flow".into(),
+            "offhand".into(),
             queue,
             (),
         );
@@ -173,7 +173,7 @@ impl Drop for Buffers {
 fn shared_memory(size: usize) -> Result<OwnedFd> {
     // SAFETY: a NUL-terminated literal name, and the raw fd is taken into an
     // OwnedFd immediately so it is closed exactly once.
-    let raw = unsafe { libc::memfd_create(c"flow-overlay".as_ptr(), libc::MFD_CLOEXEC) };
+    let raw = unsafe { libc::memfd_create(c"offhand-overlay".as_ptr(), libc::MFD_CLOEXEC) };
     if raw < 0 {
         return Err(std::io::Error::last_os_error()).context("memfd_create");
     }

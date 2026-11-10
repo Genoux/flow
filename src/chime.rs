@@ -16,11 +16,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod macos;
 
 /// The name the chime's playback stream carries, and what ducking looks for
-/// when it skips Flow's own audio - see [`crate::duck`]. Without it the sound
+/// when it skips Offhand's own audio - see [`crate::duck`]. Without it the sound
 /// announcing a recording is faded out by the recording it announces: ducking
 /// starts a few milliseconds later and sweeps for new streams every 50ms,
 /// which lands inside these 230.
-pub const CLIENT: &str = "flow";
+pub const CLIENT: &str = "offhand";
 
 const SHOW: &[u8] = include_bytes!("../assets/island-show.wav");
 const HIDE: &[u8] = include_bytes!("../assets/island-hide.wav");

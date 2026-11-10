@@ -1,4 +1,4 @@
-//! Every path Flow touches, derived in one place.
+//! Every path Offhand touches, derived in one place.
 //!
 //! This exists because the daemon and the console are separate crates that have
 //! to agree. The console writes the config file the daemon reads, watches the
@@ -26,9 +26,9 @@ pub fn runtime_dir() -> PathBuf {
         }
         // POSIX geteuid has no preconditions and cannot fail.
         let uid = unsafe { geteuid() };
-        let path = std::env::temp_dir().join(format!("flow-{uid}"));
+        let path = std::env::temp_dir().join(format!("offhand-{uid}"));
         private_runtime(&path, uid)
-            .expect("flow runtime directory must be private and owned by this user");
+            .expect("offhand runtime directory must be private and owned by this user");
         path
     })
 }
@@ -83,35 +83,58 @@ fn xdg_home(variable: &str, fallback: &str) -> PathBuf {
 fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .expect("HOME is not set - flow needs it to find its config and models")
+        .expect("HOME is not set - offhand needs it to find its config and models")
 }
 
-/// `~/.config/flow/config.toml`
+/// Offhand was called Flow through 0.6.1, and an install from then keeps its
+/// config, vocabulary, history and 2.6GB speech model under `flow/`. They are
+/// renamed rather than copied, and only into a place that is still empty: when
+/// both exist there is no telling which one the user means, so neither is
+/// touched.
+pub fn adopt_flow_directories(
+    config_home: &std::path::Path,
+    data_home: &std::path::Path,
+) -> std::io::Result<()> {
+    // Both are attempted before either failure is reported: a config that
+    // could not move must not leave the speech model behind as well.
+    [config_home, data_home]
+        .map(|base| {
+            let (former, current) = (base.join("flow"), base.join("offhand"));
+            if current.exists() || !former.exists() {
+                return Ok(());
+            }
+            std::fs::rename(former, current)
+        })
+        .into_iter()
+        .collect()
+}
+
+/// `~/.config/offhand/config.toml`
 pub fn config_file() -> PathBuf {
-    config_home().join("flow/config.toml")
+    config_home().join("offhand/config.toml")
 }
 
-/// `~/.config/flow/vocabulary.txt`
+/// `~/.config/offhand/vocabulary.txt`
 pub fn vocabulary_file() -> PathBuf {
-    config_home().join("flow/vocabulary.txt")
+    config_home().join("offhand/vocabulary.txt")
 }
 
-/// `~/.local/share/flow`
+/// `~/.local/share/offhand`
 pub fn data_dir() -> PathBuf {
-    data_home().join("flow")
+    data_home().join("offhand")
 }
 
-/// `~/.local/share/flow/history.jsonl`
+/// `~/.local/share/offhand/history.jsonl`
 pub fn history_file() -> PathBuf {
     data_dir().join("history.jsonl")
 }
 
-/// Root for everything `flow install` downloads.
+/// Root for everything `offhand install` downloads.
 pub fn models_dir() -> PathBuf {
     data_dir().join("models")
 }
 
-/// Where `flow install` puts the speech model.
+/// Where `offhand install` puts the speech model.
 pub fn speech_model_dir() -> PathBuf {
     models_dir().join("nemotron")
 }
@@ -123,32 +146,32 @@ pub fn recordings_dir() -> PathBuf {
 
 /// The daemon's status socket, which the console connects to.
 pub fn socket() -> PathBuf {
-    runtime_dir().join("flow.sock")
+    runtime_dir().join("offhand.sock")
 }
 
-/// Written by the daemon so `flow start` / `flow stop` can signal it.
+/// Written by the daemon so `offhand start` / `offhand stop` can signal it.
 pub fn pid_file() -> PathBuf {
-    runtime_dir().join("flow.pid")
+    runtime_dir().join("offhand.pid")
 }
 
 /// Volumes saved before ducking, so a crash mid-recording can still restore
 /// them on the next run.
 pub fn duck_state_file() -> PathBuf {
-    runtime_dir().join("flow-duck.json")
+    runtime_dir().join("offhand-duck.json")
 }
 
-/// The LaunchAgent's stdout and stderr, which is where `flow logs` reads on
+/// The LaunchAgent's stdout and stderr, which is where `offhand logs` reads on
 /// macOS. `~/Library/Logs` is where Console.app already looks.
 #[cfg(target_os = "macos")]
 pub fn log_file() -> PathBuf {
-    home().join("Library/Logs/Flow/flow.log")
+    home().join("Library/Logs/Offhand/offhand.log")
 }
 
-/// Where `flow` (daemon, tray and CLI) sits inside Flow.app. It has its own
-/// bundle so that a running daemon is not mistaken for Flow.app itself.
-pub const AGENT_PROGRAM: &str = "Contents/Helpers/Flow Agent.app/Contents/MacOS/flow";
+/// Where `offhand` (daemon, tray and CLI) sits inside Offhand.app. It has its own
+/// bundle so that a running daemon is not mistaken for Offhand.app itself.
+pub const AGENT_PROGRAM: &str = "Contents/Helpers/Offhand Agent.app/Contents/MacOS/offhand";
 
-/// The Flow.app that `exe` runs from: the outermost `.app`, since the helper
+/// The Offhand.app that `exe` runs from: the outermost `.app`, since the helper
 /// bundle is itself an `.app` nested inside it.
 pub fn app_bundle(exe: &std::path::Path) -> Option<PathBuf> {
     exe.ancestors()
@@ -157,7 +180,7 @@ pub fn app_bundle(exe: &std::path::Path) -> Option<PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
-/// The helper's `flow`, from any executable inside Flow.app.
+/// The helper's `offhand`, from any executable inside Offhand.app.
 pub fn agent_program(exe: &std::path::Path) -> Option<PathBuf> {
     app_bundle(exe).map(|bundle| bundle.join(AGENT_PROGRAM))
 }
@@ -168,9 +191,9 @@ mod tests {
 
     #[test]
     fn the_app_is_the_outermost_bundle_from_either_binary() {
-        let app = PathBuf::from("/Users/me/Applications/Flow.app");
+        let app = PathBuf::from("/Users/me/Applications/Offhand.app");
         for exe in [
-            app.join("Contents/MacOS/flow-console"),
+            app.join("Contents/MacOS/offhand-console"),
             app.join(AGENT_PROGRAM),
         ] {
             assert_eq!(app_bundle(&exe), Some(app.clone()));
@@ -180,7 +203,7 @@ mod tests {
 
     #[test]
     fn a_binary_outside_a_bundle_has_no_app() {
-        let exe = std::path::Path::new("/usr/local/bin/flow");
+        let exe = std::path::Path::new("/usr/local/bin/offhand");
         assert_eq!(app_bundle(exe), None);
         assert_eq!(agent_program(exe), None);
     }
@@ -189,7 +212,8 @@ mod tests {
     fn fallback_rejects_shared_foreign_and_symlink_directories() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
-        let root = std::env::temp_dir().join(format!("flow-runtime-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("offhand-runtime-test-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let uid = std::fs::metadata(&root).unwrap().uid();
         let private = root.join("private");
@@ -204,6 +228,79 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("offhand-{name}-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_flow_install_is_carried_over_with_its_contents() {
+        let root = scratch("carry-over");
+        let (config, data) = (root.join("config"), root.join("data"));
+        std::fs::create_dir_all(config.join("flow")).unwrap();
+        std::fs::create_dir_all(data.join("flow/models/nemotron")).unwrap();
+        std::fs::write(config.join("flow/config.toml"), "cleanup = \"light\"\n").unwrap();
+        std::fs::write(data.join("flow/models/nemotron/encoder.onnx"), "weights").unwrap();
+
+        adopt_flow_directories(&config, &data).unwrap();
+
+        assert!(!config.join("flow").exists());
+        assert!(!data.join("flow").exists());
+        assert_eq!(
+            std::fs::read_to_string(config.join("offhand/config.toml")).unwrap(),
+            "cleanup = \"light\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(data.join("offhand/models/nemotron/encoder.onnx")).unwrap(),
+            "weights"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_existing_offhand_directory_is_never_replaced() {
+        let root = scratch("both-present");
+        let (config, data) = (root.join("config"), root.join("data"));
+        for (base, name, text) in [
+            (&config, "flow", "old config"),
+            (&config, "offhand", "new config"),
+            (&data, "flow", "old data"),
+            (&data, "offhand", "new data"),
+        ] {
+            std::fs::create_dir_all(base.join(name)).unwrap();
+            std::fs::write(base.join(name).join("file"), text).unwrap();
+        }
+
+        adopt_flow_directories(&config, &data).unwrap();
+
+        for (base, name, text) in [
+            (&config, "flow", "old config"),
+            (&config, "offhand", "new config"),
+            (&data, "flow", "old data"),
+            (&data, "offhand", "new data"),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(base.join(name).join("file")).unwrap(),
+                text
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nothing_to_carry_over_creates_nothing() {
+        let root = scratch("neither-present");
+        let (config, data) = (root.join("config"), root.join("data"));
+        std::fs::create_dir(&config).unwrap();
+
+        adopt_flow_directories(&config, &data).unwrap();
+
+        assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0);
+        assert!(!data.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// The regression this crate exists to prevent: the console used to answer
     /// this question differently from the daemon, so it wrote settings the
     /// daemon never read.
@@ -213,7 +310,7 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "/custom/config") };
         assert_eq!(
             config_file(),
-            PathBuf::from("/custom/config/flow/config.toml")
+            PathBuf::from("/custom/config/offhand/config.toml")
         );
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }

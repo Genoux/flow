@@ -1,4 +1,4 @@
-//! Three layers, in order: these defaults, then `~/.config/flow/config.toml`,
+//! Three layers, in order: these defaults, then `~/.config/offhand/config.toml`,
 //! then command-line flags. A fresh install has no config file and needs none.
 
 use anyhow::{Context, Result, bail};
@@ -27,11 +27,11 @@ pub struct Config {
     /// silent feedback, and a dictation started over a full-screen window is
     /// otherwise unacknowledged until the text lands.
     pub sound: bool,
-    /// Publish Flow in the desktop's system tray. Hiding the icon is only a
+    /// Publish Offhand in the desktop's system tray. Hiding the icon is only a
     /// presentation choice: the daemon, hotkey and dictation keep running.
     pub show_tray: bool,
-    /// Save every dictation's audio as a WAV file to `~/.local/share/flow/recordings/`,
-    /// which is what `flow retry` replays. Off by default because long sessions
+    /// Save every dictation's audio as a WAV file to `~/.local/share/offhand/recordings/`,
+    /// which is what `offhand retry` replays. Off by default because long sessions
     /// add up on disk fast.
     pub record_debug: bool,
     /// Which microphone to record from, as a pactl source name. `None` follows
@@ -39,18 +39,18 @@ pub struct Config {
     /// machines should keep.
     ///
     /// Pinning one is per-app routing, not a change to the system default:
-    /// Flow moves its own capture stream and leaves everything else where it
+    /// Offhand moves its own capture stream and leaves everything else where it
     /// is. See `audio::Capture::set_source`.
     pub input_device: Option<String>,
     /// OpenRouter API key. Every dictation is transcribed and refined through
-    /// OpenRouter, so without this Flow has nothing to send audio to and the
+    /// OpenRouter, so without this Offhand has nothing to send audio to and the
     /// hotkey can only report that.
     ///
     /// It lives in the config file like everything else, which means the file
     /// holds a billable credential. The daemon never writes the config; the
     /// console does, through `storage::write`, which creates at 0600 and
     /// renames over the target - so saving a key is also what takes the file
-    /// out of the world-readable mode `flow install` seeded it with.
+    /// out of the world-readable mode `offhand install` seeded it with.
     ///
     /// Never log this value. An error carrying a rejected key is an error that
     /// puts it in the journal.
@@ -58,7 +58,7 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Hold-to-talk is on out of the box: Flow watches the chord itself, so a
+    /// Hold-to-talk is on out of the box: Offhand watches the chord itself, so a
     /// fresh install dictates with no compositor configuration at all. Off is
     /// the same chord as a tap-on, tap-off switch, not a chord that does
     /// nothing - the keys are watched either way.
@@ -88,7 +88,7 @@ fn numbered(text: &str) -> impl Iterator<Item = (String, String)> + '_ {
 }
 
 impl Config {
-    /// How every `flow` command reads the config: it starts.
+    /// How every `offhand` command reads the config: it starts.
     ///
     /// Complaints go to the journal, one line each, and whatever the file got
     /// right is kept. `load_from` stays strict for the live reload, which has
@@ -101,7 +101,7 @@ impl Config {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(err) => {
                 eprintln!(
-                    "flow: {} unreadable ({err}), using defaults",
+                    "offhand: {} unreadable ({err}), using defaults",
                     path().display()
                 );
                 return Self::default();
@@ -110,7 +110,7 @@ impl Config {
 
         let (config, complaints) = Self::parse_forgiving(&text);
         for complaint in complaints {
-            eprintln!("flow: ignoring {complaint}");
+            eprintln!("offhand: ignoring {complaint}");
         }
         config
     }
@@ -140,7 +140,7 @@ impl Config {
     /// reported and skipped instead of refusing the whole file.
     ///
     /// This is how the daemon starts, and it exists because the strict read
-    /// turned a version skew into a dead app: a `flow` older than the key the
+    /// turned a version skew into a dead app: an `offhand` older than the key the
     /// window had already written read `sound = false`, exited 1, and systemd
     /// restarted it into the same error for as long as anyone watched. A key
     /// from another version is not a reason to stop dictating - it is a reason
@@ -221,7 +221,7 @@ impl Config {
         Ok(())
     }
 
-    /// Flags are the outermost layer, so `flow daemon --raw` can contradict the
+    /// Flags are the outermost layer, so `offhand daemon --raw` can contradict the
     /// config file for one run without editing it.
     pub fn overridden_by(mut self, args: &[String]) -> Self {
         let present = |flag: &str| args.iter().any(|arg| arg == flag);
@@ -272,7 +272,7 @@ fn boolean(at: &str, key: &str, value: &str) -> Result<bool> {
 }
 
 pub fn path() -> PathBuf {
-    flow_paths::config_file()
+    offhand_paths::config_file()
 }
 
 /// How often the config file is checked for changes. Fast enough that moving a

@@ -1,9 +1,9 @@
 [package]
-name = "flow-console"
+name = "offhand-console"
 version = "0.6.1"
 edition = "2021"
 license = "MIT"
-description = "Status and settings window for the Flow dictation daemon"
+description = "Status and settings window for the Offhand dictation daemon"
 
 # Its own workspace root on purpose: iced pulls in wgpu, and the daemon must
 # never carry that dependency tree.
@@ -16,7 +16,7 @@ iced_runtime = "0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 serde_json = "1.0"
 semver = "1"
-flow-paths = { path = "../flow-paths" }
+offhand-paths = { path = "../offhand-paths" }
 
 # Linux-only, and the only dependency here that is: evdev is the chord picker
 # reading /dev/input. Keeping it off other platforms is what lets the window
@@ -31,7 +31,7 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSToolbar", "NSView", "NSWindow"] }
 
 [[bin]]
-name = "flow-console"
+name = "offhand-console"
 path = "src/main.rs"
 
 # Line tables instead of full DWARF - see the root Cargo.toml for why. It

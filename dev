@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run Flow from this checkout and restart it every time a file is saved.
+# Run Offhand from this checkout and restart it every time a file is saved.
 #
 # The whole app by default: the real chord, the real models, the real paste.
 # Nothing is installed to ~/.local/bin and nothing is committed - this is the
@@ -10,14 +10,14 @@
 # out, because two daemons both listening for Super+Shift+D means whichever one
 # grabs the chord first wins and it is never the one you are testing.
 #
-#   flow-dev                    the daemon
-#   flow-dev console            the daemon and the settings window, which is
+#   offhand-dev                    the daemon
+#   offhand-dev console            the daemon and the settings window, which is
 #                               what a user actually has open
-#   flow-dev --once ...         run it once instead of watching
+#   offhand-dev --once ...         run it once instead of watching
 #
 set -uo pipefail
 
-# Resolved through symlinks: this is normally reached as ~/.local/bin/flow-dev.
+# Resolved through symlinks: this is normally reached as ~/.local/bin/offhand-dev.
 repo="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 watch=1
@@ -47,13 +47,17 @@ watched=("$repo/src" "$repo/Cargo.toml" "$repo/assets")
 where() {
   cargo metadata --format-version 1 --no-deps --manifest-path "$1" | jq -r .target_directory
 }
-daemon_bin="$(where "$repo/Cargo.toml")/debug/flow"
-console_bin="$(where "$repo/crates/console/Cargo.toml")/debug/flow-console"
+daemon_bin="$(where "$repo/Cargo.toml")/debug/offhand"
+console_bin="$(where "$repo/crates/console/Cargo.toml")/debug/offhand-console"
 
 installed_was_running=0
-if systemctl --user is-active --quiet flow.service; then
+if systemctl --user is-active --quiet offhand.service; then
   installed_was_running=1
-  echo "stopping the installed flow.service - this checkout takes the chord"
+  echo "stopping the installed offhand.service - this checkout takes the chord"
+  systemctl --user stop offhand.service
+fi
+if systemctl --user is-active --quiet flow.service; then
+  echo "stopping the installed flow.service - offhand moves its config and data on first run"
   systemctl --user stop flow.service
 fi
 
@@ -73,8 +77,8 @@ restore() {
   stop
   if [ "$installed_was_running" = 1 ]; then
     echo
-    echo "starting the installed flow.service again"
-    systemctl --user start flow.service
+    echo "starting the installed offhand.service again"
+    systemctl --user start offhand.service
   fi
 }
 trap restore EXIT
@@ -83,7 +87,7 @@ trap restore EXIT
 # itself. Under cargo it is cargo, and killing that on a save leaves the daemon
 # behind holding the chord.
 build_and_run() {
-  printf '\n\033[2m── flow %s ──\033[0m\n' "${args[*]}"
+  printf '\n\033[2m── offhand %s ──\033[0m\n' "${args[*]}"
   cargo build -q --manifest-path "$repo/Cargo.toml" || return 1
   "$daemon_bin" "${args[@]}" &
   running=$!
@@ -91,7 +95,7 @@ build_and_run() {
   [ $console = 0 ] && return 0
 
   cargo build -q --manifest-path "$repo/crates/console/Cargo.toml" || return 1
-  # The console runs `flow` by name, so without this the window drives whatever
+  # The console runs `offhand` by name, so without this the window drives whatever
   # release is sitting in ~/.local/bin instead of the binary just built - which
   # looks like a console bug and never is.
   PATH="$(dirname "$daemon_bin"):$PATH" \

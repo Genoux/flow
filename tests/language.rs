@@ -5,7 +5,7 @@
 //! from a real dictation that came back in English. So the language is detected
 //! rather than requested, and a refining that changes it is treated as a failure.
 
-use flow::refine::{changed_language, language};
+use offhand::refine::{changed_language, language};
 
 /// Real dictation, Québécois French with English loanwords ("chills", "live",
 /// "ok") mixed in. The code-switching is the hard part: it is what tipped the

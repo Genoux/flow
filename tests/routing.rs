@@ -2,7 +2,7 @@
 //!
 //! Ignored by default, like the other tests here that need hardware: there is
 //! no way to fake this one usefully. The whole feature rests on a single claim
-//! about a live system - that Flow's capture appears in the graph as a stream
+//! about a live system - that Offhand's capture appears in the graph as a stream
 //! that can be moved - and a mock would only ever confirm that this file agrees
 //! with itself.
 //!
@@ -39,13 +39,13 @@ fn microphones() -> Vec<String> {
 /// succeeds because it is talking to PipeWire rather than to the hardware.
 #[test]
 #[ignore = "needs a real PipeWire graph and a microphone"]
-fn flows_own_stream_can_be_moved_between_microphones() {
-    let device = flow::audio::open_device().expect("no input device");
+fn offhands_own_stream_can_be_moved_between_microphones() {
+    let device = offhand::audio::open_device().expect("no input device");
     if device.default_input_config().is_err() {
         eprintln!("skipping: no usable input hardware");
         return;
     }
-    let capture = flow::audio::Capture::open(&device).expect("open capture");
+    let capture = offhand::audio::Capture::open(&device).expect("open capture");
 
     let mics = microphones();
     assert!(!mics.is_empty(), "no non-monitor sources to move between");
@@ -71,13 +71,13 @@ fn flows_own_stream_can_be_moved_between_microphones() {
         );
     }
 
-    // The point of the feature: Flow moved, the system default did not.
+    // The point of the feature: Offhand moved, the system default did not.
     let default_before = pactl(&["get-default-source"]);
     capture.set_source(Some(&mics[0]));
     assert_eq!(
         pactl(&["get-default-source"]),
         default_before,
-        "routing Flow changed the system default, which is what this exists to avoid"
+        "routing Offhand changed the system default, which is what this exists to avoid"
     );
 
     // And back to Automatic, which has to name the default explicitly - the

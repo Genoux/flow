@@ -1,22 +1,22 @@
 use anyhow::{Context, Result, bail};
-use flow::tray;
-use flow::{audio, config, daemon, inject, install, ipc, refine, router, status, stt, wav};
+use offhand::tray;
+use offhand::{audio, config, daemon, inject, install, ipc, refine, router, status, stt, wav};
 use std::time::{Duration, Instant};
 
 /// Audio that must be spoken before any of it is transcribed early. Long enough
-/// How long a bare `flow` records. Long enough to say a sentence into, short
+/// How long a bare `offhand` records. Long enough to say a sentence into, short
 /// enough that running it by accident is not a wait.
 const DEFAULT_RECORD_SECONDS: u64 = 5;
 
 const USAGE: &str = "\
-flow - hold a key, talk, and the text appears where your cursor is
+offhand - hold a key, talk, and the text appears where your cursor is
 
 USAGE
-    flow [FLAGS] [COMMAND]
+    offhand [FLAGS] [COMMAND]
 
 COMMANDS
-    daemon           Watch the hotkey and dictate. What flow.service runs.
-    tray             Publish the system tray icon. What flow-tray.service runs.
+    daemon           Watch the hotkey and dictate. What offhand.service runs.
+    tray             Publish the system tray icon. What offhand-tray.service runs.
     start | stop     Begin or end a dictation without holding the chord
     install          Fetch the speech model and seed the config templates
     check            Whether the speech model is whole
@@ -24,7 +24,7 @@ COMMANDS
                      --default prints only the one the system would use
     probe            Check the OpenRouter connection and model routes
     logs [ARGS..]    The daemon's journal. Arguments go straight to journalctl,
-                     so `flow logs -f` and `flow logs --since today` both work.
+                     so `offhand logs -f` and `offhand logs --since today` both work.
     retry [N]        Replay a saved dictation, counting back from the newest.
                      Needs record_debug in the config.
     inject [TEXT]    Type text after 3s, to test injection on its own
@@ -38,12 +38,12 @@ FLAGS
     --plan           install: print what would be fetched, and fetch nothing
     --raw            Skip the refining model for this run
     --no-ptt         Do not watch the hotkey
-    --record-debug   Keep this run's audio for `flow retry`
+    --record-debug   Keep this run's audio for `offhand retry`
     --duck PERCENT   Volume of other apps while recording. 0 turns it off.
 
-Configuration    ~/.config/flow/config.toml
-Word fixes       ~/.config/flow/vocabulary.txt
-Verbose output   FLOW_DEBUG=1
+Configuration    ~/.config/offhand/config.toml
+Word fixes       ~/.config/offhand/vocabulary.txt
+Verbose output   OFFHAND_DEBUG=1
 ";
 
 #[cfg(target_os = "linux")]
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(command(&args), Some("daemon" | "tray")) {
-        return flow::appkit::host(run);
+        return offhand::appkit::host(run);
     }
     run()
 }
@@ -80,8 +80,18 @@ fn run() -> Result<()> {
         .iter()
         .any(|arg| arg == "version" || arg == "--version" || arg == "-V")
     {
-        println!("flow {}", env!("CARGO_PKG_VERSION"));
+        println!("offhand {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+
+    // Ahead of every command and not only the daemon: `install` writes to the
+    // data directory, and run first it would download the speech model again
+    // beside the one a Flow install already has.
+    if let Err(err) = offhand_paths::adopt_flow_directories(
+        &offhand_paths::config_home(),
+        &offhand_paths::data_home(),
+    ) {
+        eprintln!("could not carry over the Flow config and data: {err}");
     }
 
     // All of these run before the config is read. start/stop must survive a
@@ -137,7 +147,7 @@ fn run() -> Result<()> {
             return Ok(());
         }
         // What the console's shortcut picker reads on a Mac, where capturing a
-        // chord needs the event tap and the tap lives here, in the Flow Agent
+        // chord needs the event tap and the tap lives here, in the Offhand Agent
         // helper with Input Monitoring. One key edge per line, in the daemon's own
         // vocabulary, until killed.
         #[cfg(target_os = "macos")]
@@ -159,7 +169,10 @@ fn run() -> Result<()> {
     // Isolates injection from the mic and the model, so a silent uinput failure
     // is distinguishable from a transcription problem.
     if args.first().map(String::as_str) == Some("inject") {
-        let text = args.get(1).cloned().unwrap_or_else(|| "flow test".into());
+        let text = args
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| "offhand test".into());
         eprintln!("focus a text field - injecting in 3s");
         std::thread::sleep(Duration::from_secs(3));
         return inject::Injector::new()?.inject(&text);
@@ -171,7 +184,7 @@ fn run() -> Result<()> {
     // a unit that failed for a reason and one that never came up.
     //
     // A missing key used to be fatal here, from when speech-to-text was also a
-    // cloud request and a keyless Flow could not transcribe a word. Recognition
+    // cloud request and a keyless Offhand could not transcribe a word. Recognition
     // is on-device now, so refusing to start makes the daemon crash-loop into
     // systemd's start limit over an optional feature - and dictation at
     // `cleanup = none` needs nothing from the network at all. Said once at
@@ -190,11 +203,11 @@ fn run() -> Result<()> {
     // so the window has something true to show for the whole wait.
     //
     // Only for the daemon: `spawn` unlinks the socket path before it binds, so
-    // a `flow retry` doing this would cut the running daemon off from the
+    // an `offhand retry` doing this would cut the running daemon off from the
     // console it was talking to.
     let reporter = matches!(command(&args), Some("daemon")).then(status::Reporter::spawn);
-    let mut engine = stt::Stt::load(&flow_paths::speech_model_dir())
-        .context("loading the speech model - has `flow install` been run?")?;
+    let mut engine = stt::Stt::load(&offhand_paths::speech_model_dir())
+        .context("loading the speech model - has `offhand install` been run?")?;
 
     match command(&args) {
         Some(path) if path.ends_with(".wav") => benchmark(&mut engine, path),
@@ -219,17 +232,17 @@ fn run() -> Result<()> {
         }
         None => record_once(&mut engine, DEFAULT_RECORD_SECONDS),
         // A number is a duration; anything else is a mistake and is refused.
-        // This used to fall through to `record_once`, so `flow dameon` opened
+        // This used to fall through to `record_once`, so `offhand dameon` opened
         // the microphone for five seconds instead of saying it had no idea
         // what that was - the one failure mode a dictation tool must not have.
         Some(other) => match other.parse() {
             Ok(seconds) => record_once(&mut engine, seconds),
-            Err(_) => bail!("unknown command {other:?} - try `flow help`"),
+            Err(_) => bail!("unknown command {other:?} - try `offhand help`"),
         },
     }
 }
 
-/// `flow keys` - every key press and release as `KEY_NAME 1` or `KEY_NAME 0`.
+/// `offhand keys` - every key press and release as `KEY_NAME 1` or `KEY_NAME 0`.
 ///
 /// Ends when its stdin closes, which is how the console cancels a capture and
 /// how it is cleaned up if the console never gets to.
@@ -246,7 +259,7 @@ fn print_key_edges() -> Result<()> {
     });
 
     let mut out = std::io::stdout().lock();
-    for (key, pressed) in flow::hotkey::macos::listen()? {
+    for (key, pressed) in offhand::hotkey::macos::listen()? {
         if writeln!(out, "{key:?} {}", u8::from(pressed)).is_err() {
             break;
         }
@@ -256,7 +269,7 @@ fn print_key_edges() -> Result<()> {
 
 /// The first argument that is not a flag.
 ///
-/// So `flow --raw 5` and `flow 5 --raw` mean the same thing. Flags
+/// So `offhand --raw 5` and `offhand 5 --raw` mean the same thing. Flags
 /// are read separately by `Config::overridden_by`, which scans the whole list
 /// and does not care where they sit.
 fn command(args: &[String]) -> Option<&str> {
@@ -271,14 +284,14 @@ fn wants_usage(args: &[String]) -> bool {
         .any(|arg| arg == "help" || arg == "--help" || arg == "-h")
 }
 
-/// `flow retry [n]` - put a saved dictation back through the pipeline.
+/// `offhand retry [n]` - put a saved dictation back through the pipeline.
 ///
 /// `record_debug` saves each dictation, and until now nothing read them back:
 /// answering "why did I get that text" meant finding the file by hand and
-/// running `flow <path>.wav`, which reports the raw transcript only.
+/// running `offhand <path>.wav`, which reports the raw transcript only.
 ///
-/// `n` counts back from the newest, so `flow retry` is the last thing you said
-/// and `flow retry 3` is three before it.
+/// `n` counts back from the newest, so `offhand retry` is the last thing you said
+/// and `offhand retry 3` is three before it.
 ///
 /// Unlike `benchmark` this runs the real pipeline rather than timing the
 /// recogniser three times: the transcript people actually receive has been
@@ -311,9 +324,9 @@ fn retry(engine: &mut stt::Stt, back: usize, cleanup: refine::Cleanup) -> Result
 /// Sorted by path, which orders correctly because both halves of the name are
 /// zero-padded or fixed-width: the directory is a unix timestamp and the file
 /// is a four-digit counter. Walking every session rather than only the newest
-/// means `flow retry 20` still reaches back past a daemon restart.
+/// means `offhand retry 20` still reaches back past a daemon restart.
 fn recorded_takes() -> Result<Vec<std::path::PathBuf>> {
-    let root = flow_paths::recordings_dir();
+    let root = offhand_paths::recordings_dir();
     let mut takes: Vec<std::path::PathBuf> = std::fs::read_dir(&root)
         .with_context(|| format!("no recordings at {}", root.display()))?
         .filter_map(|entry| entry.ok())
@@ -327,20 +340,20 @@ fn recorded_takes() -> Result<Vec<std::path::PathBuf>> {
     Ok(takes)
 }
 
-/// `flow logs` - what the daemon has been saying.
+/// `offhand logs` - what the daemon has been saying.
 ///
-/// Everything Flow prints goes to the journal, because it runs as a user unit
+/// Everything Offhand prints goes to the journal, because it runs as a user unit
 /// with no terminal attached. That is only useful if there is an obvious way to
-/// read it, and `journalctl --user -u flow.service` is not something anyone
+/// read it, and `journalctl --user -u offhand.service` is not something anyone
 /// should have to remember.
 ///
 /// Arguments are handed to journalctl untouched rather than parsed, so
-/// `flow logs -f`, `flow logs --since today` and `flow logs -p err` all work
+/// `offhand logs -f`, `offhand logs --since today` and `offhand logs -p err` all work
 /// without this knowing they exist.
 ///
 /// `-n 50` goes in front of them rather than only when none were given.
 /// journalctl lets the last `-n` win, so an explicit `-n 200` still overrides
-/// it, while `flow logs --no-pager` gets a useful tail instead of every line
+/// it, while `offhand logs --no-pager` gets a useful tail instead of every line
 /// the daemon has ever written - which is what the first version did, because
 /// `--no-pager` counted as "the user asked for a range" when it is nothing of
 /// the sort.
@@ -354,18 +367,18 @@ fn logs(args: &[String]) -> Result<()> {
     // exec only returns when it failed to happen at all.
     #[cfg(target_os = "linux")]
     return Err(std::process::Command::new("journalctl")
-        .args(["--user", "-u", "flow.service", "-n", "50"])
+        .args(["--user", "-u", "offhand.service", "-n", "50"])
         .args(args)
         .exec())
     .context("running journalctl - is this a systemd machine?");
 
     // Same contract as above: `-n 50` first so a later `-n` wins, arguments
-    // untouched, so `flow logs -f` follows.
+    // untouched, so `offhand logs -f` follows.
     #[cfg(target_os = "macos")]
     Err(std::process::Command::new("tail")
         .args(["-n", "50"])
         .args(args)
-        .arg(flow_paths::log_file())
+        .arg(offhand_paths::log_file())
         .exec())
     .context("running tail on the launchd log")
 }
@@ -490,7 +503,7 @@ mod tests {
     }
 
     // A list of nothing but flags yields no command, so it fell through to the
-    // default five-second recording. `flow --version` used to open the mic.
+    // default five-second recording. `offhand --version` used to open the mic.
     #[test]
     fn flags_only_is_not_a_command() {
         assert_eq!(command(&args("--version")), None);

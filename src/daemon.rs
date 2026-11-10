@@ -1,4 +1,4 @@
-//! The long-running process behind `flow daemon`: it owns the engine, the
+//! The long-running process behind `offhand daemon`: it owns the engine, the
 //! chord watcher, and the overlay, and turns a held key into injected text.
 //!
 //! Lifted out of `main.rs`, which had grown to host both the CLI and this. The
@@ -43,12 +43,12 @@ impl StreamProgress {
 
 /// Two ways in, and the second is deliberately not compositor-specific.
 ///
-/// Flow watches its own chord on the keyboard, so a fresh install dictates with
-/// no setup. Everything else comes through `flow start` / `flow stop`, which is
+/// Offhand watches its own chord on the keyboard, so a fresh install dictates with
+/// no setup. Everything else comes through `offhand start` / `offhand stop`, which is
 /// just a signal to this process - a compositor bind, a script, a foot pedal and
 /// a stream deck are all the same caller as far as the daemon is concerned.
 ///
-/// Only `start` is needed from those callers: Flow watches the physical chord to
+/// Only `start` is needed from those callers: Offhand watches the physical chord to
 /// find the release itself, because Hyprland's release binds are unreliable with
 /// modifier chords.
 /// The live config, shared with the file watcher. Read at the point of use so a
@@ -121,10 +121,10 @@ pub fn run(
     let mut watching = watch_keys;
     if watch_keys && let Err(err) = hotkey::spawn(events.clone(), std::sync::Arc::clone(&chord)) {
         // The chord is the only way most people ever start a dictation, so
-        // losing it looks exactly like Flow not running at all. Name the usual
+        // losing it looks exactly like Offhand not running at all. Name the usual
         // cause: reading /dev/input needs membership of the input group.
         notify::failure(
-            "Flow can't watch your keyboard",
+            "Offhand can't watch your keyboard",
             "Add yourself to the input group and log back in.",
         );
         eprintln!("chord watcher disabled: {err}");
@@ -153,12 +153,12 @@ pub fn run(
         if watching {
             let chord = chord.lock().expect("chord");
             if live.lock().expect("config").push_to_talk {
-                format!("hold {chord}, or trigger `flow start`")
+                format!("hold {chord}, or trigger `offhand start`")
             } else {
-                format!("tap {chord} to start and again to stop, or trigger `flow start`")
+                format!("tap {chord} to start and again to stop, or trigger `offhand start`")
             }
         } else {
-            "trigger `flow start`".to_string()
+            "trigger `offhand start`".to_string()
         }
     );
     // Everything that could still fail has happened by here, so this is the
@@ -281,7 +281,7 @@ pub fn run(
         let mut hold_started: Option<Instant> = None;
         let mut latch = hotkey::Latch::Off;
         // When the loop last finished acting on a tap-to-talk tap. Native press
-        // and compositor `flow start` of the same tap arrive ~25ms apart, but
+        // and compositor `offhand start` of the same tap arrive ~25ms apart, but
         // finishing a session waits on the stream lock for up to a chunk, so
         // the echo was read 240-330ms after the key and started a new session.
         // Stamping after the work, not before it, keeps queued echoes inside
@@ -312,7 +312,7 @@ pub fn run(
             // Ending a session drops its ducker, so other apps come back to volume
             // as soon as recording stops rather than after transcription.
             let finished = match event {
-                // Tap to talk: the chord (and `flow start`) is a switch.
+                // Tap to talk: the chord (and `offhand start`) is a switch.
                 // Release - including Hyprland's USR2 bind on the same chord -
                 // must not end the session, or the setting does nothing.
                 event @ (hotkey::Event::Pressed | hotkey::Event::Start) if !hold_to_talk => {
@@ -365,7 +365,7 @@ pub fn run(
                         session.take().map(|s| s.finish(&capture))
                     } else {
                         // A press while a session is already live is the physical
-                        // chord catching up with a `flow start`, or key repeat -
+                        // chord catching up with an `offhand start`, or key repeat -
                         // not a new dictation. `Event::Start` has always guarded
                         // this way; this arm did not, so the second begin replaced
                         // the live session and threw away everything said up to
@@ -514,7 +514,7 @@ pub fn run(
                     held.lock().expect("ducker").take();
                     reporter.ready();
                 }
-                // Nothing started and nothing ended: a stray `flow stop`, a
+                // Nothing started and nothing ended: a stray `offhand stop`, a
                 // duplicate start. The island may be sweeping for a dictation
                 // still being transcribed, so it is not ours to take down.
                 (None, false, false) => {}
@@ -948,7 +948,7 @@ fn debug_recording_dir() -> std::path::PathBuf {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        flow_paths::recordings_dir().join(ts.to_string())
+        offhand_paths::recordings_dir().join(ts.to_string())
     })
     .clone()
 }

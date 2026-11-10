@@ -151,7 +151,7 @@ impl Console {
                 heading("Vocabulary", ""),
                 super::editorial::banner(
                     "Words that are yours.",
-                    "Names, places, and specialist terms.\nHelp Flow get the spelling right.",
+                    "Names, places, and specialist terms.\nHelp Offhand get the spelling right.",
                     wide,
                     true,
                     super::editorial::Photo::Portrait,

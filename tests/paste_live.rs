@@ -2,12 +2,12 @@
 //!
 //! `keymap_live` proves the compositor accepts the keymap, and the unit tests
 //! prove the chord is split correctly, but neither proves the compositor maps
-//! the keycodes Flow sends back to `v`. That needs a window that receives the
+//! the keycodes Offhand sends back to `v`. That needs a window that receives the
 //! chord and can be read afterwards.
 //!
 //! So the test spawns one: kitty running `head -c` into a file, with the
 //! terminal in raw mode so each byte arrives without waiting for a newline.
-//! Flow's own `Injector` stages the sentinel on the clipboard and sends the
+//! Offhand's own `Injector` stages the sentinel on the clipboard and sends the
 //! chord exactly as the daemon does - including the class lookup that decides
 //! kitty needs Ctrl+Shift+V - and the file says whether it arrived.
 //!
@@ -16,18 +16,18 @@
 //!   cargo test --release --test paste_live -- --ignored --nocapture
 #![cfg(target_os = "linux")]
 
-use flow::inject::Injector;
+use offhand::inject::Injector;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 /// No trailing newline: raw mode means the bytes arrive as they are, and
 /// `head -c` counts them, so nothing has to press Enter.
-const SENTINEL: &str = "flow-paste-ok";
+const SENTINEL: &str = "offhand-paste-ok";
 
 #[test]
 #[ignore]
 fn the_chord_pastes_into_the_focused_window() {
-    let target = std::env::temp_dir().join("flow-paste-live");
+    let target = std::env::temp_dir().join("offhand-paste-live");
     let _ = std::fs::remove_file(&target);
 
     // Left as the default class on purpose: `detect_terminal_focus` looks it up
@@ -35,7 +35,7 @@ fn the_chord_pastes_into_the_focused_window() {
     let mut kitty = Reaped(
         Command::new("kitty")
             .arg("--title")
-            .arg("flow-paste-live")
+            .arg("offhand-paste-live")
             .arg("sh")
             .arg("-c")
             .arg(format!(
@@ -50,7 +50,7 @@ fn the_chord_pastes_into_the_focused_window() {
     // Waiting on the title, not just "a terminal is focused": the user's own
     // kitty would satisfy that and the sentinel would land in their window.
     let focused = wait_until(Duration::from_secs(5), || {
-        active_window_title().is_some_and(|title| title.contains("flow-paste-live"))
+        active_window_title().is_some_and(|title| title.contains("offhand-paste-live"))
     });
     assert!(
         focused,
@@ -58,9 +58,9 @@ fn the_chord_pastes_into_the_focused_window() {
          someone else's window"
     );
     assert_eq!(
-        flow::inject::detect_terminal_focus(),
+        offhand::inject::detect_terminal_focus(),
         Some(true),
-        "kitty was not recognised as a terminal, so Flow would send Ctrl+V, \
+        "kitty was not recognised as a terminal, so Offhand would send Ctrl+V, \
          which kitty does not treat as paste"
     );
 
@@ -135,7 +135,7 @@ fn a_paste_lands_with_the_chord_modifiers_held() {
     use evdev::uinput::VirtualDevice;
     use evdev::{AttributeSet, KeyCode};
 
-    let target = std::env::temp_dir().join("flow-paste-held");
+    let target = std::env::temp_dir().join("offhand-paste-held");
     let _ = std::fs::remove_file(&target);
 
     let mut keys = AttributeSet::<KeyCode>::new();
@@ -144,7 +144,7 @@ fn a_paste_lands_with_the_chord_modifiers_held() {
     }
     let device = VirtualDevice::builder()
         .expect("open /dev/uinput")
-        .name("flow held-modifier probe")
+        .name("offhand held-modifier probe")
         .with_keys(&keys)
         .expect("declare keys")
         .build()
@@ -157,7 +157,7 @@ fn a_paste_lands_with_the_chord_modifiers_held() {
     let mut kitty = Reaped(
         Command::new("kitty")
             .arg("--title")
-            .arg("flow-paste-held")
+            .arg("offhand-paste-held")
             .arg("sh")
             .arg("-c")
             .arg(format!(
@@ -171,7 +171,7 @@ fn a_paste_lands_with_the_chord_modifiers_held() {
 
     assert!(
         wait_until(Duration::from_secs(5), || active_window_title()
-            .is_some_and(|title| title.contains("flow-paste-held"))),
+            .is_some_and(|title| title.contains("offhand-paste-held"))),
         "the spawned kitty never took focus"
     );
 

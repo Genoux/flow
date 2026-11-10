@@ -98,10 +98,10 @@ jobs:
       # a git checkout rather than two that can drift.
       - name: Package
         run: |
-          name="flow-${GITHUB_REF_NAME}-x86_64-linux"
+          name="offhand-${GITHUB_REF_NAME}-x86_64-linux"
           mkdir -p "$name/bin"
-          cp target/release/flow "$name/bin/"
-          cp crates/console/target/release/flow-console "$name/bin/"
+          cp target/release/offhand "$name/bin/"
+          cp crates/console/target/release/offhand-console "$name/bin/"
           cp -r packaging "$name/"
           cp README.md TROUBLESHOOTING.md LICENSE "$name/"
           tar czf "$name.tar.gz" "$name"
@@ -133,7 +133,7 @@ jobs:
             $prerelease \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            flow-*.tar.gz flow-*.tar.gz.sha256
+            offhand-*.tar.gz offhand-*.tar.gz.sha256
 
   # After the Linux job, which owns the version and channel checks and creates
   # the draft this only adds to.
@@ -168,33 +168,33 @@ jobs:
       # The same certificate on every release is what keeps macOS's microphone,
       # Input Monitoring and Accessibility grants across updates - see
       # packaging/macos/bundle.sh.
-      - name: Bundle and sign Flow.app
+      - name: Bundle and sign Offhand.app
         env:
           MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
           MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
         run: |
-          export FLOW_SIGNING_P12="$RUNNER_TEMP/flow-signing.p12"
-          export FLOW_SIGNING_PASSWORD_FILE="$RUNNER_TEMP/p12.pass"
-          printf '%s' "$MACOS_SIGNING_P12" | base64 --decode > "$FLOW_SIGNING_P12"
-          printf '%s' "$MACOS_SIGNING_PASSWORD" > "$FLOW_SIGNING_PASSWORD_FILE"
-          name="flow-${GITHUB_REF_NAME}-aarch64-macos"
+          export OFFHAND_SIGNING_P12="$RUNNER_TEMP/offhand-signing.p12"
+          export OFFHAND_SIGNING_PASSWORD_FILE="$RUNNER_TEMP/p12.pass"
+          printf '%s' "$MACOS_SIGNING_P12" | base64 --decode > "$OFFHAND_SIGNING_P12"
+          printf '%s' "$MACOS_SIGNING_PASSWORD" > "$OFFHAND_SIGNING_PASSWORD_FILE"
+          name="offhand-${GITHUB_REF_NAME}-aarch64-macos"
           mkdir -p "$name"
-          bash packaging/macos/bundle.sh target/release/flow \
-            crates/console/target/release/flow-console "${GITHUB_REF_NAME#v}" "$name"
-          for binary in Contents/MacOS/flow-console \
-            "Contents/Helpers/Flow Agent.app/Contents/MacOS/flow"; do
-            codesign -d -r- "$name/Flow.app/$binary" 2>&1 | grep -q 'certificate root' || {
+          bash packaging/macos/bundle.sh target/release/offhand \
+            crates/console/target/release/offhand-console "${GITHUB_REF_NAME#v}" "$name"
+          for binary in Contents/MacOS/offhand-console \
+            "Contents/Helpers/Offhand Agent.app/Contents/MacOS/offhand"; do
+            codesign -d -r- "$name/Offhand.app/$binary" 2>&1 | grep -q 'certificate root' || {
               echo "$binary was not signed with the release certificate" >&2
               exit 1
             }
           done
-          rm -f "$FLOW_SIGNING_P12" "$FLOW_SIGNING_PASSWORD_FILE"
+          rm -f "$OFFHAND_SIGNING_P12" "$OFFHAND_SIGNING_PASSWORD_FILE"
 
-      # Laid out like the Linux tarball, with Flow.app where that has bin/:
+      # Laid out like the Linux tarball, with Offhand.app where that has bin/:
       # packaging/install.sh installs the prebuilt app when it finds one.
       - name: Package
         run: |
-          name="flow-${GITHUB_REF_NAME}-aarch64-macos"
+          name="offhand-${GITHUB_REF_NAME}-aarch64-macos"
           cp -R packaging "$name/"
           cp README.md TROUBLESHOOTING.md LICENSE "$name/"
           tar czf "$name.tar.gz" "$name"
@@ -203,4 +203,4 @@ jobs:
       - name: Add to the draft
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" flow-*-aarch64-macos.tar.gz flow-*-aarch64-macos.tar.gz.sha256
+        run: gh release upload "$GITHUB_REF_NAME" offhand-*-aarch64-macos.tar.gz offhand-*-aarch64-macos.tar.gz.sha256

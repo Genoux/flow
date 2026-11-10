@@ -1,6 +1,6 @@
-//! `FLOW_DEBUG=1` - the detail that only helps while chasing something.
+//! `OFFHAND_DEBUG=1` - the detail that only helps while chasing something.
 //!
-//! Flow runs as a user unit with no terminal, so every line it prints lands in
+//! Offhand runs as a user unit with no terminal, so every line it prints lands in
 //! the journal and stays there. The daemon's normal output is worth keeping:
 //! one line per dictation plus the raw and refined text is exactly what you
 //! want when asking "what did it hear". Device enumeration and chord-release
@@ -12,15 +12,15 @@
 
 use std::sync::OnceLock;
 
-/// Whether `FLOW_DEBUG` asks for the chatty output.
+/// Whether `OFFHAND_DEBUG` asks for the chatty output.
 ///
 /// Read once, because this is checked inside the chord poll loop and an env
 /// lookup there would be a syscall every few milliseconds. `0` and the empty
-/// string count as off, so `FLOW_DEBUG=0` reads the way anyone would expect
+/// string count as off, so `OFFHAND_DEBUG=0` reads the way anyone would expect
 /// rather than being true for being present.
 pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| asked_for(std::env::var_os("FLOW_DEBUG").as_deref()))
+    *ENABLED.get_or_init(|| asked_for(std::env::var_os("OFFHAND_DEBUG").as_deref()))
 }
 
 /// Split out from [`enabled`] so it is testable: `enabled` caches a
@@ -29,7 +29,7 @@ fn asked_for(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| !value.is_empty() && value != "0")
 }
 
-/// `eprintln!` that only prints under `FLOW_DEBUG`.
+/// `eprintln!` that only prints under `OFFHAND_DEBUG`.
 #[macro_export]
 macro_rules! verbose {
     ($($arg:tt)*) => {

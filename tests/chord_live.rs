@@ -3,15 +3,15 @@
 //!
 //! Creates its own uinput keyboard and presses itself. Needs /dev/uinput and a
 //! readable /dev/input, and the compositor will also see these keys - so stop
-//! flow.service first or the daemon will dictate into whatever has focus:
-//!   systemctl --user stop flow.service
+//! offhand.service first or the daemon will dictate into whatever has focus:
+//!   systemctl --user stop offhand.service
 //!   cargo test --release --test chord_live -- --ignored --nocapture
-//!   systemctl --user start flow.service
+//!   systemctl --user start offhand.service
 #![cfg(target_os = "linux")]
 
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};
-use flow::hotkey::{self, Chord, Event};
+use offhand::hotkey::{self, Chord, Event};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ fn keyboard() -> VirtualDevice {
     }
     VirtualDevice::builder()
         .expect("open /dev/uinput")
-        .name("flow chord test keyboard")
+        .name("offhand chord test keyboard")
         .with_keys(&keys)
         .expect("keys")
         .build()
@@ -48,7 +48,7 @@ fn press(device: &mut VirtualDevice, key: KeyCode, down: bool) {
 #[ignore]
 fn the_real_keyboard_path_sees_the_chord() {
     let mut device = keyboard();
-    // udev has to create the node and flow has to enumerate it, in that order.
+    // udev has to create the node and offhand has to enumerate it, in that order.
     std::thread::sleep(Duration::from_millis(400));
 
     let (events, incoming) = std::sync::mpsc::channel();
@@ -61,7 +61,7 @@ fn the_real_keyboard_path_sees_the_chord() {
 
     let pressed = incoming
         .recv_timeout(Duration::from_secs(2))
-        .expect("no Pressed event - the chord never reached flow");
+        .expect("no Pressed event - the chord never reached offhand");
     assert_eq!(pressed, Event::Pressed);
 
     // Lifting Super first: the case Hyprland's release bind gets wrong.
@@ -136,7 +136,7 @@ fn a_stray_key_mid_hold_does_not_lose_the_recording() {
 }
 
 #[test]
-#[ignore = "requires uinput; stop flow.service before running"]
+#[ignore = "requires uinput; stop offhand.service before running"]
 fn modifier_only_combo_reaches_the_daemon() {
     let mut device = keyboard();
     std::thread::sleep(Duration::from_millis(400));

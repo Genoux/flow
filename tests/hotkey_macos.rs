@@ -6,11 +6,11 @@
 //! that read the same constants it checks would agree with any typo in them.
 
 use evdev::KeyCode;
-use flow::hotkey::macos::{
+use offhand::hotkey::macos::{
     KEYMAP, key_from_virtual_keycode, modifier_transition, modifiers_from_flags, stale_keys,
     virtual_keycode_from_key,
 };
-use flow::hotkey::{Chord, any_modifier_in};
+use offhand::hotkey::{Chord, any_modifier_in};
 use std::collections::HashSet;
 
 const SHIFT: u64 = 0x0002_0000;

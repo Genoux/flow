@@ -95,12 +95,12 @@ jobs:
           cargo build --release --manifest-path crates/console/Cargo.toml
 
       # The desktop entry is product surface and nothing else compiles it. It
-      # already shipped with three main categories, which put Flow in three
+      # already shipped with three main categories, which put Offhand in three
       # menus at once - a validator catches that and a reviewer does not.
       - name: Packaging
         run: |
           sudo apt-get install -y --no-install-recommends desktop-file-utils
-          desktop-file-validate packaging/flow-console.desktop
+          desktop-file-validate packaging/offhand-console.desktop
           python3 tests/packaging_channels.py
           bash -n packaging/install.sh
           bash -n packaging/uninstall.sh

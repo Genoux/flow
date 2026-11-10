@@ -24,7 +24,7 @@ pub fn write(path: &Path, contents: &str) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("file has no parent"))?;
     std::fs::create_dir_all(parent)?;
     let temporary = parent.join(format!(
-        ".flow-save-{}-{}",
+        ".offhand-save-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -52,7 +52,8 @@ mod tests {
 
     #[test]
     fn saves_follow_symlinks_and_keep_the_target_private() {
-        let root = std::env::temp_dir().join(format!("flow-storage-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("offhand-storage-test-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let target = root.join("actual.toml");
         let link = root.join("config.toml");

@@ -1,8 +1,8 @@
 //! Defaults must stand on their own, a partial file must only move the keys it
 //! names, and a typo must be loud rather than silently ignored.
 
-use flow::config::Config;
-use flow::refine::Cleanup;
+use offhand::config::Config;
+use offhand::refine::Cleanup;
 
 #[test]
 fn defaults_need_no_file() {
@@ -15,7 +15,7 @@ fn defaults_need_no_file() {
 
 #[test]
 fn missing_file_is_the_normal_state() {
-    let absent = std::env::temp_dir().join("flow-no-such-config.toml");
+    let absent = std::env::temp_dir().join("offhand-no-such-config.toml");
     assert_eq!(
         Config::load_from(&absent).expect("absent"),
         Config::default()
@@ -97,7 +97,7 @@ fn an_unknown_cleanup_level_is_loud() {
 #[test]
 fn comments_blank_lines_and_spacing_are_ignored() {
     let parsed =
-        Config::parse("# how flow behaves\n\n  push_to_talk=false  \nduck = 30 # halve music\n")
+        Config::parse("# how offhand behaves\n\n  push_to_talk=false  \nduck = 30 # halve music\n")
             .expect("parse");
     assert!(!parsed.push_to_talk);
     assert_eq!(parsed.duck, 30);
@@ -313,10 +313,18 @@ fn the_shipped_template_parses_and_matches_the_defaults() {
 /// otherwise unacknowledged until the text lands.
 #[test]
 fn the_dictation_sound_is_on_until_turned_off() {
-    assert!(flow::config::Config::default().sound);
-    assert!(flow::config::Config::parse("sound = true").unwrap().sound);
-    assert!(!flow::config::Config::parse("sound = false").unwrap().sound);
-    assert!(flow::config::Config::parse("sound = maybe").is_err());
+    assert!(offhand::config::Config::default().sound);
+    assert!(
+        offhand::config::Config::parse("sound = true")
+            .unwrap()
+            .sound
+    );
+    assert!(
+        !offhand::config::Config::parse("sound = false")
+            .unwrap()
+            .sound
+    );
+    assert!(offhand::config::Config::parse("sound = maybe").is_err());
 }
 
 #[test]
@@ -329,12 +337,12 @@ fn the_tray_icon_is_visible_until_turned_off() {
 
 #[test]
 fn a_line_from_another_version_costs_only_that_line() {
-    // The trap this closes: `~/.local/bin/flow` predating a key the console had
+    // The trap this closes: `~/.local/bin/offhand` predating a key the console had
     // already written meant systemd started it, it read `sound = false`, and it
     // exited 1 - on a loop, with no dictation and no way back from the window.
     // A line it cannot understand now costs that line and nothing else.
     let (config, complaints) = Config::parse_forgiving(
-        "push_to_talk = false\nfrom_a_newer_flow = 3\nduck = 20\ncleanup = walloped\n",
+        "push_to_talk = false\nfrom_a_newer_offhand = 3\nduck = 20\ncleanup = walloped\n",
     );
 
     assert!(!config.push_to_talk, "a good line before the bad one");
@@ -347,7 +355,7 @@ fn a_line_from_another_version_costs_only_that_line() {
 
     assert_eq!(complaints.len(), 2, "{complaints:?}");
     assert!(
-        complaints[0].contains("from_a_newer_flow"),
+        complaints[0].contains("from_a_newer_offhand"),
         "{complaints:?}"
     );
     assert!(complaints[0].contains("line 2"), "{complaints:?}");
@@ -358,7 +366,7 @@ fn a_line_from_another_version_costs_only_that_line() {
 fn a_whole_file_is_still_read_strictly() {
     // `parse` is what the live reload and the tests above lean on: it says no
     // rather than guessing, which is what keeps a typo loud.
-    assert!(Config::parse("from_a_newer_flow = 3\n").is_err());
+    assert!(Config::parse("from_a_newer_offhand = 3\n").is_err());
 }
 
 #[test]
@@ -377,7 +385,7 @@ fn a_blank_openrouter_key_is_no_key() {
 #[test]
 fn experimental_key_does_not_prevent_local_rollback() {
     let config = Config::parse("openrouter_key = sk-or-test\ncleanup = light\n").unwrap();
-    assert_eq!(config.cleanup, flow::refine::Cleanup::Light);
+    assert_eq!(config.cleanup, offhand::refine::Cleanup::Light);
 }
 
 #[test]

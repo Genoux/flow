@@ -9,8 +9,6 @@
 
 use super::{Action, Entry, Verb};
 use dispatch2::DispatchQueue;
-use flow_paths::launchd::{Agent, Runner, Verb as LaunchVerb};
-use flow_paths::process::{BUDGET, run_for};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -19,6 +17,8 @@ use objc2_app_kit::{
     NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, NSString};
+use offhand_paths::launchd::{Agent, Runner, Verb as LaunchVerb};
+use offhand_paths::process::{BUDGET, run_for};
 use std::cell::RefCell;
 use std::process::{Command, Output};
 use std::sync::{Mutex, PoisonError};
@@ -31,10 +31,10 @@ const ICON: &[u8] = include_bytes!("../../assets/tray.png");
 const ICON_POINTS: f64 = 18.0;
 
 const DICTATION: Agent = Agent {
-    label: "com.genoux.flow",
+    label: "com.genoux.offhand",
 };
 const TRAY: Agent = Agent {
-    label: "com.genoux.flow.tray",
+    label: "com.genoux.offhand.tray",
 };
 
 static ACTIONS: Mutex<()> = Mutex::new(());
@@ -49,7 +49,7 @@ const CHOICES: [Action; 4] = [
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "FlowTrayTarget"]
+    #[name = "OffhandTrayTarget"]
     struct Target;
 
     unsafe impl NSObjectProtocol for Target {}
@@ -189,18 +189,18 @@ fn report(what: &str, outcome: Result<(), String>) {
     }
 }
 
-/// Opens Flow.app, which is the console. Opening an app that is already
+/// Opens Offhand.app, which is the console. Opening an app that is already
 /// running brings its window forward rather than making a second one.
 pub fn open_console() {
     let Some(bundle) = std::env::current_exe()
         .ok()
-        .and_then(|exe| flow_paths::app_bundle(&exe))
+        .and_then(|exe| offhand_paths::app_bundle(&exe))
     else {
-        eprintln!("tray: not running from an app bundle, cannot open Flow");
+        eprintln!("tray: not running from an app bundle, cannot open Offhand");
         return;
     };
     if let Err(err) = Command::new("open").arg(bundle).status() {
-        eprintln!("tray: could not open Flow: {err}");
+        eprintln!("tray: could not open Offhand: {err}");
     }
 }
 
@@ -211,7 +211,7 @@ pub fn open_console() {
 /// socket either succeeds or is refused at once, and a socket left behind by a
 /// crashed daemon is refused, so it reads as not running.
 pub fn dictation_running() -> bool {
-    std::os::unix::net::UnixStream::connect(flow_paths::socket()).is_ok()
+    std::os::unix::net::UnixStream::connect(offhand_paths::socket()).is_ok()
 }
 
 pub fn dictation(verb: Verb) {
@@ -223,7 +223,7 @@ pub fn dictation(verb: Verb) {
     report("dictation", DICTATION.control(verb, &launchctl as Runner));
 }
 
-/// End Flow entirely: the daemon, then this controller. Unloading our own job
+/// End Offhand entirely: the daemon, then this controller. Unloading our own job
 /// is what makes this Quit rather than a second way to hide the icon -
 /// `show_tray = false` leaves the controller running so the icon can come back
 /// live. launchd ends this process as part of the call, so nothing after it is

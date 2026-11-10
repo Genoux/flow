@@ -9,7 +9,7 @@ impl Console {
         // Which engines these are is a fact about the build, not a choice -
         // the same class of thing as the version. Speech is a file on disk
         // again and so can be missing or damaged; nothing here offers to
-        // repair it, `flow install` does.
+        // repair it, `offhand install` does.
         let rows: Vec<Element<Message>> = vec![
             self.version_row(),
             fact_row(
@@ -35,7 +35,7 @@ impl Console {
         // of the Shortcut group, and naming only one of them here made the
         // product's one-line description describe a setting.
         section_shell(
-            "Flow",
+            "Offhand",
             "Speech on your machine, cleanup through OpenRouter.",
             rows,
         )
@@ -52,7 +52,7 @@ impl Console {
             };
             action_msg(label, true, Message::InstallUpdate)
         } else if matches!(self.update, update::Status::Installed(_)) {
-            action_msg("Restart Flow", true, Message::RestartApp)
+            action_msg("Restart Offhand", true, Message::RestartApp)
         } else if let update::Status::Available(tag) = &self.update {
             action_msg(&format!("Update to {tag}"), true, Message::InstallUpdate)
         } else if self.update == update::Status::Checking {

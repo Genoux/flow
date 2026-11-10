@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 /// is cubic, so a literal 50% is -18 dB and the music all but disappears.
 #[test]
 fn half_the_volume_means_half_the_signal() {
-    assert_eq!(flow::duck::ducked(100, 100), 100);
-    assert_eq!(flow::duck::ducked(100, 50), 79);
-    assert_eq!(flow::duck::ducked(100, 0), 0);
+    assert_eq!(offhand::duck::ducked(100, 100), 100);
+    assert_eq!(offhand::duck::ducked(100, 50), 79);
+    assert_eq!(offhand::duck::ducked(100, 0), 0);
 }
 
 /// A new stream sitting at the ducked level inherited it. Restoring that
@@ -19,8 +19,8 @@ fn half_the_volume_means_half_the_signal() {
 #[test]
 fn a_stream_already_at_the_duck_remembers_full_volume() {
     let known = [(1, 100)];
-    assert_eq!(flow::duck::original_volume(79, 50, &known), 100);
-    assert_eq!(flow::duck::original_volume(79, 50, &[]), 100);
+    assert_eq!(offhand::duck::original_volume(79, 50, &known), 100);
+    assert_eq!(offhand::duck::original_volume(79, 50, &[]), 100);
 }
 
 /// 90% is above anything the duck could have produced, so it is the stream's
@@ -28,28 +28,28 @@ fn a_stream_already_at_the_duck_remembers_full_volume() {
 /// genuinely ambiguous and is read as a clone, not tested for here.
 #[test]
 fn a_stream_that_appears_loud_keeps_that_as_original() {
-    assert_eq!(flow::duck::original_volume(90, 50, &[]), 90);
-    assert_eq!(flow::duck::original_volume(100, 50, &[(1, 80)]), 100);
+    assert_eq!(offhand::duck::original_volume(90, 50, &[]), 90);
+    assert_eq!(offhand::duck::original_volume(100, 50, &[(1, 80)]), 100);
 }
 
 #[test]
 fn a_stream_matching_a_known_original_reuses_it() {
     let known = [(1, 80)];
-    assert_eq!(flow::duck::original_volume(64, 50, &known), 80);
+    assert_eq!(offhand::duck::original_volume(64, 50, &known), 80);
 }
 
 #[test]
 fn a_player_that_jumps_back_up_has_escaped() {
-    assert!(flow::duck::escaped(100, 100, 50));
-    assert!(flow::duck::escaped(90, 100, 50));
-    assert!(!flow::duck::escaped(79, 100, 50));
-    assert!(!flow::duck::escaped(81, 100, 50));
+    assert!(offhand::duck::escaped(100, 100, 50));
+    assert!(offhand::duck::escaped(90, 100, 50));
+    assert!(!offhand::duck::escaped(79, 100, 50));
+    assert!(!offhand::duck::escaped(81, 100, 50));
 }
 
 /// The chime that says the microphone is open must not be faded out by the
 /// ducking that follows it half a beat later.
 #[test]
-fn flows_own_chime_is_never_ducked() {
+fn offhands_own_chime_is_never_ducked() {
     let payload = serde_json::json!([
         {
             "index": 7,
@@ -58,12 +58,12 @@ fn flows_own_chime_is_never_ducked() {
         },
         {
             "index": 8,
-            "properties": { "application.name": flow::chime::CLIENT },
+            "properties": { "application.name": offhand::chime::CLIENT },
             "volume": { "front-left": { "value_percent": "100%" } }
         }
     ]);
 
-    assert_eq!(flow::duck::duckable(&payload), vec![(7, 100)]);
+    assert_eq!(offhand::duck::duckable(&payload), vec![(7, 100)]);
 }
 
 /// A stream whose channels disagree is left alone: restoring it would need a
@@ -78,7 +78,7 @@ fn an_unbalanced_stream_is_left_alone() {
         }
     }]);
 
-    assert!(flow::duck::duckable(&payload).is_empty());
+    assert!(offhand::duck::duckable(&payload).is_empty());
 }
 
 /// Ducking is process-global state, and cargo runs tests as parallel threads,
@@ -126,7 +126,7 @@ fn sample() -> Option<(u32, u32)> {
 fn streams_started_after_ducking_are_caught() {
     let _serial = exclusive();
     let existing: Vec<u32> = sample().into_iter().map(|(index, _)| index).collect();
-    let mut ducker = flow::duck::Ducker::duck(50).expect("duck");
+    let mut ducker = offhand::duck::Ducker::duck(50).expect("duck");
     std::thread::sleep(Duration::from_millis(200));
 
     // speaker-test is in alsa-utils; skip cleanly when it is not installed.
@@ -195,7 +195,7 @@ fn duck_ramps_and_restores() {
 
     let mut seen = Vec::new();
     {
-        let mut ducker = flow::duck::Ducker::duck(50).expect("duck");
+        let mut ducker = offhand::duck::Ducker::duck(50).expect("duck");
 
         let watching = Instant::now();
         while watching.elapsed() < Duration::from_millis(400) {
@@ -207,7 +207,7 @@ fn duck_ramps_and_restores() {
         ducker.restore();
     }
 
-    let target = flow::duck::ducked(before, 50);
+    let target = offhand::duck::ducked(before, 50);
     eprintln!("observed during fade: {seen:?}  (target {target}%)");
 
     // The point of the ramp: values strictly between start and target, rather

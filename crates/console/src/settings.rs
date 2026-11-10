@@ -1,11 +1,11 @@
-//! Reading and writing `~/.config/flow/config.toml`.
+//! Reading and writing `~/.config/offhand/config.toml`.
 //!
 //! The daemon's parser is flat `key = value` with `#` comments, and this writes
 //! the same shape. Two rules it follows that a naive serialiser would not:
 //!
 //! * **Never rewrite the whole file.** A key we manage is edited in place; a
 //!   key we do not recognise, every comment, and the blank lines between them
-//!   are all left exactly as they were. The template Flow ships is mostly
+//!   are all left exactly as they were. The template Offhand ships is mostly
 //!   commented explanation, and losing it because a toggle moved would be a
 //!   poor trade.
 //! * **A commented-out default counts as absent.** `# duck = 50` is the
@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 pub fn config_path() -> PathBuf {
-    flow_paths::config_file()
+    offhand_paths::config_file()
 }
 
 /// How much the refining model may change what you said.
@@ -45,7 +45,7 @@ impl Cleanup {
         match value {
             "none" => Some(Self::None),
             "light" => Some(Self::Light),
-            // See `flow::refine::Cleanup::parse`: an existing `medium` or
+            // See `offhand::refine::Cleanup::parse`: an existing `medium` or
             // `hard` file must still round-trip through the window as Light
             // rather than reset the setting on open.
             "medium" | "hard" => Some(Self::Light),
@@ -98,7 +98,7 @@ impl Cleanup {
     /// "what do you think".
     ///
     /// Measured on both of this machine's GPUs, which do not always agree - see
-    /// `FLOW_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
+    /// `OFFHAND_TEST_GPU` in tests/refine.rs. Re-measure rather than hand-edit.
     /// Every level above `None` is refined by the cloud model, so without a
     /// key the card is advertising something the app cannot currently do.
     pub fn needs_key(self) -> bool {
@@ -115,7 +115,7 @@ impl Cleanup {
     }
 }
 
-/// The subset of Flow's config the window can change. Anything else in the
+/// The subset of Offhand's config the window can change. Anything else in the
 /// file is passed through untouched.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -123,7 +123,7 @@ pub struct Settings {
     pub cleanup: Cleanup,
     /// Play the island's arrive and leave chimes.
     pub sound: bool,
-    /// Show Flow's independent controller in the desktop's system tray.
+    /// Show Offhand's independent controller in the desktop's system tray.
     pub show_tray: bool,
     pub duck: u32,
     /// Which GPU runs the refining model. `None` means the daemon picks, and is
@@ -137,7 +137,7 @@ pub struct Settings {
     /// the system default and is written as no line at all, the same way `gpu`
     /// spells "choose for me".
     pub input_device: Option<String>,
-    /// OpenRouter API key. Absent means Flow cannot transcribe or refine at
+    /// OpenRouter API key. Absent means Offhand cannot transcribe or refine at
     /// all, so the daemon reports that rather than starting into a state where
     /// the hotkey silently does nothing.
     pub openrouter_key: Option<String>,

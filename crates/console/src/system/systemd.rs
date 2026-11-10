@@ -1,19 +1,19 @@
-//! The user units that run Flow on a Linux session.
+//! The user units that run Offhand on a Linux session.
 
 use std::time::Duration;
 
-use super::{reopen_flow, require_success, run, run_for, Channel};
+use super::{reopen_offhand, require_success, run, run_for, Channel};
 
 pub(crate) const OPENER: &str = "xdg-open";
 
-pub(crate) fn flow_program() -> String {
-    "flow".to_owned()
+pub(crate) fn offhand_program() -> String {
+    "offhand".to_owned()
 }
 
 pub(super) fn autostart_enabled_for(budget: Duration) -> Option<bool> {
     let output = run_for(
         "systemctl",
-        &["--user", "is-enabled", "flow.service"],
+        &["--user", "is-enabled", "offhand.service"],
         budget,
     )?;
     let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -32,7 +32,7 @@ pub(crate) fn set_autostart(enable: bool) -> Result<(), String> {
     let verb = if enable { "enable" } else { "disable" };
     require_success(
         "systemctl",
-        &["--user", verb, "flow.service"],
+        &["--user", verb, "offhand.service"],
         &format!("systemctl {verb} failed"),
     )
 }
@@ -40,18 +40,18 @@ pub(crate) fn set_autostart(enable: bool) -> Result<(), String> {
 pub(super) fn control(verb: &str) -> Result<(), String> {
     require_success(
         "systemctl",
-        &["--user", verb, "flow.service"],
+        &["--user", verb, "offhand.service"],
         &format!("systemctl {verb} failed"),
     )
 }
 
 /// `systemctl start` can succeed before a short-lived daemon exits. Confirm the
-/// unit survives startup so the UI never reports Flow as running when it has
+/// unit survives startup so the UI never reports Offhand as running when it has
 /// already failed.
 pub(super) fn ensure_running() -> Result<(), String> {
     for _ in 0..5 {
         std::thread::sleep(Duration::from_millis(100));
-        let output = run("systemctl", &["--user", "is-active", "flow.service"])
+        let output = run("systemctl", &["--user", "is-active", "offhand.service"])
             .ok_or_else(|| "systemctl did not respond".to_string())?;
         let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         match state.as_str() {
@@ -59,13 +59,13 @@ pub(super) fn ensure_running() -> Result<(), String> {
             "activating" => continue,
             _ => {
                 return Err(format!(
-                    "Flow stopped during startup (systemd reports {state}). Run `flow logs` for details."
+                    "Offhand stopped during startup (systemd reports {state}). Run `offhand logs` for details."
                 ));
             }
         }
     }
 
-    Err("Flow did not finish starting. Run `flow logs` for details.".into())
+    Err("Offhand did not finish starting. Run `offhand logs` for details.".into())
 }
 
 /// Ensure the independent tray controller exists. Starting an already active
@@ -73,24 +73,27 @@ pub(super) fn ensure_running() -> Result<(), String> {
 pub(crate) fn start_tray() -> Result<(), String> {
     require_success(
         "systemctl",
-        &["--user", "start", "flow-tray.service"],
-        "systemctl could not start the Flow tray",
+        &["--user", "start", "offhand-tray.service"],
+        "systemctl could not start the Offhand tray",
     )
 }
 
-pub(super) fn is_flow_process(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|comm| comm.trim() == "flow")
+pub(super) fn is_offhand_process(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|comm| comm.trim() == "offhand")
 }
 
 pub(crate) fn restart_app() -> Result<(), String> {
-    let console = bin_dir().join("flow-console");
+    let console = bin_dir().join("offhand-console");
     if !console.is_file() {
         return Err("The selected console is missing. Install the release again.".into());
     }
     super::service("stop")?;
-    let _ = run("systemctl", &["--user", "try-restart", "flow-tray.service"]);
+    let _ = run(
+        "systemctl",
+        &["--user", "try-restart", "offhand-tray.service"],
+    );
     // A child in the old console's transient unit dies when that window exits.
-    reopen_flow(
+    reopen_offhand(
         "systemd-run",
         &[
             "--user",
@@ -134,7 +137,7 @@ pub(super) fn reveal(path: &std::path::Path) -> Result<(), String> {
     super::open(folder)
 }
 
-/// Which build the `flow` symlink currently points at.
+/// Which build the `offhand` symlink currently points at.
 ///
 /// The link is the setting. There is deliberately no `channel = ` line in the
 /// config: two sources for one fact drift, and a config that claimed
@@ -146,7 +149,7 @@ pub(crate) fn channel() -> Channel {
 }
 
 fn channel_in(dir: &std::path::Path) -> Channel {
-    let link = dir.join("flow");
+    let link = dir.join("offhand");
     match std::fs::read_link(&link) {
         Ok(target) if target.to_string_lossy().ends_with("-experimental") => Channel::Experimental,
         Ok(_) => Channel::Stable,
@@ -164,13 +167,13 @@ fn bin_dir() -> std::path::PathBuf {
         })
 }
 
-/// Where an installed release's `flow` and `flow-console` are, and the suffix
+/// Where an installed release's `offhand` and `offhand-console` are, and the suffix
 /// they carry in that directory.
 pub(crate) fn installed_binaries(channel: Channel) -> Result<(std::path::PathBuf, String), String> {
     Ok((bin_dir(), format!("-{}", channel.suffix())))
 }
 
-/// Point `flow` and `flow-console` at the other build.
+/// Point `offhand` and `offhand-console` at the other build.
 ///
 /// Takes effect on restart, not now: the running daemon is the old binary and
 /// this window is the old console. Switching is repointing two links, so going
@@ -181,7 +184,7 @@ pub(crate) fn set_channel(channel: Channel) -> Result<(), String> {
 }
 
 fn set_channel_in(dir: &std::path::Path, channel: Channel) -> Result<(), String> {
-    for name in ["flow", "flow-console"] {
+    for name in ["offhand", "offhand-console"] {
         let target = dir.join(format!("{name}-{}", channel.suffix()));
         use std::os::unix::fs::PermissionsExt;
         if !target
@@ -194,23 +197,25 @@ fn set_channel_in(dir: &std::path::Path, channel: Channel) -> Result<(), String>
             ));
         }
     }
-    let stage = dir.join(".flow-channel-switch");
+    let stage = dir.join(".offhand-channel-switch");
     std::fs::create_dir(&stage).map_err(|e| format!("Preparing channel switch: {e}"))?;
     let result = (|| -> std::io::Result<()> {
-        for name in ["flow", "flow-console"] {
+        for name in ["offhand", "offhand-console"] {
             let link = dir.join(name);
             if link.symlink_metadata().is_ok() {
                 std::fs::hard_link(&link, stage.join(format!("{name}.old")))?;
             }
             std::os::unix::fs::symlink(format!("{name}-{}", channel.suffix()), stage.join(name))?;
         }
-        std::fs::rename(stage.join("flow"), dir.join("flow"))?;
-        if let Err(error) = std::fs::rename(stage.join("flow-console"), dir.join("flow-console")) {
-            let backup = stage.join("flow.old");
+        std::fs::rename(stage.join("offhand"), dir.join("offhand"))?;
+        if let Err(error) =
+            std::fs::rename(stage.join("offhand-console"), dir.join("offhand-console"))
+        {
+            let backup = stage.join("offhand.old");
             if backup.symlink_metadata().is_ok() {
-                std::fs::rename(backup, dir.join("flow"))?;
+                std::fs::rename(backup, dir.join("offhand"))?;
             } else {
-                std::fs::remove_file(dir.join("flow"))?;
+                std::fs::remove_file(dir.join("offhand"))?;
             }
             return Err(error);
         }
@@ -220,7 +225,7 @@ fn set_channel_in(dir: &std::path::Path, channel: Channel) -> Result<(), String>
     result.map_err(|e| format!("Switching release: {e}"))
 }
 
-/// The description of the default PipeWire source, which is what Flow records
+/// The description of the default PipeWire source, which is what Offhand records
 /// from until somebody picks a specific microphone. That is what labels the
 /// Auto-detect row on the Settings screen, so it is still read from `pactl`
 /// rather than remembered: the desktop's own sound settings can change it at
@@ -232,7 +237,7 @@ pub(crate) fn default_input() -> Option<String> {
     // that reason - but the default can be one too, which is what PipeWire
     // leaves behind when every capture card is off. Reported as a microphone it
     // made the Input row say "Following your system default - Monitor of
-    // Samson BT4": Flow announcing it would dictate the user's own output. No
+    // Samson BT4": Offhand announcing it would dictate the user's own output. No
     // answer is the honest one; `input_hint` is where it gets said.
     if name.is_empty() || name.ends_with(".monitor") {
         return None;
@@ -310,14 +315,14 @@ mod tests {
     /// be a window lying about which binary is about to run.
     #[test]
     fn switching_channels_repoints_both_links_and_is_reversible() {
-        let root = std::env::temp_dir().join(format!("flow-channel-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("offhand-channel-{}", std::process::id()));
         let bin = root.join(".local/bin");
         std::fs::create_dir_all(&bin).unwrap();
         for name in [
-            "flow-stable",
-            "flow-console-stable",
-            "flow-experimental",
-            "flow-console-experimental",
+            "offhand-stable",
+            "offhand-console-stable",
+            "offhand-experimental",
+            "offhand-console-experimental",
         ] {
             std::fs::write(bin.join(name), "").unwrap();
             use std::os::unix::fs::PermissionsExt;
@@ -325,21 +330,21 @@ mod tests {
                 .unwrap();
         }
         // A pre-channels install: a real file where the link belongs.
-        std::fs::write(bin.join("flow"), "").unwrap();
+        std::fs::write(bin.join("offhand"), "").unwrap();
 
         assert_eq!(channel_in(&bin), Channel::Stable, "no link reads as stable");
 
         set_channel_in(&bin, Channel::Experimental).unwrap();
         assert_eq!(channel_in(&bin), Channel::Experimental);
         assert!(
-            bin.join("flow").is_symlink(),
+            bin.join("offhand").is_symlink(),
             "the regular file was replaced"
         );
         assert_eq!(
-            std::fs::read_link(bin.join("flow-console"))
+            std::fs::read_link(bin.join("offhand-console"))
                 .unwrap()
                 .to_string_lossy(),
-            "flow-console-experimental",
+            "offhand-console-experimental",
             "the console link must move with the daemon link"
         );
 
@@ -350,12 +355,12 @@ mod tests {
             "switching back is the same click"
         );
 
-        std::fs::remove_file(bin.join("flow-console-experimental")).unwrap();
+        std::fs::remove_file(bin.join("offhand-console-experimental")).unwrap();
         assert!(set_channel_in(&bin, Channel::Experimental).is_err());
         assert_eq!(channel_in(&bin), Channel::Stable);
         assert_eq!(
-            std::fs::read_link(bin.join("flow-console")).unwrap(),
-            std::path::Path::new("flow-console-stable")
+            std::fs::read_link(bin.join("offhand-console")).unwrap(),
+            std::path::Path::new("offhand-console-stable")
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

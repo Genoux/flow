@@ -70,7 +70,7 @@ pub fn fingerprint(key: &str) -> String {
 }
 
 /// The outcome of testing the saved key against the real API, read back from
-/// `flow probe --porcelain`. Kept apart because each tells the user to do
+/// `offhand probe --porcelain`. Kept apart because each tells the user to do
 /// something different: paste a key, paste a different one, or try again
 /// later.
 #[derive(Debug, Clone)]
@@ -83,8 +83,8 @@ pub enum Outcome {
     Unreachable(String),
 }
 
-/// Parses `flow probe --porcelain`'s two lines. `None` is the same handshake
-/// `system::damage_for` uses on `check --porcelain`: an older `flow`, or one
+/// Parses `offhand probe --porcelain`'s two lines. `None` is the same handshake
+/// `system::damage_for` uses on `check --porcelain`: an older `offhand`, or one
 /// that did not answer, looks like a verdict this cannot read rather than a
 /// clean bill of health.
 pub fn parse_probe(text: &str) -> Option<Outcome> {

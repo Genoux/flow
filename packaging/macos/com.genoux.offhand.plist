@@ -3,19 +3,22 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.genoux.flow.tray</string>
+  <string>com.genoux.offhand</string>
   <key>ProgramArguments</key>
   <array>
-    <string>@APP@/Contents/Helpers/Flow Agent.app/Contents/MacOS/flow</string>
-    <string>tray</string>
+    <string>@APP@/Contents/Helpers/Offhand Agent.app/Contents/MacOS/offhand</string>
+    <string>daemon</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>AssociatedBundleIdentifiers</key>
   <array>
-    <string>com.genoux.flow</string>
+    <string>com.genoux.offhand</string>
   </array>
   <key>ProcessType</key>
   <string>Interactive</string>

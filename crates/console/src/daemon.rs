@@ -3,7 +3,7 @@
 //! The connection is deliberately unreliable-tolerant: the daemon may not be
 //! running when the console opens, may be restarted while it is open, and may
 //! never appear at all. None of those are errors worth showing a stack trace
-//! for - they are just "Flow isn't running", and the reader keeps trying.
+//! for - they are just "Offhand isn't running", and the reader keeps trying.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
@@ -11,11 +11,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// How long to wait before trying the socket again after it goes away. Long
-/// enough not to spin on a machine where Flow is simply not installed.
+/// enough not to spin on a machine where Offhand is simply not installed.
 const RETRY: Duration = Duration::from_secs(2);
 
 pub fn socket_path() -> PathBuf {
-    flow_paths::socket()
+    offhand_paths::socket()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

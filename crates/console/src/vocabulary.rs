@@ -2,7 +2,7 @@
 //!
 //! The file is the daemon's interface, but it is not the user's: adding a
 //! colleague's name should not mean finding a text editor. So this reads and
-//! writes `~/.config/flow/vocabulary.txt` and the window presents it as a list
+//! writes `~/.config/offhand/vocabulary.txt` and the window presents it as a list
 //! you add to and remove from.
 //!
 //! The leading comment block is preserved on write. It is the only explanation
@@ -131,7 +131,7 @@ pub fn validate(candidate: &str, existing: &[String]) -> Result<String, String> 
     }
     if is_unpronounceable(term) {
         return Err(format!(
-            "{term} has no sound to match. Flow fixes words that are heard wrong, \
+            "{term} has no sound to match. Offhand fixes words that are heard wrong, \
              so a term needs to be sayable."
         ));
     }
@@ -188,7 +188,9 @@ mod tests {
     /// not ours to judge.
     #[test]
     fn a_sayable_term_is_kept() {
-        for term in ["LLM", "AI", "Flow", "Hyprland", "Zürich", "北京", "GNOME"] {
+        for term in [
+            "LLM", "AI", "Offhand", "Hyprland", "Zürich", "北京", "GNOME",
+        ] {
             assert!(validate(term, &[]).is_ok(), "{term:?} was refused");
         }
     }
@@ -217,8 +219,8 @@ mod search_tests {
 
     #[test]
     fn sorting_and_filtering_keep_the_original_removal_index() {
-        let terms = ["Zürich", "Ada", "Hyprland", "Flow"].map(str::to_owned);
-        assert_eq!(matching(&terms, ""), vec![1, 3, 2, 0]);
+        let terms = ["Zürich", "Ada", "Hyprland", "Offhand"].map(str::to_owned);
+        assert_eq!(matching(&terms, ""), vec![1, 2, 3, 0]);
         assert_eq!(matching(&terms, " HYPR "), vec![2]);
         assert_eq!(matching(&terms, "ZÜR"), vec![0]);
         assert!(matching(&terms, "missing").is_empty());

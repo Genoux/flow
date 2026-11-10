@@ -1,5 +1,5 @@
 [Unit]
-Description=Flow voice dictation
+Description=Offhand voice dictation
 # Wayland clipboard and the uinput uaccess ACL both require the graphical
 # session, so the daemon must not outlive it.
 PartOf=graphical-session.target
@@ -7,10 +7,10 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-# No flags: behaviour belongs in ~/.config/flow/config.toml, which the daemon
+# No flags: behaviour belongs in ~/.config/offhand/config.toml, which the daemon
 # reads at startup and which works just as well absent. Flags here would win
 # over that file and quietly make it look ignored.
-ExecStart=%h/.local/bin/flow daemon
+ExecStart=%h/.local/bin/offhand daemon
 Restart=on-failure
 RestartSec=2
 

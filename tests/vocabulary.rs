@@ -8,7 +8,7 @@
 //! Run explicitly:
 //!   cargo test --release --test vocabulary -- --nocapture --ignored
 
-use flow::refine::{Cleanup, Style};
+use offhand::refine::{Cleanup, Style};
 
 const VOCABULARY: [&str; 9] = [
     "Satty",
@@ -48,11 +48,11 @@ const LEFT_ALONE: &[&str] = &[
 #[test]
 #[ignore = "calls OpenRouter with the configured key"]
 fn vocabulary_fixes_listed_names_and_nothing_else() {
-    let Some(key) = flow::config::Config::load().openrouter_key else {
+    let Some(key) = offhand::config::Config::load().openrouter_key else {
         eprintln!("skipping: no OpenRouter key configured");
         return;
     };
-    let refiner = flow::refine::Refiner::new(key);
+    let refiner = offhand::refine::Refiner::new(key);
     let style = Style::new(Cleanup::Light).with_vocabulary(VOCABULARY.map(str::to_string).to_vec());
     let refine = |raw: &str| {
         refiner

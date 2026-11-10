@@ -1,5 +1,5 @@
 # Maintainer: John Barry
-pkgname=flow
+pkgname=offhand
 pkgver=0.4.1
 pkgrel=1
 pkgdesc="Voice dictation daemon with a local speech model and a system tray console"
@@ -14,44 +14,47 @@ license=('MIT')
 # it to reach the compositor.
 depends=('alsa-lib' 'wayland' 'hicolor-icon-theme')
 optdepends=('vulkan-icd-loader: GPU-accelerated local speech model inference')
-install=flow.install
-source=("https://github.com/Genoux/flow/releases/download/v${pkgver}/flow-v${pkgver}-${CARCH}-linux.tar.gz")
+# The same program under its former name, owning the same job.
+replaces=('flow')
+conflicts=('flow')
+install=offhand.install
+source=("https://github.com/Genoux/flow/releases/download/v${pkgver}/offhand-v${pkgver}-${CARCH}-linux.tar.gz")
 sha256sums=('5878a706634b9f99b3b5ba17303ce4e5322cd3415c3b9a50b1be10719675e112')
 
 package() {
-	local srcname="flow-v${pkgver}-${CARCH}-linux"
+	local srcname="offhand-v${pkgver}-${CARCH}-linux"
 
-	install -Dm755 "$srcdir/$srcname/bin/flow" "$pkgdir/usr/bin/flow"
-	install -Dm755 "$srcdir/$srcname/bin/flow-console" "$pkgdir/usr/bin/flow-console"
+	install -Dm755 "$srcdir/$srcname/bin/offhand" "$pkgdir/usr/bin/offhand"
+	install -Dm755 "$srcdir/$srcname/bin/offhand-console" "$pkgdir/usr/bin/offhand-console"
 
 	install -Dm644 "$srcdir/$srcname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 	install -Dm644 "$srcdir/$srcname/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
 	install -Dm644 "$srcdir/$srcname/TROUBLESHOOTING.md" "$pkgdir/usr/share/doc/$pkgname/TROUBLESHOOTING.md"
 
-	install -Dm644 "$srcdir/$srcname/packaging/flow-console.desktop" \
-		"$pkgdir/usr/share/applications/flow-console.desktop"
-	install -Dm644 "$srcdir/$srcname/packaging/flow-console.png" \
-		"$pkgdir/usr/share/icons/hicolor/512x512/apps/flow-console.png"
+	install -Dm644 "$srcdir/$srcname/packaging/offhand-console.desktop" \
+		"$pkgdir/usr/share/applications/offhand-console.desktop"
+	install -Dm644 "$srcdir/$srcname/packaging/offhand-console.png" \
+		"$pkgdir/usr/share/icons/hicolor/512x512/apps/offhand-console.png"
 	# The upstream user-level installer hardcodes an absolute icon path
 	# because ~/.local/share/icons/hicolor has no index.theme there. A
 	# system package installs into the real hicolor theme (which always has
 	# one), so the bare theme name resolves correctly and themes with it.
-	sed -i "s|^Icon=.*|Icon=flow-console|" "$pkgdir/usr/share/applications/flow-console.desktop"
+	sed -i "s|^Icon=.*|Icon=offhand-console|" "$pkgdir/usr/share/applications/offhand-console.desktop"
 
-	# User-level unit paths (%h/.local/bin/flow) rewritten to the pacman-
+	# User-level unit paths (%h/.local/bin/offhand) rewritten to the pacman-
 	# managed binary path this package actually installs to.
-	install -Dm644 "$srcdir/$srcname/packaging/flow.service" \
-		"$pkgdir/usr/lib/systemd/user/flow.service"
-	install -Dm644 "$srcdir/$srcname/packaging/flow-tray.service" \
-		"$pkgdir/usr/lib/systemd/user/flow-tray.service"
-	sed -i "s|%h/.local/bin/flow|/usr/bin/flow|" \
-		"$pkgdir/usr/lib/systemd/user/flow.service" \
-		"$pkgdir/usr/lib/systemd/user/flow-tray.service"
+	install -Dm644 "$srcdir/$srcname/packaging/offhand.service" \
+		"$pkgdir/usr/lib/systemd/user/offhand.service"
+	install -Dm644 "$srcdir/$srcname/packaging/offhand-tray.service" \
+		"$pkgdir/usr/lib/systemd/user/offhand-tray.service"
+	sed -i "s|%h/.local/bin/offhand|/usr/bin/offhand|" \
+		"$pkgdir/usr/lib/systemd/user/offhand.service" \
+		"$pkgdir/usr/lib/systemd/user/offhand-tray.service"
 
-	# Flow opens /dev/uinput to type. Shipped as a udev rule rather than the
+	# Offhand opens /dev/uinput to type. Shipped as a udev rule rather than the
 	# printed sudo instructions the user-level installer gives, since a
 	# pacman package can own a file under /etc that $HOME cannot reach.
-	install -Dm644 /dev/stdin "$pkgdir/usr/lib/udev/rules.d/99-flow-uinput.rules" <<-'EOF'
+	install -Dm644 /dev/stdin "$pkgdir/usr/lib/udev/rules.d/99-offhand-uinput.rules" <<-'EOF'
 	KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
 	EOF
 }

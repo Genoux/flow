@@ -1,7 +1,7 @@
 //! The manifest is the installer's only source of truth, so it has to be
 //! self-consistent and pinned to an immutable revision.
 
-use flow::install;
+use offhand::install;
 
 #[test]
 fn the_manifest_is_well_formed() {
@@ -71,7 +71,7 @@ fn the_download_size_is_reported_in_gigabytes() {
 #[test]
 #[ignore]
 fn the_pins_match_the_speech_model_on_disk() {
-    let root = flow_paths::models_dir();
+    let root = offhand_paths::models_dir();
     for asset in install::SPEECH {
         let path = root.join(asset.dest);
         if !path.is_file() {
@@ -96,10 +96,11 @@ fn the_pins_match_the_speech_model_on_disk() {
 /// The launch check: what the console spawns to find out whether an install
 /// is whole, without hashing 2.6GB to do it.
 mod damage_report {
-    use flow::install;
+    use offhand::install;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("flow-damage-{name}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("offhand-damage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         root
     }

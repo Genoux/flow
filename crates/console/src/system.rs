@@ -1,4 +1,4 @@
-//! The parts of the machine the window reports on or changes: whether Flow
+//! The parts of the machine the window reports on or changes: whether Offhand
 //! starts with the session, and which microphone PipeWire is actually handing
 //! it.
 //!
@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-pub(crate) use flow_paths::process::{run_for, BUDGET};
+pub(crate) use offhand_paths::process::{run_for, BUDGET};
 /// Launch-time reads are advisory. If one owner is wedged, an absent answer is
 /// better than holding the first frame for the full interactive-action budget.
 const STARTUP_BUDGET: Duration = Duration::from_millis(250);
@@ -40,12 +40,12 @@ fn require_success(program: &str, args: &[&str], fallback: &str) -> Result<(), S
 }
 
 /// The last step of `restart_app`, once the daemon is back up.
-fn reopen_flow(program: &str, args: &[&str]) -> Result<(), String> {
+fn reopen_offhand(program: &str, args: &[&str]) -> Result<(), String> {
     let output = run(program, args)
-        .ok_or("The replacement window could not be started. Reopen Flow to retry.")?;
+        .ok_or("The replacement window could not be started. Reopen Offhand to retry.")?;
     if !output.status.success() {
         return Err(format!(
-            "Could not reopen Flow: {}",
+            "Could not reopen Offhand: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
@@ -63,10 +63,10 @@ use launchd as platform;
 #[cfg(not(target_os = "macos"))]
 use systemd as platform;
 
-use platform::{autostart_enabled_for, control, ensure_running, is_flow_process, OPENER};
+use platform::{autostart_enabled_for, control, ensure_running, is_offhand_process, OPENER};
 pub(crate) use platform::{
-    channel, default_input, flow_program, input_sources, installed_binaries, restart_app, session,
-    set_autostart, set_channel, start_tray,
+    channel, default_input, input_sources, installed_binaries, offhand_program, restart_app,
+    session, set_autostart, set_channel, start_tray,
 };
 
 /// Whether the user unit is enabled, or `None` when systemd cannot answer -
@@ -86,7 +86,7 @@ pub fn startup_autostart_enabled() -> Option<bool> {
 /// length, straight from the daemon binary - which is the one that pins their
 /// names and sizes.
 ///
-/// `None` means no verdict: no `flow` on PATH, or it did not answer inside the
+/// `None` means no verdict: no `offhand` on PATH, or it did not answer inside the
 /// budget. The window falls back to what it can see for itself (whether the
 /// model directory exists at all) rather than claiming an install is whole on
 /// the strength of a command that never ran.
@@ -105,10 +105,10 @@ pub fn startup_damage() -> Option<usize> {
 }
 
 fn damage_for(budget: Duration) -> Option<usize> {
-    let output = run_for(&flow_program(), &["check", "--porcelain"], budget)?;
+    let output = run_for(&offhand_program(), &["check", "--porcelain"], budget)?;
     let text = String::from_utf8_lossy(&output.stdout);
 
-    // The verdict line is the handshake: without it this is an older `flow`
+    // The verdict line is the handshake: without it this is an older `offhand`
     // that has no idea what was asked of it, and an empty stdout would
     // otherwise read as a clean bill of health.
     let answered = text
@@ -132,10 +132,10 @@ const PROBE_BUDGET: Duration = Duration::from_secs(15);
 /// a second HTTP call from this window could disagree with the one dictation
 /// actually gets.
 ///
-/// `None` means no verdict, the same as [`damage`]: no `flow` on PATH, or it
+/// `None` means no verdict, the same as [`damage`]: no `offhand` on PATH, or it
 /// did not answer inside the budget.
 pub fn probe_router() -> Option<crate::openrouter::Outcome> {
-    let output = run_for(&flow_program(), &["probe", "--porcelain"], PROBE_BUDGET)?;
+    let output = run_for(&offhand_program(), &["probe", "--porcelain"], PROBE_BUDGET)?;
     crate::openrouter::parse_probe(&String::from_utf8_lossy(&output.stdout))
 }
 
@@ -160,7 +160,7 @@ impl Channel {
 /// thing on - especially when it is not running, which is the one state where
 /// the keybinding cannot help you.
 pub fn service(verb: &str) -> Result<(), String> {
-    if verb == "start" && daemon_listening(&flow_paths::socket()) {
+    if verb == "start" && daemon_listening(&offhand_paths::socket()) {
         return Ok(());
     }
     control(verb)?;
@@ -180,25 +180,25 @@ fn daemon_listening(path: &std::path::Path) -> bool {
 /// Stop the daemon itself, and not only the unit systemd knows about.
 ///
 /// `systemctl stop` reaches a daemon systemd started and nothing else. One
-/// launched any other way - `flow daemon` in a terminal, the checkout that
-/// `flow-dev` runs - keeps its grab on the chord, so the window reported Flow
+/// launched any other way - `offhand daemon` in a terminal, the checkout that
+/// `offhand-dev` runs - keeps its grab on the chord, so the window reported Offhand
 /// stopped while the trigger key still opened the microphone. Stop is the one
 /// word here that has to be believed: it is the user saying not now, and the
 /// only way back is the Start button beside it.
 ///
 /// The pid file is the daemon's own answer to which process it is, which is
-/// what `flow start` and `flow stop` already signal. Reading `comm` before
+/// what `offhand start` and `offhand stop` already signal. Reading `comm` before
 /// signalling is what makes that safe from this side: the file outlives a
 /// crash, and by then the pid may belong to somebody else entirely.
 fn terminate_daemon() {
-    let path = flow_paths::pid_file();
+    let path = offhand_paths::pid_file();
     let Some(pid) = std::fs::read_to_string(&path)
         .ok()
         .and_then(|raw| raw.trim().parse::<u32>().ok())
     else {
         return;
     };
-    if !is_flow_process(pid) {
+    if !is_offhand_process(pid) {
         return;
     }
     run("kill", &["-TERM", &pid.to_string()]);
@@ -232,9 +232,9 @@ pub fn reveal(path: &std::path::Path) -> Result<(), String> {
 mod tests {
     #[test]
     fn an_existing_daemon_is_detected_but_a_stale_socket_is_not() {
-        let dir = std::env::temp_dir().join(format!("flow-startup-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("offhand-startup-test-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
-        let socket = dir.join("flow.sock");
+        let socket = dir.join("offhand.sock");
         assert!(!super::daemon_listening(&socket));
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         assert!(super::daemon_listening(&socket));
@@ -261,8 +261,8 @@ mod tests {
     /// between that and killing an innocent process is this check. A recycled
     /// pid is exactly what a stale pid file looks like from here.
     #[test]
-    fn only_a_process_called_flow_is_signalled() {
-        assert!(!is_flow_process(std::process::id()));
-        assert!(!is_flow_process(u32::MAX));
+    fn only_a_process_called_offhand_is_signalled() {
+        assert!(!is_offhand_process(std::process::id()));
+        assert!(!is_offhand_process(u32::MAX));
     }
 }

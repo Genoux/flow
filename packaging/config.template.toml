@@ -1,22 +1,22 @@
-# Flow's config, at ~/.config/flow/config.toml. It behaves the same with or
+# Offhand's config, at ~/.config/offhand/config.toml. It behaves the same with or
 # without this file: every key below is shown at its built-in default and
 # commented out, so uncomment only what you want to change. Deleting the whole
 # file is also fine.
 #
-# Command-line flags win over this file, so `flow daemon --raw` still overrides
+# Command-line flags win over this file, so `offhand daemon --raw` still overrides
 # refining for a one-off comparison without editing anything.
 #
-# Word fixes live next door in ~/.config/flow/vocabulary.txt, not here.
+# Word fixes live next door in ~/.config/offhand/vocabulary.txt, not here.
 
-# Show Flow in the desktop's system tray. Turning this off hides only the icon;
+# Show Offhand in the desktop's system tray. Turning this off hides only the icon;
 # dictation and the daemon keep running.
 # show_tray = true
 
 # On, hold the chord while you speak. Off, tap to start and tap to stop.
 # push_to_talk = true
 
-# The combination to hold. Flow watches the keyboard directly, so this needs no
-# compositor setup - though a compositor bind calling `flow start` still works.
+# The combination to hold. Offhand watches the keyboard directly, so this needs no
+# compositor setup - though a compositor bind calling `offhand start` still works.
 #
 # Super is the same key whether the cap says Windows or Command, so this reaches
 # every keyboard. Change it if your desktop already uses it: modifiers are
@@ -33,7 +33,7 @@
 # duck = 50
 
 # How much the refining model may change what you said, matching the Style screen
-# in the Flow window:
+# in the Offhand window:
 #
 #   none     types exactly what you said
 #   light    fixes grammar and punctuation, and removes stumbles
@@ -56,8 +56,8 @@
 # it by hand, chmod it yourself.
 # openrouter_key = "sk-or-v1-..."
 
-# Keep every dictation's audio under ~/.local/share/flow/recordings. This is
-# what `flow retry` reads; without it there is nothing to replay and no way to
+# Keep every dictation's audio under ~/.local/share/offhand/recordings. This is
+# what `offhand retry` reads; without it there is nothing to replay and no way to
 # answer "why did I get that text". Off by default because long sessions add up
 # on disk fast.
 # record_debug = false

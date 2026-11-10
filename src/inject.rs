@@ -85,7 +85,7 @@ const FOCUS_BUDGET: Duration = Duration::from_millis(200);
 ///
 /// So the value is a margin over "how long does a consumer take to ask".
 /// Measured on this machine with `wl-copy --paste-once`, timing the copy until
-/// its first read: 25ms, 17ms, 18ms. The timer starts after Flow's keyboard has
+/// its first read: 25ms, 17ms, 18ms. The timer starts after Offhand's keyboard has
 /// finished emitting the chord, or after an optional compositor route has
 /// acknowledged it, so it covers the target app's react-and-ask time rather
 /// than modifier waiting. 500ms is a 20x margin on that.
@@ -93,7 +93,7 @@ const FOCUS_BUDGET: Duration = Duration::from_millis(200);
 /// It used to be 3s, which was safe and wrong: a 3s window is long enough for
 /// someone to finish dictating, reach for Ctrl+V, and paste the transcript
 /// back over the image they had copied. The clipboard is the user's, not
-/// Flow's, and the whole point of snapshotting it is to hand it back promptly.
+/// Offhand's, and the whole point of snapshotting it is to hand it back promptly.
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(500);
 
 /// Numbers each injection, so a restore can tell whether its dictation still
@@ -195,7 +195,7 @@ impl Injector {
                 }
                 let device = VirtualDevice::builder()
                     .context("opening /dev/uinput - is the uaccess udev rule present?")?
-                    .name("flow virtual keyboard")
+                    .name("offhand virtual keyboard")
                     .with_keys(&keys)?
                     .build()?;
                 std::thread::sleep(DEVICE_SETTLE);
@@ -218,10 +218,10 @@ impl Injector {
     /// Put `text` in the focused window by staging it on the clipboard and
     /// sending one paste chord.
     ///
-    /// Flow's own keyboard is always the default. If the user's physical
+    /// Offhand's own keyboard is always the default. If the user's physical
     /// modifiers are still down, an optional compositor route may deliver the
     /// chord without inheriting them - see [`compositor_paste`]. Without one,
-    /// Flow waits for the board to clear and uses its own keyboard as usual.
+    /// Offhand waits for the board to clear and uses its own keyboard as usual.
     pub fn inject(&mut self, text: &str) -> Result<()> {
         let generation = CLIPBOARD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         let saved = take_put_aside().unwrap_or_else(snapshot_clipboard);
@@ -436,13 +436,13 @@ fn compositor_paste(chord: &[KeyCode]) -> bool {
     hyprland_paste(chord)
 }
 
-/// Ask Hyprland to rescue a paste that Flow's own keyboard cannot safely send
+/// Ask Hyprland to rescue a paste that Offhand's own keyboard cannot safely send
 /// while physical modifiers are held, and say whether it did.
 ///
-/// # Why the compositor and not Flow's own keyboard
+/// # Why the compositor and not Offhand's own keyboard
 ///
 /// Because Hyprland merges the modifiers of every keyboard on the seat before
-/// it hands a key event on. A chord sent from Flow's virtual keyboard while the
+/// it hands a key event on. A chord sent from Offhand's virtual keyboard while the
 /// user still holds super+shift arrives at the client as super+shift+ctrl+v,
 /// which no application treats as a paste, so the dictation lands nowhere. That
 /// is why [`MODIFIER_WAIT`] exists at all: the fallback path genuinely has to
@@ -474,7 +474,7 @@ fn hyprland_paste(chord: &[KeyCode]) -> bool {
             _ => None,
         })
         .collect();
-    // The one key that is not a modifier. Flow only ever pastes, so there is
+    // The one key that is not a modifier. Offhand only ever pastes, so there is
     // exactly one, and a chord shaped otherwise is not ours to send this way.
     let [key] = chord
         .iter()
@@ -522,7 +522,7 @@ fn hyprland_paste(chord: &[KeyCode]) -> bool {
     true
 }
 
-/// The name `send_shortcut` knows a key by. Only the keys Flow can paste with,
+/// The name `send_shortcut` knows a key by. Only the keys Offhand can paste with,
 /// for the same reason the keymap it uploads has three keys in it.
 #[cfg(target_os = "linux")]
 fn key_name(key: KeyCode) -> Option<&'static str> {
@@ -532,7 +532,7 @@ fn key_name(key: KeyCode) -> Option<&'static str> {
     }
 }
 
-/// What the user presses to paste by hand when Flow could not.
+/// What the user presses to paste by hand when Offhand could not.
 pub const PASTE_SHORTCUT: &str = if cfg!(target_os = "macos") {
     "Cmd+V"
 } else {
@@ -566,7 +566,7 @@ fn wait_out_held_modifiers() -> bool {
         // fires, the compositor eats it, and the user watches an empty text
         // field. The text is already staged, so say where it went.
         crate::notify::failure(
-            "Flow couldn't paste",
+            "Offhand couldn't paste",
             &format!("Your text is on the clipboard - press {PASTE_SHORTCUT}."),
         );
         eprintln!(

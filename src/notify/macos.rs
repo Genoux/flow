@@ -1,5 +1,5 @@
-//! A notification from Flow itself, through UserNotifications, so it carries
-//! Flow Agent's name and icon.
+//! A notification from Offhand itself, through UserNotifications, so it carries
+//! Offhand Agent's name and icon.
 
 use block2::RcBlock;
 use objc2::runtime::Bool;
@@ -49,7 +49,7 @@ fn add(summary: &str, body: &str) {
     // Distinct, because a request with the identifier of one still on screen
     // replaces it, and these are separate failures.
     let identifier = format!(
-        "flow-{}-{}",
+        "offhand-{}-{}",
         std::process::id(),
         POSTED.fetch_add(1, Ordering::Relaxed)
     );

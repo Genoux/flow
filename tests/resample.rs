@@ -4,7 +4,7 @@
 //! is right, how the callback happened to be chunked changes nothing, and the
 //! voice band survives.
 
-use flow::audio::{MonoResampler, SAMPLE_RATE};
+use offhand::audio::{MonoResampler, SAMPLE_RATE};
 
 const TONE_HZ: f32 = 440.0;
 const AMPLITUDE: f32 = 0.5;

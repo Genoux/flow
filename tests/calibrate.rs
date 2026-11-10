@@ -1,18 +1,18 @@
 //! Searches BAND_GAIN and the dB window for values that satisfy every constraint
 //! in tests/spectrum.rs at once, from measured per-frame amplitudes.
 //!   cargo test --release --test calibrate -- --ignored --nocapture
-use flow::overlay::{Analyzer, BAND_COUNT, WINDOW};
+use offhand::overlay::{Analyzer, BAND_COUNT, WINDOW};
 
 /// Every window, with the broadband level beside its band amplitudes, so the
 /// search can gate frames exactly the way `Analyzer::bands` does. Without that the
 /// search optimises means over frames the island never draws.
 fn frames() -> Vec<(f32, [f32; BAND_COUNT])> {
-    let samples = flow::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
+    let samples = offhand::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
     let mut analyzer = Analyzer::new();
     let mut out = Vec::new();
     let mut at = WINDOW;
     while at <= samples.len() {
-        let level = flow::audio::rms(&samples[at - WINDOW..at]);
+        let level = offhand::audio::rms(&samples[at - WINDOW..at]);
         out.push((level, analyzer.amplitudes(&samples[..at])));
         at += 256;
     }

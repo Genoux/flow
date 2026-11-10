@@ -7,7 +7,7 @@
 //! movement: speech swings 30x between its vowels and the gaps between its words,
 //! this room swings 2 to 3x.
 
-use flow::audio::{SAMPLE_RATE, sounds_like_speech, swing};
+use offhand::audio::{SAMPLE_RATE, sounds_like_speech, swing};
 
 const RATE: usize = SAMPLE_RATE as usize;
 
@@ -68,7 +68,7 @@ fn loudness_does_not_decide() {
 
 #[test]
 fn real_speech_is_a_voice() {
-    let speech = flow::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
+    let speech = offhand::wav::read_16k_mono("tests/fixtures/jfk.wav").expect("fixture");
     let measured = swing(&speech);
     assert!(
         sounds_like_speech(&speech),

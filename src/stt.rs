@@ -72,7 +72,8 @@ mod tests {
 
     #[test]
     fn a_missing_model_directory_is_a_clear_error_not_a_panic() {
-        let dir = std::env::temp_dir().join(format!("flow-no-such-model-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("offhand-no-such-model-{}", std::process::id()));
         let Err(err) = Stt::load(&dir) else {
             panic!("a missing model directory must not load successfully");
         };
