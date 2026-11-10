@@ -34,11 +34,7 @@ impl Console {
         // Not "push-to-talk": tap to start and tap to stop is the other half
         // of the Shortcut group, and naming only one of them here made the
         // product's one-line description describe a setting.
-        section_shell(
-            "Offhand",
-            "Speech on your machine, cleanup through OpenRouter.",
-            rows,
-        )
+        branded_section_shell("Speech on your machine, cleanup through OpenRouter.", rows)
     }
 
     fn version_row(&self) -> Element<'_, Message> {

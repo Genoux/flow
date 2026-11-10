@@ -166,16 +166,20 @@ pub(crate) fn heading<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Mess
     block.push(Space::new().height(SCROLL_PAD)).into()
 }
 
-/// Every settings screen is the same shape: a heading and a list that
-/// scroll together, and a footer docked to the pane. The title yields its
-/// room in a short window; the path and its action do not ride under the
-/// last row.
-pub(crate) fn section_shell<'a>(
-    title: &'a str,
+/// A section headed by the logo in place of a title, for the page that says
+/// what the app is. The logo already spells the name, so a title under it
+/// would say it twice.
+pub(crate) fn branded_section_shell<'a>(
     subtitle: &'a str,
     rows: Vec<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    page_shell(title, subtitle, hairlined(rows))
+    scroll(column![
+        crate::brand::lockup(TITLE * 1.6, FG),
+        Space::new().height(14),
+        text(subtitle).size(BODY).color(MUTED),
+        Space::new().height(SCROLL_PAD),
+        hairlined(rows)
+    ])
 }
 
 /// Rows with a rule between each pair and none at either end.

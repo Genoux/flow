@@ -9,6 +9,7 @@
 
 mod chord;
 
+mod brand;
 mod calendar;
 mod card;
 mod control;
@@ -36,8 +37,8 @@ use crate::card::stat_tile;
 use crate::control::{action_msg, card_rule, pip, toggle, value_slider, vertical_hairline};
 use crate::format::{commas, plural, trend};
 use crate::layout::{
-    entry_list, entry_row, fact_path, fact_row, group, heading, inert, nav, page_shell, scroll,
-    scroll_inset, section_shell, setting,
+    branded_section_shell, entry_list, entry_row, fact_path, fact_row, group, heading, inert, nav,
+    page_shell, scroll, scroll_inset, setting,
 };
 use crate::theme::{
     mix, progress, ACCENT, BG, BODY, CALENDAR_DAYS, CARD_RADIUS, CONTENT_RIGHT, COPIED, DISPLAY,
