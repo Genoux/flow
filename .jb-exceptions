@@ -1,0 +1,2 @@
+R3.4: five commits from 2026-09-07 on published main carry attribution trailers; removing them means rewriting main, which is the owner's call (R3.7)
+R9: the in-app updater predates R9: it reads the GitHub releases API, offers pre-releases on the experimental channel, and verifies a sha256 file rather than a signature; moving to latest.json and signed updates is application work for its own branch

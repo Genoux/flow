@@ -19,6 +19,8 @@ crates/console/target/
 !.env.example
 .demo/
 dist/
+# jb sync's one backup of a file it edits
+*.jb-backup
 # agent tooling stays untracked (R3.4)
 .claude/
 .cursor/
@@ -27,3 +29,4 @@ dist/
 .engram/
 .atl/
 # <<< jb-toolkit
+target/
