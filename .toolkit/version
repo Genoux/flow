@@ -1,6 +1,6 @@
 #!/bin/sh
 # Managed by jb-toolkit (jb sync). RULES.md R4.2.
-# Prints the project version. Fails when no manifest names one or two disagree.
+# Prints the project version (the top-level one: never a nested or dependency version). Fails when no manifest names one or two disagree.
 #   .toolkit/version          print the version
 #   .toolkit/version --files  print "<file> <version>" for every manifest read
 # Extra manifests (e.g. workspace members) go one path per line in
@@ -9,14 +9,30 @@ cd "$(dirname "$0")/.." || exit 1
 
 read_version() {
   case "$1" in
-    *Cargo.toml|*pyproject.toml)
-      # The first literal version line; `version.workspace = true` is skipped.
-      sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1 ;;
+    *Cargo.toml)
+      toml_version "$1" "[package] [workspace.package]" ;;
+    *pyproject.toml)
+      toml_version "$1" "[project]" ;;
     *package.json)
-      sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1 ;;
+      jq -r '.version // empty | strings' "$1" ;;
     *VERSION)
       tr -d '[:space:]' < "$1" ;;
   esac
+}
+
+# The version key of one table only: a dependency's version is not ours.
+# `version.workspace = true` has no literal and is skipped.
+toml_version() {
+  awk -v tables="$2" '
+    BEGIN { n = split(tables, wanted, " ") }
+    /^\[/ {
+      header = $0; sub(/[[:space:]]*(#.*)?$/, "", header); in_table = 0
+      for (i = 1; i <= n; i++) if (header == wanted[i]) in_table = 1
+      next
+    }
+    in_table && match($0, /^version[[:space:]]*=[[:space:]]*"[^"]*"/) {
+      v = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", v); sub(/"$/, "", v); print v; exit
+    }' "$1"
 }
 
 files=""

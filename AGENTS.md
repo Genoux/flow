@@ -119,3 +119,5 @@ OpenRouter request. `offhand install` fetches the speech model.
 - Known exception (R3.4): five commits in history (`f9ceca2`, `2a36e94`,
   `a71a97e`, `0bc954d`, `ce2b609`) carry attribution lines, so `jb check`
   reports them. They are not rewritten (R3.7) without the owner asking.
+
+Every agent follows the shared rules in `.toolkit/RULES.md` (managed by jb-toolkit); deliberate exceptions are in `.jb-exceptions`.
