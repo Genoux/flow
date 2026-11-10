@@ -588,8 +588,8 @@ pub fn view(state: &State, fade: f32) -> Element<'_, Message> {
     // tree, which is what stops the ring above it jumping the instant a
     // failure does give the user something to press.
     //
-    // Outlined, not filled. The accent is green, and a saturated green button
-    // is the brightest thing on a screen whose message is red - the eye landed
+    // Outlined, not filled. A filled accent button is the brightest thing on a
+    // screen whose message is red - the eye landed
     // on the reassurance before the problem. Either way it is the only control
     // here, so it does not need a fill to be found.
     page = page.push(Space::new().height(22));

@@ -103,12 +103,15 @@ pub(crate) const EDGE: Color = Color {
     b: 0.173,
     a: 1.0,
 }; // #282A2C
+/// The logo's bone, for whatever invites a click or carries emphasis. It was
+/// the status green, and green on every toggle, button and heatmap cell made
+/// the whole window read as green rather than green reading as "healthy".
 pub(crate) const ACCENT: Color = Color {
-    r: 0.180,
-    g: 0.835,
-    b: 0.451,
+    r: 0.953,
+    g: 0.937,
+    b: 0.902,
     a: 1.0,
-}; // #2ED573
+}; // #F3EFE6
 pub(crate) const STARTING: Color = Color {
     r: 0.929,
     g: 0.612,
@@ -121,13 +124,17 @@ pub(crate) const ERR: Color = Color {
     b: 0.420,
     a: 1.0,
 }; // #D4736B
-/// "Nothing to do" - and the same green as ACCENT, deliberately. It used to be
-/// a muted olive of its own, to sit at ERR's weight in a row of dots, and next
-/// to the accent it just read as a second, dirtier green. One green in the
-/// product, one meaning per colour: green is fine, red is not.
-pub(crate) const OK: Color = ACCENT;
+/// "Nothing to do", and the only green in the product: one meaning per colour,
+/// green is fine, red is not. A muted olive was tried and beside a green accent
+/// read as a second, dirtier green.
+pub(crate) const OK: Color = Color {
+    r: 0.180,
+    g: 0.835,
+    b: 0.451,
+    a: 1.0,
+}; // #2ED573
 /// "Something needs you" - and the same amber as STARTING, on the same
-/// principle as OK above. One meaning per colour: green invites, amber warns,
+/// principle as OK above. One meaning per colour: green is fine, amber warns,
 /// red is a failure. A broken install is not a failure of Offhand's, it is a job
 /// waiting to be done, so it takes the middle one.
 pub(crate) const WARN: Color = STARTING;
