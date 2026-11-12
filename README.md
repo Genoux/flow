@@ -20,8 +20,8 @@ island that appears while you speak.
 ## Install
 
 ```bash
-git clone https://github.com/Genoux/flow
-cd flow && ./packaging/install.sh
+git clone https://github.com/Genoux/offhand
+cd offhand && ./packaging/install.sh
 ```
 
 Or download a release tarball, unpack it, and run the same `packaging/install.sh`
