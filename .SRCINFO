@@ -2,7 +2,7 @@ pkgbase = offhand
 	pkgdesc = Voice dictation daemon with a local speech model and a system tray console
 	pkgver = 0.4.1
 	pkgrel = 1
-	url = https://github.com/Genoux/flow
+	url = https://github.com/Genoux/offhand
 	install = offhand.install
 	arch = x86_64
 	license = MIT
@@ -12,7 +12,7 @@ pkgbase = offhand
 	optdepends = vulkan-icd-loader: GPU-accelerated local speech model inference
 	conflicts = flow
 	replaces = flow
-	source = https://github.com/Genoux/flow/releases/download/v0.4.1/offhand-v0.4.1-x86_64-linux.tar.gz
+	source = https://github.com/Genoux/offhand/releases/download/v0.4.1/offhand-v0.4.1-x86_64-linux.tar.gz
 	sha256sums = 5878a706634b9f99b3b5ba17303ce4e5322cd3415c3b9a50b1be10719675e112
 
 pkgname = offhand
