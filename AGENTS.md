@@ -124,7 +124,9 @@ OpenRouter request. `offhand install` fetches the speech model.
   ink (0.941 of the logo's proportions) so it weighs the same as the owner's
   other tray icons, measured 2026-11-12; `src/tray/linux.rs` has the render
   command. `branding/offhand/offhand-tray-*.svg` are the same glyph. The
-  macOS icon (`packaging/macos/offhand.png`) is still the flat 824/1024 tile.
+  macOS icon (`packaging/macos/offhand.png`, from
+  `branding/offhand/offhand-icon-macos.svg`) is the same drawing on Apple's
+  824/1024 grid; rendered on Linux and not yet looked at on a Mac.
 - Known exception (R3.4): five commits in history (`f9ceca2`, `2a36e94`,
   `a71a97e`, `0bc954d`, `ce2b609`) carry attribution lines, so `jb check`
   reports them. They are not rewritten (R3.7) without the owner asking.
