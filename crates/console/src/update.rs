@@ -21,11 +21,11 @@ use std::process::{Command, Stdio};
 /// A hundred, which is as many as a page holds: experimental tags outnumber
 /// stable ones, and at twenty a run of them pushed the newest stable off the
 /// page.
-const RELEASES: &str = "https://api.github.com/repos/Genoux/flow/releases?per_page=100";
+const RELEASES: &str = "https://api.github.com/repos/Genoux/offhand/releases?per_page=100";
 
 /// Where the release workflow's tarball lands, named after the tag it was cut
 /// from. Kept in step with the `Package` step in `.github/workflows/release.yml`.
-const DOWNLOAD: &str = "https://github.com/Genoux/flow/releases/download";
+const DOWNLOAD: &str = "https://github.com/Genoux/offhand/releases/download";
 
 /// How long to wait on GitHub before giving up. A settings window that hangs on
 /// a dead network is worse than one that says it could not check.

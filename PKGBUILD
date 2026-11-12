@@ -4,7 +4,7 @@ pkgver=0.4.1
 pkgrel=1
 pkgdesc="Voice dictation daemon with a local speech model and a system tray console"
 arch=('x86_64')
-url="https://github.com/Genoux/flow"
+url="https://github.com/Genoux/offhand"
 license=('MIT')
 # gcc-libs/glibc omitted: makepkg's own shared-library scan already adds them
 # from the linked binaries. wayland is kept explicit even though it isn't a
@@ -18,7 +18,7 @@ optdepends=('vulkan-icd-loader: GPU-accelerated local speech model inference')
 replaces=('flow')
 conflicts=('flow')
 install=offhand.install
-source=("https://github.com/Genoux/flow/releases/download/v${pkgver}/offhand-v${pkgver}-${CARCH}-linux.tar.gz")
+source=("https://github.com/Genoux/offhand/releases/download/v${pkgver}/offhand-v${pkgver}-${CARCH}-linux.tar.gz")
 sha256sums=('5878a706634b9f99b3b5ba17303ce4e5322cd3415c3b9a50b1be10719675e112')
 
 package() {
