@@ -77,6 +77,7 @@ OpenRouter request. `offhand install` fetches the speech model.
 ## Text injection
 
 - Modifier state comes from EVENTS, not `get_key_state`. `EVIOCGKEY` goes stale: a Keychron board reports LALT+LSHIFT held with nothing pressed and keyd mirrors it as LMETA+LSHIFT — two thirds of the chord — so device state answered "held" forever and every paste timed out with the text left on the clipboard. Typing still worked, which proves the compositor disagreed, so the devices were simply the wrong oracle. `observed()` starts empty each start; device state is the fallback only when nothing is watching events (`WATCHING == false`).
+- The virtual keyboard uploads the stock US layout, not a keymap of its own. A hand-built one declaring only Control, Shift and V was ignored by WebKitGTK (Noted, a Tauri app): measured 2026-11-12 on Hyprland with a standalone probe, same mask and same key, the three-key keymap pasted nothing and the stock layout pasted every time. Offhand's log cannot show this - it reports the chord as sent either way.
 - Injection is timed in the log line on purpose. It was once the biggest term (~500ms) because `wait_for_modifiers_released` re-probed every input device's capabilities per paste.
 
 ## Console

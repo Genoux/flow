@@ -14,10 +14,9 @@
 //!
 //! # Scope
 //!
-//! Offhand pastes; it never types. The uploaded keymap defines the three keys the
-//! paste chord can contain and nothing else, and [`VirtualKeyboard::send_combo`]
-//! refuses anything outside it rather than silently sending a key the
-//! compositor would read as blank.
+//! Offhand pastes; it never types. [`VirtualKeyboard::send_combo`] refuses
+//! anything that is not a paste chord, although the uploaded keymap is a whole
+//! layout - see [`KEYMAP`] for why it cannot be smaller.
 
 use anyhow::{Context, Result, bail};
 use evdev::KeyCode;
@@ -38,47 +37,23 @@ const KEYMAP_FORMAT_TEXT: u32 = 1;
 const KEY_RELEASED: u32 = 0;
 const KEY_PRESSED: u32 = 1;
 
-/// XKB numbers the same physical key 8 higher than evdev does, but
-/// `zwp_virtual_keyboard_v1.key` inherits `wl_keyboard.key`'s convention and
-/// takes the evdev number, which the compositor adds 8 to before looking it up.
-/// So the keymap is written in XKB numbering and the wire carries evdev
-/// numbering, and the two must not be mixed up. Only the test that checks the
-/// two agree needs to convert between them.
-#[cfg(test)]
-const XKB_KEYCODE_OFFSET: u32 = 8;
-
-/// Bit positions of the real modifiers, fixed by XKB and relied on by the
-/// `modifier_map` entries in [`KEYMAP`].
+/// Bit positions of the real modifiers, fixed by XKB.
 const SHIFT_MASK: u32 = 1 << 0;
 const CONTROL_MASK: u32 = 1 << 2;
 
-/// The keymap Offhand uploads.
+/// The keymap Offhand uploads: the stock US layout from xkeyboard-config, which
+/// every desktop that runs libxkbcommon already has. It is US whatever the
+/// user's layout is, so `KEY_V` is always `v`.
 ///
-/// `include "complete"` pulls the stock types and compat rules from
-/// xkeyboard-config, which every desktop that runs libxkbcommon already has.
-/// Writing them out by hand would be a page of boilerplate to say "behave
-/// normally".
-///
-/// The modifier keys are declared and bound with `modifier_map` because a mask
-/// bit only means Control if some key in the keymap makes Control real. They
-/// are never pressed - the mask is what Offhand sends.
+/// It used to declare only Control, Shift and V. WebKitGTK ignores Ctrl+V
+/// under that keymap: measured 2026-11-12 against a Tauri app on Hyprland, the
+/// three-key keymap pasted nothing (also with `maximum = 255` and stock key
+/// names) and this one pasted every time, with the same mask and the same key.
 const KEYMAP: &str = r#"xkb_keymap {
-xkb_keycodes "offhand" {
-minimum = 8;
-maximum = 55;
-<K37> = 37;
-<K50> = 50;
-<K55> = 55;
-};
-xkb_types "offhand" { include "complete" };
-xkb_compatibility "offhand" { include "complete" };
-xkb_symbols "offhand" {
-key <K37> { [ Control_L ] };
-key <K50> { [ Shift_L ] };
-key <K55> { [ v, V ] };
-modifier_map Control { <K37> };
-modifier_map Shift { <K50> };
-};
+xkb_keycodes { include "evdev+aliases(qwerty)" };
+xkb_types { include "complete" };
+xkb_compatibility { include "complete" };
+xkb_symbols { include "pc+us+inet(evdev)" };
 };
 "#;
 
@@ -192,7 +167,7 @@ fn split_chord(keys: &[KeyCode]) -> Result<(u32, KeyCode)> {
             KeyCode::KEY_LEFTCTRL => mask |= CONTROL_MASK,
             KeyCode::KEY_LEFTSHIFT => mask |= SHIFT_MASK,
             KeyCode::KEY_V if pressed.is_none() => pressed = Some(*key),
-            other => bail!("{other:?} is not in the uploaded keymap"),
+            other => bail!("{other:?} is not part of a paste chord"),
         }
     }
     let pressed = pressed.context("chord has no key to press, only modifiers")?;
@@ -290,10 +265,8 @@ mod tests {
         assert_eq!(key, KeyCode::KEY_V);
     }
 
-    /// A key with no entry in the uploaded keymap would be looked up and found
-    /// blank, so the paste would silently do nothing. Better to say so.
     #[test]
-    fn a_key_outside_the_keymap_is_refused() {
+    fn a_key_outside_the_paste_chord_is_refused() {
         assert!(split_chord(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_C]).is_err());
     }
 
@@ -302,19 +275,13 @@ mod tests {
         assert!(split_chord(&[KeyCode::KEY_LEFTCTRL]).is_err());
     }
 
-    /// The keymap declares every keycode the chord can name, in XKB numbering.
+    /// A keymap that declares its own keys is the one WebKitGTK ignores.
     #[test]
-    fn the_keymap_declares_every_key_the_chord_can_use() {
-        for key in [
-            KeyCode::KEY_LEFTCTRL,
-            KeyCode::KEY_LEFTSHIFT,
-            KeyCode::KEY_V,
-        ] {
-            let xkb = u32::from(key.code()) + XKB_KEYCODE_OFFSET;
-            assert!(
-                KEYMAP.contains(&format!("<K{xkb}>")),
-                "{key:?} (XKB {xkb}) is missing from the keymap"
-            );
-        }
+    fn the_keymap_is_a_stock_layout() {
+        assert!(KEYMAP.contains(r#"xkb_symbols { include "pc+us+inet(evdev)" }"#));
+        assert!(
+            !KEYMAP.contains("key <"),
+            "hand-declared keys in the keymap"
+        );
     }
 }
