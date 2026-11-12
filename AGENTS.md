@@ -116,6 +116,15 @@ OpenRouter request. `offhand install` fetches the speech model.
   CI installs it before running the script.
 - The macOS job in `ci.yml` stays a separate, non-required job: it guards the
   port and only compiles on a Mac, so `scripts/check` (Linux) cannot replace it.
+- Icons follow R10 and are two drawings. The Linux launcher icon is
+  `packaging/offhand-console.svg` (tile 896/1024, gradient, shadow), rendered
+  with `rsvg-convert -w 512 -h 512` to the `.png` beside it; it was a flat
+  tile filling the canvas and sat larger than Slack, Chrome and Zen in the
+  launcher. The tray glyph is `assets/tray.svg`, the three bars scaled to 22%
+  ink (0.941 of the logo's proportions) so it weighs the same as the owner's
+  other tray icons, measured 2026-11-12; `src/tray/linux.rs` has the render
+  command. `branding/offhand/offhand-tray-*.svg` are the same glyph. The
+  macOS icon (`packaging/macos/offhand.png`) is still the flat 824/1024 tile.
 - Known exception (R3.4): five commits in history (`f9ceca2`, `2a36e94`,
   `a71a97e`, `0bc954d`, `ce2b609`) carry attribution lines, so `jb check`
   reports them. They are not rewritten (R3.7) without the owner asking.
